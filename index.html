@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="ru">
+<html lang="en">
 
 <head>
     <meta charset="UTF-8">
@@ -28,7 +28,7 @@
         </div>
         <div class="header-status">
             <div id="scenarioPill" class="scenario-pill SCENARIO_A">
-                <span id="scenarioText">Сценарий А: Минимализм</span>
+                <span id="scenarioText">Scenario A: Minimalist</span>
             </div>
         </div>
     </header>
@@ -38,24 +38,24 @@
         <section class="viz-viewport">
             <div id="loader" class="loader-overlay active">
                 <div class="spinner"></div>
-                <div style="font-size: 0.9rem; color: #94a3b8;">Вычисление Взаимной Информации и пермутаций...</div>
+                <div style="font-size: 0.9rem; color: #94a3b8;">Computing Mutual Information and permutations...</div>
             </div>
 
             <div class="viewport-toolbar">
                 <div style="display: flex; align-items: center; gap: 0.75rem;">
-                    <span style="font-size: 0.85rem; color: var(--text-muted);">Режим отображения:</span>
+                    <span style="font-size: 0.85rem; color: var(--text-muted);">Display Mode:</span>
                     <div class="view-toggle-group">
-                        <button class="toggle-btn active" id="btn-grid">📐 Дискретные центры</button>
+                        <button class="toggle-btn active" id="btn-grid">📐 Discrete Centers</button>
                     </div>
                 </div>
                 <div style="font-size: 0.85rem; color: var(--text-dim);">
-                    Объектов в выборке: <strong id="totalSamplesVal" style="color: #fff;">8,124</strong>
+                    Sample Size: <strong id="totalSamplesVal" style="color: #fff;">8,124</strong>
                 </div>
             </div>
 
             <!-- Dynamic Color Legend -->
             <div class="color-legend-bar" id="legendContainer">
-                <div class="legend-title">🎨 Цвет точек (<span id="legendTargetName">Съедобность</span>):</div>
+                <div class="legend-title">🎨 Point Color (<span id="legendTargetName">Edibility</span>):</div>
                 <div class="legend-items" id="legendItems">
                     <!-- Populated dynamically -->
                 </div>
@@ -63,12 +63,11 @@
 
             <!-- Bivariate 2D Legend -->
             <div class="bivariate-legend" id="bivariateLegend">
-                <div style="font-size: 0.8rem; color: #cbd5e1; margin-bottom: 8px; font-weight: 600;">Карта Концентрации
-                </div>
+                <div style="font-size: 0.8rem; color: #cbd5e1; margin-bottom: 8px; font-weight: 600;">Concentration Map</div>
                 <div class="bivariate-map-container">
-                    <div class="biv-label-y">Ядовитые ➔</div>
+                    <div class="biv-label-y">Poisonous ➔</div>
                     <div class="bivariate-map"></div>
-                    <div class="biv-label-x">Съедобные ➔</div>
+                    <div class="biv-label-x">Edible ➔</div>
                 </div>
             </div>
 
@@ -79,24 +78,24 @@
         <aside class="sidebar">
             <!-- Target Selection Card -->
             <div class="hud-card">
-                <div class="card-label">🎯 Выбор Целевой Переменной (Z)</div>
+                <div class="card-label">🎯 Target Variable Selection (Z)</div>
                 <div class="target-select-wrapper">
                     <select id="targetSelect" onchange="onTargetChange()">
-                        <option value="class">Съедобность (class)</option>
+                        <option value="class">Edibility (class)</option>
                     </select>
                     <div style="font-size: 0.75rem; color: var(--text-dim);">
-                        Смена $Z$ запускает фазу AVR заново с адаптивной пересортировкой категорий на осях.
+                        Changing $Z$ re-triggers the AVR phase with adaptive axis category reordering.
                     </div>
                 </div>
             </div>
 
             <!-- Mathematical Metrics Card -->
             <div class="hud-card">
-                <div class="card-label">📊 Метрики Достаточности (VSF)</div>
+                <div class="card-label">📊 Sufficiency Metrics (VSF)</div>
                 <div class="stats-grid">
                     <div class="stat-box">
                         <div class="stat-value" id="val-dstar" style="color: var(--accent-purple);">-</div>
-                        <div class="stat-sub">Оптимально осей (d*)</div>
+                        <div class="stat-sub">Optimal Axes (d*)</div>
                     </div>
                     <div class="stat-box">
                         <div class="stat-value" id="val-vir" style="color: var(--green);">-</div>
@@ -104,7 +103,7 @@
                     </div>
                     <div class="stat-box">
                         <div class="stat-value" id="val-pval" style="color: var(--accent-cyan);">-</div>
-                        <div class="stat-sub">Пермутационный p-value</div>
+                        <div class="stat-sub">Permutation p-value</div>
                     </div>
                     <div class="stat-box">
                         <div class="stat-value" id="val-loss" style="color: var(--amber);">-</div>
@@ -115,24 +114,24 @@
 
             <!-- Selected Axes Card -->
             <div class="hud-card">
-                <div class="card-label">🔍 Отобранные оси пространства</div>
+                <div class="card-label">🔍 Selected Visual Axes</div>
                 <div class="axes-list" id="axesListContainer">
-                    <div style="color: var(--text-dim); font-size: 0.85rem;">Загрузка...</div>
+                    <div style="color: var(--text-dim); font-size: 0.85rem;">Loading...</div>
                 </div>
             </div>
 
             <!-- History Card -->
             <div class="hud-card" id="historyCard">
-                <div class="card-label">⏳ История отбора осей (MI)</div>
+                <div class="card-label">⏳ Feature Selection History (MI)</div>
                 <div class="history-list" id="historyListContainer">
-                    <div style="color: var(--text-dim); font-size: 0.85rem;">Загрузка...</div>
+                    <div style="color: var(--text-dim); font-size: 0.85rem;">Loading...</div>
                 </div>
             </div>
 
             <!-- XAI Inference Banner -->
             <div class="hud-card" style="padding: 0; background: transparent; border: none;">
                 <div class="xai-banner" id="xaiBanner">
-                    Инициализация системы объяснимого ИИ (XAI)...
+                    Initializing Explainable AI (XAI)...
                 </div>
             </div>
         </aside>

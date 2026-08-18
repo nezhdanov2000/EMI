@@ -101,24 +101,24 @@ let currentPayload = null;
             pill.className = 'scenario-pill ' + m.scenario;
             document.getElementById('scenarioText').innerText = m.scenario;
 
-            document.getElementById('xaiBanner').innerHTML = `💡 <b>XAI Инсайт:</b> ${m.xai_message}`;
+            document.getElementById('xaiBanner').innerHTML = `💡 <b>XAI Insight:</b> ${m.xai_message}`;
 
             // Selected Axes List
             const axesContainer = document.getElementById('axesListContainer');
             axesContainer.innerHTML = '';
-            const labels = ['X-Ось', 'Y-Ось', 'Z-Ось', 'Цвет', 'Размер', 'Время'];
+            const labels = ['X-Axis', 'Y-Axis', 'Z-Axis', 'Color', 'Size', 'Time'];
             payload.selected_features.forEach((feat, idx) => {
                 const item = document.createElement('div');
                 item.className = 'axis-pill';
                 item.innerHTML = `
                     <span style="font-weight: 500;">${feat}</span>
-                    <span class="axis-badge">${labels[idx] || 'Канал ' + (idx + 1)}</span>
+                    <span class="axis-badge">${labels[idx] || 'Channel ' + (idx + 1)}</span>
                 `;
                 axesContainer.appendChild(item);
             });
 
             // Update Color Legend
-            document.getElementById('legendTargetName').innerText = payload.target_name || 'Целевая переменная';
+            document.getElementById('legendTargetName').innerText = payload.target_name || 'Target Variable';
             const legendItems = document.getElementById('legendItems');
             legendItems.innerHTML = '';
 
@@ -148,7 +148,7 @@ let currentPayload = null;
                     let altsHtml = '';
                     if (step.alternatives && step.alternatives.length > 0) {
                         altsHtml = '<div style="margin-top: 8px; padding-top: 6px; border-top: 1px solid rgba(255,255,255,0.05); font-size: 0.75rem; color: var(--text-dim);">';
-                        altsHtml += '<div style="margin-bottom: 3px; font-weight: 600;">Альтернативы:</div>';
+                        altsHtml += '<div style="margin-bottom: 3px; font-weight: 600;">Alternatives:</div>';
                         step.alternatives.forEach(a => {
                             altsHtml += `<div>• ${a.feature} (MI: ${(a.vir * 100).toFixed(1)}%)</div>`;
                         });
@@ -159,7 +159,7 @@ let currentPayload = null;
                         <div style="width: 100%;">
                             <div style="display: flex; justify-content: space-between; align-items: center;">
                                 <div>
-                                    <div class="history-step">${step.step}D-Система</div>
+                                    <div class="history-step">${step.step}D-System</div>
                                     <div class="history-feature">${step.feature}</div>
                                 </div>
                                 <div class="history-stats">
@@ -259,7 +259,7 @@ let currentPayload = null;
                 },
                 hoverinfo: 'none',
                 type: 'scatter3d',
-                name: 'Сетка ячеек'
+                name: 'Cell Grid'
             };
 
             // Generate exact RGBA array to support per-point intensity in WebGL scatter3d
@@ -305,7 +305,7 @@ let currentPayload = null;
                 hovertext: currentHover,
                 hoverinfo: 'text',
                 type: 'scatter3d',
-                name: 'Данные'
+                name: 'Data'
             };
 
             const plotTraces = [cellBoundaryTrace, scatterTrace];

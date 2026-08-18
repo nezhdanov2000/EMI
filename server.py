@@ -56,15 +56,15 @@ class VSFRequestHandler(http.server.SimpleHTTPRequestHandler):
                 
             df = pd.read_csv(DATASET_PATH)
             raw_cols = list(df.columns)
-            ru_cols = []
+            en_cols = []
             
             for c in raw_cols:
-                ru_title = vsf.vis.MUSHROOM_TRANSLATIONS["columns"].get(c, c)
-                display_label = f"{ru_title} ({c})" if ru_title != c else c
-                ru_cols.append({"id": c, "label": display_label})
+                en_title = vsf.vis.MUSHROOM_TRANSLATIONS["columns"].get(c, c)
+                display_label = f"{en_title} ({c})" if en_title != c else c
+                en_cols.append({"id": c, "label": display_label})
 
             self._send_json_response(200, {
-                "columns": ru_cols,
+                "columns": en_cols,
                 "default_target": "class",
                 "total_rows": len(df)
             })

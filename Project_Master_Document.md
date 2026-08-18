@@ -1,396 +1,319 @@
 # Visual Sufficiency Framework (VSF): Information-Theoretic Adaptive Dimensionality Selection for Multimodal Data Visualization
 
-**Формальное описание алгоритма и математического аппарата**
+**Formal Algorithm Specification and Mathematical Framework**
 
 ---
 
 ## Abstract
 
-Мы представляем Visual Sufficiency Framework (VSF) — информационно-теоретическую систему адаптивного выбора размерности визуализации. VSF формально решает задачу: *«Сколько и какие визуальные каналы необходимы и достаточны для верного отображения структуры данных?»*. Фреймворк вводит три теоретических вклада: (1) формальный критерий **Визуальной Достаточности** (Visual Sufficiency Criterion), основанный на статистически значимом приросте Взаимной Информации (permutation test, $\alpha = 0.01$); (2) **Перцептивно-Согласованную Дискретизацию** (PMD) — постановку оптимального квантования в терминах Rate-Distortion Theory с явной функцией искажения; (3) масштабируемый алгоритм отбора признаков: точный полный перебор для $M \leq 20$ и жадный алгоритм с гарантией слабой субмодулярности (Krause et al., 2008) для $M > 20$. Система адаптивно маршрутизирует данные в один из четырёх сценариев рендеринга (2D/3D → 7D → Warning → Block), при этом каждый переход определяется строгим статистическим тестом, а не произвольным порогом.
+We present the Visual Sufficiency Framework (VSF) — an information-theoretic framework for adaptive visualization dimensionality selection. VSF formally answers the foundational question: *"How many and which visual channels are necessary and sufficient to faithfully represent data structure?"*. The framework introduces three key theoretical contributions: (1) a formal **Visual Sufficiency Criterion** based on statistically significant gains in Mutual Information (permutation test, $\alpha = 0.01$); (2) **Perceptually-Matched Discretization** (PMD) — formulating optimal quantization within Rate-Distortion Theory with an explicit perceptual distortion metric; (3) a scalable feature selection architecture: exact exhaustive search for $M \leq 20$ and a greedy forward selection algorithm with weak submodularity guarantees (Krause et al., 2008) for $M > 20$. The system dynamically routes data into one of four rendering scenarios (2D/3D → 7D → Warning → Block), where each transition is driven by rigorous statistical hypothesis testing rather than arbitrary heuristics.
 
 ---
 
-## 1. Постановка задачи (Problem Formulation)
+## 1. Problem Formulation
 
-### 1.1. Концепция и интуитивное определение
+### 1.1. Core Concept and Intuition
 
-> *«Вместо того чтобы заставлять пользователя вслепую перебирать десятки осей в поиске закономерностей, наш фреймворк позволяет пользователю задать интересующий его концепт (Target $Z$), после чего система математически гарантированно подбирает минимально необходимое многомерное пространство (от 2D до 7D), в котором кластеры этого концепта визуально разделимы, либо предупреждает о состоянии хаоса.»*
+> *"Rather than forcing the analyst to blindly toggle dozens of axes in search of patterns, our framework enables the user to specify a concept of interest (Target $Z$). The system then mathematically guarantees the selection of a minimal high-dimensional space (from 2D to 7D) where clusters of this concept are visually separable, or explicitly issues a diagnostic warning if the data exhibits chaos/noise."*
 
-В математических терминах «визуальная разделимость кластеров концепта» формализуется через **Нормализованную Взаимную Информацию ($NMI$)**: знание выбранных осей $S^*$ максимально снижает неопределенность (энтропию) относительно целевого концепта $Z$.
+In mathematical terms, "visual separability of concept clusters" is formalized through **Normalized Mutual Information ($NMI$)**: knowing the selected visual axes $S^*$ maximally reduces uncertainty (entropy) regarding the target concept $Z$.
 
-### 1.2. Формальное определение
+### 1.2. Formal Definition
 
-Дан датасет $\mathcal{D} = \{(\mathbf{x}_i, z_i)\}_{i=1}^{N}$, где $\mathbf{x}_i \in \mathbb{R}^M$ — вектор признаков, $z_i$ — целевая переменная, $M$ — полная размерность.
+Given a dataset $\mathcal{D} = \{(\mathbf{x}_i, z_i)\}_{i=1}^{N}$, where $\mathbf{x}_i \in \mathbb{R}^M$ is a feature vector, $z_i$ is the target variable, and $M$ is the full dimensionality.
 
-Визуальный дисплей предоставляет $d_{max} = 7$ независимых каналов кодирования:
+A visual display system provides up to $d_{max} = 7$ independent encoding channels:
 
 $$\mathcal{V} = \{v_1, v_2, ..., v_7\} = \{X, Y, Z, R, G, B, T\}$$
 
-**Задача:** Найти подмножество $S^* \subseteq \{1, ..., M\}$, $|S^*| = d^*$, где $d^* \leq d_{max}$, такое что:
-1. $d^*$ — **минимальная достаточная размерность** визуализации;
-2. $S^*$ — **оптимальный набор признаков** для этой размерности;
-3. Каждый переход между сценариями рендеринга **статистически обоснован**.
+**Objective:** Identify an optimal subset $S^* \subseteq \{1, ..., M\}$, $|S^*| = d^*$, where $d^* \leq d_{max}$, such that:
+1. $d^*$ represents the **minimum sufficient dimensionality** for visualization;
+2. $S^*$ constitutes the **optimal feature subset** for that dimensionality;
+3. Every transition between rendering scenarios is **statistically grounded**.
 
-### 1.3. Визуальные каналы: перцептивно-дисплейный компромисс
+### 1.3. Visual Channels: The Perceptual-Display Limit
 
-Ограничение $d_{max} = 7$ является **перцептивно-дисплейным компромиссом** (Perceptual-Display Limit), а не ни строгим аппаратным фактом, ни когнитивным произволом. Монитор физически предоставляет 2 пространственные координаты + 3 цветовых канала (RGB), а анимация является темпоральным мультиплексированием этих же каналов. Однако для нужд *аналитической визуализации* мы оперируем 7 **функционально независимыми** каналами кодирования:
+The constraint $d_{max} = 7$ is a **Perceptual-Display Limit** derived from empirical psychophysics and hardware display realities. A standard monitor physically outputs 2 spatial coordinates + 3 color channels (RGB), with animation multiplexing time. For *analytical visualization*, we operate over 7 **functionally independent** encoding channels:
 
 $$\mathcal{V} = \{\text{Position}_{X,Y},\ \text{Depth}_Z,\ \text{Hue},\ \text{Saturation},\ \text{Lightness},\ \text{Motion/Time}\}$$
 
-Число $d_{max} = 7$ обосновано работами по теории визуальных каналов (Munzner, 2014; Ware, 2004): экспериментально установлено, что человек одновременно различает **не более 7–10 независимых кодирований** в одном виде (Healey & Enns, 2012). Использование $d_{max} = 7$ является **консервативной верхней границей**, которая охватывает весь диапазон перцептивно различимых каналов для аналитических задач. Важно отметить, что использование 3D не является обязательным: система адаптивно использует 3D (или более высокие размерности с цветом и временем), только если 2D (или 1D) математически недостаточно для объяснения структуры.
+The bound $d_{max} = 7$ is supported by visual perception literature (Munzner, 2014; Ware, 2004): human analysts reliably track **no more than 7–10 independent simultaneous encodings** in a single view (Healey & Enns, 2012). Selecting $d_{max} = 7$ provides a **conservative upper ceiling** spanning all perceptually distinguishable analytical channels. 3D visualization is strictly adaptive: the system engages 3D (or higher dimensions with color/time) only when 2D is mathematically insufficient to explain the target structure.
 
-### 1.4. Двухфазный аналитический процесс (Two-Phase Workflow)
+### 1.4. Two-Phase Workflow
 
-Работа с VSF концептуально разделена на две фазы, что обеспечивает плавный переход от разведочного анализа к проверке гипотез:
+VSF operates in two synchronized phases, enabling exploratory analysis and hypothesis validation:
 
-1. **Фаза автономного поиска (Unsupervised Discovery):** Система анализирует набор данных без заданной цели ($Z$ не задан), выявляя естественную многомерную структуру на основе связей между признаками. Результатом является базовая пространственная карта "анатомии" данных, где точки сгруппированы в естественные кластеры.
-2. **Фаза проверки гипотез (Target-Conditioned Alignment):** Пользователь выбирает конкретную целевую переменную $Z$ для исследования.
-   - Старый график уничтожается.
-   - Алгоритм VSF запускается заново, выполняя поиск только тех признаков ($X_S$), которые статистически значимо предсказывают именно новый $Z$.
-   - **Динамическая перестройка:** График отрисовывается заново с минимально необходимой размерностью (от 1D до 7D).
-   - **Адаптивная сортировка (Target-Conditioned Ordering):** Метки на дискретных осях автоматически пересортировываются (согласно принципам Раздела 9.1) таким образом, чтобы категории, ведущие к одному исходу $Z$, оказались пространственно сгруппированы.
-   - **Инсайт:** Пользователь визуально сравнивает новую раскраску (по $Z$) с естественными кластерами, моментально оценивая предсказательную силу подмножества осей.
+1. **Unsupervised Discovery Phase:** The system analyzes the dataset without a predefined target ($Z$ is unassigned), uncovering natural high-dimensional manifold geometry and intrinsic clusters.
+2. **Target-Conditioned Alignment Phase:** The user selects a specific target variable $Z$.
+   - The prior plot is decommissioned.
+   - VSF re-executes, searching exclusively for feature subsets ($X_S$) that statistically predict the new target $Z$.
+   - **Dynamic Re-rendering:** The visualization re-renders with the minimal sufficient dimensionality ($1D \le d^* \le 7D$).
+   - **Target-Conditioned Ordering:** Discrete axis category ticks are automatically re-sorted (Section 9.1) such that categories associated with identical target outcomes are spatially collocated.
+   - **Analytical Insight:** The analyst contrasts the target class distribution against spatial clusters, immediately assessing feature predictive power.
 
 ---
 
-## 2. Перцептивно-Согласованная Дискретизация (PMD)
+## 2. Perceptually-Matched Discretization (PMD)
 
-### 2.1. Теоретическое обоснование: задача оптимального квантования
+### 2.1. Theoretical Foundation: Optimal Quantization
 
-**Ключевое наблюдение:** Визуальный вывод любого дисплея *по определению дискретен*. Экран 1920×1080 различает ~$2 \times 10^6$ пространственных позиций. Человеческое восприятие цвета ограничено ~5–12 категориальными различиями при аналитических задачах (Ware, 2004; Borland & Taylor, 2007). Временная ось при 30 fps даёт ~100–300 различимых состояний.
+**Key Observation:** Display outputs are *discrete by definition*. A 1920×1080 display resolves ~$2 \times 10^6$ distinct spatial locations. Human categorical color perception is bounded at ~5–12 distinct bins in analytical contexts (Ware, 2004; Borland & Taylor, 2007). Temporal frames at 30 fps provide ~100–300 distinguishable states.
 
-Квантование (биннинг) непрерывного признака $X_j$ в $k$ корзин неизбежно является **операцией с потерями** (Rate-Distortion Theory, Shannon, 1959). Задача PMD формулируется как нахождение минимального $k$, при котором искажение структуры данных не превышает допустимый порог $\epsilon$, определяемый перцептивной чувствительностью канала (Just Noticeable Difference, JND).
+Quantizing (binning) continuous feature $X_j$ into $k$ bins is an inherently **lossy operation** (Rate-Distortion Theory, Shannon, 1959). PMD finds the minimal $k$ where structural distortion remains below an allowable threshold $\epsilon_v$, determined by the Just Noticeable Difference (JND) of visual channel $v$.
 
-### 2.2. Формализация: функция искажения и задача Rate-Distortion
+### 2.2. Formalization: Distortion Function & Rate-Distortion Objective
 
-**Определение 1 (Distortion Function).** Определим функцию перцептивного искажения для признака $X_j$ при дискретизации в $k$ корзин:
+**Definition 1 (Distortion Function).** For feature $X_j$ discretized into $k$ bins:
 
 $$\mathcal{D}_j(k) = 1 - NMI(\tilde{X}_j^{(k)};\ X_j^{cont})$$
 
-где $\tilde{X}_j^{(k)}$ — дискретизированная версия признака в $k$ корзин, $X_j^{cont}$ — непрерывный оригинал. $\mathcal{D}_j(k) = 0$ означает полное сохранение структуры; $\mathcal{D}_j(k) \to 1$ — полная потеря.
+where $\tilde{X}_j^{(k)}$ is the $k$-bin discretized feature, and $X_j^{cont}$ is the continuous original. $\mathcal{D}_j(k) = 0$ signifies complete structural retention; $\mathcal{D}_j(k) \to 1$ denotes total information loss.
 
-**Определение 2 (Channel Capacity).** Для визуального канала $v$ перцептивная пропускная способность (в уровнях) определяется как $L_v$ — максимальное число перцептивно различимых уровней (Miller, 1956; Ware, 2004; Munzner, 2014).
+**Definition 2 (Channel Capacity).** For visual channel $v$, perceptual capacity $L_v$ is defined as the maximum number of distinguishable levels (Miller, 1956; Ware, 2004; Munzner, 2014).
 
-| Канал $v$ | Тип | $L_v$ (уровней) | $C_v = \log_2 L_v$ (бит) |
-|-----------|-----|:---:|:---:|
-| Position X | Пространственный | ~200–500 | ~8–9 |
-| Position Y | Пространственный | ~200–500 | ~8–9 |
-| Depth Z | Пространственный | ~10–20 | ~3.5–4.5 |
-| Color Hue | Хроматический | ~5–12 | ~2.3–3.6 |
-| Color Saturation | Хроматический | ~3–7 | ~1.6–2.8 |
-| Color Lightness | Хроматический | ~5–9 | ~2.3–3.2 |
-| Motion/Time | Темпоральный | ~50–200 | ~5.6–7.6 |
+| Channel $v$ | Type | $L_v$ (Levels) | $C_v = \log_2 L_v$ (Bits) |
+|---|---|:---:|:---:|
+| Position X | Spatial | ~200–500 | ~8–9 |
+| Position Y | Spatial | ~200–500 | ~8–9 |
+| Depth Z | Spatial | ~10–20 | ~3.5–4.5 |
+| Color Hue | Chromatic | ~5–12 | ~2.3–3.6 |
+| Color Saturation | Chromatic | ~3–7 | ~1.6–2.8 |
+| Color Lightness | Chromatic | ~5–9 | ~2.3–3.2 |
+| Motion/Time | Temporal | ~50–200 | ~5.6–7.6 |
 
-### 2.3. Proposition 1: Оптимальный биннинг (PMD)
+### 2.3. Proposition 1: Optimal PMD Binning
 
-> **Proposition 1 (Perceptually-Matched Discretization).** Пусть признак $X_j$ отображается на визуальный канал $v$ с перцептивным пределом $L_v$. Оптимальное число корзин $k_j^*$ является решением задачи:
+> **Proposition 1 (Perceptually-Matched Discretization).** Let feature $X_j$ be mapped to visual channel $v$ with perceptual capacity $L_v$. The optimal bin count $k_j^*$ solves:
 > 
 > $$k_j^* = \min_k \; k \quad \text{s.t.} \quad \mathcal{D}_j(k) \leq \epsilon_v, \quad k \leq L_v$$
 > 
-> где порог перцептивного искажения определяется как $\epsilon_v = \dfrac{1}{L_v + 1}$. Эта формула задаёт минимальную долю потери структуры, соответствующую одному неразличимому уровню канала $v$.
+> where the perceptual distortion tolerance is $\epsilon_v = \dfrac{1}{L_v + 1}$.
 
-Практически $k_j^*$ находится как: $k_j^* = \min\left(L_v,\ k_{MDL}(X_j, Z)\right)$, где $k_{MDL}$ задаётся принципом Минимальной Длины Описания (Fayyad & Irani, 1993). **Важно:** MDL служит здесь практической рекомендацией, которая на широком классе распределений даёт $\mathcal{D}_j(k_{MDL}) \approx \epsilon_v$, а не отменяет выборов пользователя.
+In practice, $k_j^* = \min\left(L_v,\ k_{MDL}(X_j, Z)\right)$, where $k_{MDL}$ is determined via Minimum Description Length Principle (MDLP, Fayyad & Irani, 1993).
 
-**Выбор $\mathcal{D}_j = 1 - NMI$:** NMI выбрана как мера *структурного* искажения, поскольку она чувствительна к потере зависимости между дискретизированным и исходным признаком, а не к числовой ошибке восстановления (в отличие от MSE).
+**Grid Capacity Limit:** When computing joint entropy $H(\tilde{X}_S)$ in high-dimensional subsets ($d \ge 4$), the total grid hypervolume $\prod_{j \in S} k_j$ must not exceed $N / 10$ (where $N$ is sample size). When exceeded, the engine adaptively coarsens bins to prevent small-sample bias (Miller-Madow bias) and contingency table sparsity collapse.
 
-**Ограничение гиперобъема сетки (Grid Capacity Limit):** При расчёте совместной энтропии $H(\tilde{X}_S)$ для многомерных подмножеств ($d \ge 4$) суммарное число ячеек гиперобъема $\prod_{j \in S} k_j$ не должно превышать $N / 10$ (где $N$ — число строк). Если порог превышен, алгоритм адаптивно укрупняет корзины для расчёта MI, предотвращая финитное смещение (Miller-Madow bias) и распад таблицы частот.
+### 2.4. Human-in-the-Loop Discretization Modes
 
-### 2.4. Режимы дискретизации и авторитет пользователя (Human-in-the-Loop)
-
-**Фундаментальный принцип VSF:** *Алгоритм не имеет права автономно назначать смысловые категории или группы для целевого концепта $Z$ и признаков $X_j$. Назначение категорий — это отдельная исследовательская доменная задача пользователя, а не текущего математического ядра.*
-
-1. **Приоритет пользователя (Human-in-the-Loop):** Пользователь явно задаёт или подтверждает семантические категории/интервалы на основе доменной экспертизы. Если $Z$ — непрерывная переменная, система запрашивает у пользователя правила группировки (или диапазон категорий). Система проверяет, что $k_{user} \leq L_v$, и выводит предупреждение при превышении перцептивного предела канала.
-2. **Автоматический рекомендуемый режим (Recommendation Engine):** Если пользователь запрашивает автоматический вариант, система предлагает математически рекомендуемую разбивку на основе MDLP (Fayyad & Irani, 1993) или правила Фридмана-Диакониса, но **обязана запросить подтверждение пользователя** перед запуском полного анализа.
-
+1. **User Authority Priority:** Domain experts may specify or override category intervals. The system verifies $k_{user} \leq L_v$ and warns if channel capacity is exceeded.
+2. **Recommendation Engine:** When automated binning is requested, the system computes recommended partitions via MDLP or Freedman-Diaconis rules before execution.
 
 ---
 
-## 3. Математическое ядро: Дискретная Взаимная Информация
+## 3. Mathematical Core: Discrete Mutual Information
 
-### 3.1. Базовые определения
+### 3.1. Fundamental Equations
 
-После дискретизации все признаки $\tilde{X}_j$ и целевая переменная $\tilde{Z}$ принимают конечное число значений. Вычисления производятся через матрицы сопряженности (Contingency Tables).
+Following discretization, all features $\tilde{X}_j$ and target $\tilde{Z}$ take discrete values evaluated over contingency tables.
 
-**Энтропия Шеннона:**
+**Shannon Entropy:**
 
 $$H(\tilde{X}) = -\sum_{x \in \mathcal{X}} p(x) \log_2 p(x)$$
 
-**Совместная энтропия:**
+**Joint Entropy:**
 
 $$H(\tilde{Z}, \tilde{X}_S) = -\sum_{z, x_S} p(z, x_S) \log_2 p(z, x_S)$$
 
-**Взаимная информация подмножества $S$ с целью $Z$:**
+**Mutual Information of Subset $S$ with Target $Z$:**
 
 $$I(\tilde{Z}; \tilde{X}_S) = H(\tilde{Z}) + H(\tilde{X}_S) - H(\tilde{Z}, \tilde{X}_S)$$
 
-### 3.2. Нормализованная Взаимная Информация (NMI)
+### 3.2. Normalized Mutual Information (NMI)
 
-Для сравнения комбинаций разной размерности используется нормализованная метрика:
+To compare subsets across varying dimensionalities, we employ Normalized Mutual Information:
 
 $$NMI(\tilde{Z}; \tilde{X}_S) = \frac{I(\tilde{Z}; \tilde{X}_S)}{\min\left(H(\tilde{Z}), H(\tilde{X}_S)\right)}$$
 
-$NMI \in [0, 1]$, где 0 — полная независимость, 1 — детерминированная связь.
-
-**Обоснование нормировки:** Нормировка на $\min(H(\tilde{Z}), H(\tilde{X}_S))$ является **консервативной**: она даёт верхнюю оценку NMI, что делает критерий визуальной достаточности строже (завышенное NMI труднее преодолеть). Альтернативные нормировки — на $\max(H)$, геометрическое среднее или только $H(\tilde{Z})$ — более либеральны. Мы выбрали $\min$ как наиболее строгий вариант, что соответствует принципу «честного аналитика».
+where $NMI \in [0, 1]$ (0 = statistical independence, 1 = deterministic functional dependency). Normalizing by $\min(H(\tilde{Z}), H(\tilde{X}_S))$ provides a conservative upper-bound, making visual sufficiency criteria rigorous.
 
 ---
 
-## 4. Алгоритм адаптивного выбора размерности (AVR)
+## 4. Adaptive Visual Routing (AVR) Algorithm
 
-### 4.1. Обзор
+### 4.1. Overview
 
-Алгоритм Adaptive Visual Routing (AVR) определяет оптимальную размерность $d^*$ и набор признаков $S^*$ через жадный прямой отбор (greedy forward selection) с контролем статистической значимости на каждом шаге.
+The Adaptive Visual Routing (AVR) algorithm selects optimal dimensionality $d^*$ and feature subset $S^*$ via greedy forward selection coupled with statistical permutation testing at every step.
 
-### 4.2. Статистический тест значимости MI (Permutation Test)
+### 4.2. Statistical Significance Testing (Permutation Tests)
 
-**Определение 3 (Значимость MI — Marginal Test).** Для проверки $H_0: I(\tilde{Z}; \tilde{X}_j) = 0$ (признак не связан с целью) выполняется **пермутационный тест с перестановкой целевого вектора $\tilde{Z}$** (Good, 2005; Runge et al., 2018):
+**Definition 3 (Marginal Permutation Test).** To test $H_0: I(\tilde{Z}; \tilde{X}_j) = 0$ (feature has no association with target):
 
-1. Вычислить наблюдаемое значение $I_{obs} = I(\tilde{Z}; \tilde{X}_j)$.
-2. Сгенерировать $B = 1000$ случайных перестановок **вектора $\tilde{Z}$** (а не $\tilde{X}_j$).
-3. Для каждой перестановки $\pi_b$ вычислить $I_{\pi_b} = I(\pi_b(\tilde{Z});\ \tilde{X}_j)$.
-4. p-значение:
+1. Compute observed mutual information $I_{obs} = I(\tilde{Z}; \tilde{X}_j)$.
+2. Generate $B = 1000$ random permutations of target vector $\tilde{Z}$.
+3. For each permutation $\pi_b$, compute $I_{\pi_b} = I(\pi_b(\tilde{Z});\ \tilde{X}_j)$.
+4. Compute empirical p-value:
 
 $$p = \frac{1 + \sum_{b=1}^{B} \mathbb{1}[I_{\pi_b} \geq I_{obs}]}{1 + B}$$
 
-5. Признак считается **значимым**, если $p < \alpha$ (при $\alpha = 0.01$).
+5. Feature is deemed **statistically significant** if $p < \alpha$ (with $\alpha = 0.01$).
 
-**Обоснование выбора метода:** Перестановка $\tilde{Z}$ разрушает только зависимость между $\tilde{Z}$ и $\tilde{X}_j$, сохраняя маргинальные распределения обоих векторов неизменными. Это гарантирует корректный уровень ошибки первого рода (Type I Error). Альтернативный подход — перестановка $\tilde{X}_j$ при фиксированном $\tilde{Z}$ — даёт идентичное нулевое распределение для маргинального теста и также допустим.
+**Definition 4 (Conditional Permutation Test).** To test $H_0: \Delta I(j \mid S) = 0$ when appending feature $X_j$ to current set $S$:
 
-**Определение 4 (Значимость маргинального прироста — Conditional Permutation Test).** Для проверки $H_0: \Delta I(j \mid S) = 0$ при добавлении признака $X_j$ к уже выбранному множеству $S$ используется **условный пермутационный тест** (Runge et al., 2018):
+1. Compute observed marginal gain $\Delta I_{obs}(j \mid S) = I(\tilde{Z}; \tilde{X}_{S \cup \{j\}}) - I(\tilde{Z}; \tilde{X}_S)$.
+2. For each iteration $b \in [1, B]$, permute $\tilde{Z}$ **within strata** defined by unique configurations of $\tilde{X}_S$, computing $\Delta I_{\pi_b}$.
+3. Calculate conditional p-value. Stratification preserves joint $(\tilde{X}_S, \tilde{Z})$ covariance, avoiding conditional bias.
 
-1. Вычислить наблюдаемое $\Delta I_{obs}(j \mid S) = I(\tilde{Z}; \tilde{X}_{S \cup \{j\}}) - I(\tilde{Z}; \tilde{X}_S)$.
-2. Для каждой из $B$ итераций: перемешать $\tilde{Z}$ **внутри страт** (квантов), определяемых значениями $\tilde{X}_S$, и вычислить $\Delta I_{\pi_b}$.
-3. p-значение вычисляется по той же формуле. Стратификация по $\tilde{X}_S$ сохраняет совместное распределение $(\tilde{X}_S, \tilde{Z})$, устраняя смещение p-значения при условном тесте.
+### 4.3. Marginal Visual Information Gain (MVIG)
 
-### 4.3. Маргинальный Визуальный Информационный Прирост (MVIG)
-
-**Определение 3 (MVIG).** При добавлении признака $X_j$ к текущему подмножеству $S$:
+**Definition 5 (MVIG).**
 
 $$\Delta I(j \mid S) = I(\tilde{Z}; \tilde{X}_{S \cup \{j\}}) - I(\tilde{Z}; \tilde{X}_S)$$
 
-Маргинальный прирост $\Delta I(j \mid S)$ показывает, сколько *новой* информации о цели приносит добавление оси $j$.
-
-**Определение 4 (Относительный MVIG).**
-
 $$\rho(j \mid S) = \frac{\Delta I(j \mid S)}{I(\tilde{Z}; \tilde{X}_S)}$$
 
-### 4.4. Формальный алгоритм AVR
+### 4.4. Formal AVR Algorithm Specification
 
 ```
-Алгоритм: Adaptive Visual Routing (AVR)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Вход:  Датасет D, целевая Z, уровень значимости α = 0.01
-Выход: Оптимальная размерность d*, набор признаков S*, сценарий Σ
+Algorithm: Adaptive Visual Routing (AVR)
+────────────────────────────────────────
+Input:  Dataset D, Target Z, Significance level α = 0.01
+Output: Optimal dimensionality d*, Feature subset S*, Scenario Σ
 
-ФАЗа 1: ФИЛЬТРАЦИЯ (Отсечение шума)
-────────────────────────────────────
-1.  Дискретизировать все признаки (PMD, Раздел 2).
-2.  Для каждого Xⱼ, j = 1..M:
-      Вычислить I(Z̃; X̃ⱼ)
-      Выполнить пермутационный тест (Определение 2)
-3.  Отфильтровать: F ← {j : pⱼ < α}
-4.  ЕСЛИ |F| = 0:
-      ВЕРНУТЬ d* = 0, S* = ∅, Σ = СЦЕНАРИЙ_Г (Хаос)
+PHASE 1: NOISE FILTERING
+────────────────────────
+1. Discretize features (PMD, Section 2).
+2. For each Xⱼ, j = 1..M:
+     Compute I(Z̃; X̃ⱼ)
+     Run marginal permutation test (Definition 3)
+3. Filter significant features: F ← {j : pⱼ < α}
+4. IF |F| = 0:
+     RETURN d* = 0, S* = ∅, Σ = SCENARIO_D (Chaos / Block)
 
-ФАЗА 2: ЖАДНЫЙ ОТБОР (Greedy Forward Selection)
-────────────────────────────────────────────────
-5.  Отсортировать F по убыванию I(Z̃; X̃ⱼ).
-6.  S ← {arg max_{j∈F} I(Z̃; X̃ⱼ)}     // Лучший первый признак
-7.  ДЛЯ d = 2 ДО min(7, |F|):
-      a. j* ← arg max_{j∈F\S} ΔI(j | S)
-      b. Выполнить условный пермутационный тест для ΔI(j* | S):
-         - Перемешать Z̃ внутри страт X̃_S (B раз)
-         - Страты с < 2 элементами укрупняются/объединяются с ближайшими соседями
-         - Вычислить p-значение для маргинального прироста (Определение 4)
-      c. ЕСЛИ p ≥ α:
-           ПРЕРВАТЬ   // Дальнейшие оси не значимы
-      d. S ← S ∪ {j*}
-8.  d* ← |S|,  S* ← S
+PHASE 2: GREEDY FORWARD SELECTION
+─────────────────────────────────
+5. Sort F in descending order of I(Z̃; X̃ⱼ).
+6. S ← {arg max_{j∈F} I(Z̃; X̃ⱼ)}     // Best 1D predictor
+7. FOR d = 2 TO min(7, |F|):
+     a. j* ← arg max_{j∈F\S} ΔI(j | S)
+     b. Run conditional permutation test for ΔI(j* | S):
+        - Permute Z̃ within strata of X̃_S (B iterations)
+        - Compute p-value for marginal gain
+     c. IF p ≥ α:
+          BREAK   // Additional axes are not statistically significant
+     d. S ← S ∪ {j*}
+8. d* ← |S|,  S* ← S
 
-ФАЗА 3: МАРШРУТИЗАЦИЯ (Выбор сценария)
+PHASE 3: SCENARIO ROUTING & LOSS METRICS
 ───────────────────────────────────────
-9.  Вычислить Projection Loss:
-      𝓛_{target} = 1 − NMI(Z̃; X̃_{S*})       // Необъяснённая доля целевого концепта
-      𝓛_{feat}   = 1 − VIR                  // Потерянная доля информации о признаках F
-10. Вычислить Visual Information Ratio (VIR):
-      VIR = I(Z̃; X̃_{S*}) / I(Z̃; X̃_{F})    // F — все значимые признаки
-      // Примечание: VIR использует ненормированное I для сравнимости
-      //             масштабов между подмножествами разной размерности
-11. [Интерпретационная метрика] Full NMI:
-      NMI_full = NMI(Z̃; X̃_{F})   // для отчёта; не участвует в маршрутизации
+9. Compute Projection Losses:
+     𝓛_{target} = 1 − NMI(Z̃; X̃_{S*})       // Target unexplained variance
+     𝓛_{feat}   = 1 − VIR                  // Unrendered significant feature info
+10. Compute Visual Information Ratio (VIR):
+     VIR = I(Z̃; X̃_{S*}) / I(Z̃; X̃_{F})    // F = all significant features
+11. Compute Full NMI:
+     NMI_full = NMI(Z̃; X̃_{F})
 
-12. МАРШРУТИЗАЦИЯ:
-    ЕСЛИ d* = 0                    → Σ = СЦЕНАРИЙ_Г
-    ЕСЛИ d* ≤ 3                    → Σ = СЦЕНАРИЙ_А (Минимализм)
-    ЕСЛИ d* ∈ [4, 7] и VIR ≥ 0.85 → Σ = СЦЕНАРИЙ_Б (Полная загрузка)
-    ЕСЛИ d* = 7 и VIR < 0.85      → Σ = СЦЕНАРИЙ_В (Warning: >7D)
+12. ROUTING LOGIC:
+    IF d* = 0                    → Σ = SCENARIO_D (Chaos / Block)
+    IF d* ≤ 3                    → Σ = SCENARIO_A (Minimalist)
+    IF d* ∈ [4, 7] and VIR ≥ 0.85 → Σ = SCENARIO_B (Full Load)
+    IF d* = 7 and VIR < 0.85      → Σ = SCENARIO_C (Warning: >7D)
 
-13. ВЕРНУТЬ d*, S*, Σ
+13. RETURN d*, S*, Σ
 ```
-
-**Замечание по порогу VIR = 0.85:** Этот порог — единственный свободный числовой параметр алгоритма (кроме стандартного $\alpha = 0.01$). Значение 0.85 задано как **начальная точка** для user study (Раздел 7). Предварительный sensitivity analysis (Раздел 7.1) на синтетических данных покажет, как меняется Accuracy($d^*$) при $\theta \in [0.70, 0.95]$. Если в диапазоне $\pm 0.05$ от оптимума деградация < 5% — порог считается **робастным** и не требует точной настройки.
 
 ---
 
-## 5. Теоретические гарантии
+## 5. Theoretical Guarantees
 
-### 5.1. Стратегия отбора: основной производственный алгоритм vs. оффлайн-эталон
+### 5.1. Selection Strategy: Runtime Engine vs. Gold Standard
 
-**Ключевое замечание о субмодулярности:** Взаимная Информация $f(S) = I(\tilde{Z}; \tilde{X}_S)$ **не является субмодулярной в общем случае** (Krause & Guestrin, 2005). При наличии синергии между признаками (synergistic features) $f$ может быть супермодулярной.
+**Submodularity Note:** Mutual Information $f(S) = I(\tilde{Z}; \tilde{X}_S)$ is **not submodular in general** due to potential feature synergy (Krause & Guestrin, 2005).
 
-**Основной алгоритм системы (Runtime Engine):** Алгоритм AVR (Раздел 4.4) задействует **жадный прямой отбор (Greedy Forward Selection)** для всех размерностей $M$. Это обеспечивает интерактивный отклик системы (< 1 сек) в реальном времени.
+**Runtime Engine:** The AVR algorithm employs greedy forward selection across all dimensions $M$, delivering sub-second response times in interactive environments.
 
-**Режим оффлайн-валидации (Gold Standard Benchmark):** Для исследовательского анализа при $M \leq 20$ система позволяет запустить **полный перебор** всех $\sum_{d=1}^{7} C_M^d \leq 77\,520$ комбинаций. Это служит эталоном для контроля точности жадного приближения.
+**Offline Benchmark:** For $M \leq 20$, the system provides an exhaustive brute-force search over all $\sum_{d=1}^{7} \binom{M}{d} \leq 77,520$ combinations as a gold-standard benchmark.
 
-Для жадного алгоритма действует гарантия качества, основанная на концепции **слабой субмодулярности** (weak submodularity, Krause et al., 2008). Пусть $\gamma \in (0, 1]$ — коэффициент субмодулярности функции $f$ (Elenberg et al., 2018). Тогда:
+Under **weak submodularity** with parameter $\gamma \in (0, 1]$ (Krause et al., 2008; Elenberg et al., 2018):
 
 $$f(S_{greedy}) \geq \left(1 - e^{-\gamma}\right) \cdot f(S^*_{OPT})$$
 
-**Практическая оценка $\gamma$:** На практике $\gamma$ оценивается по выборке подмножеств размера $d \in \{2, 3, 4\}$ как минимальное отношение маргинального прироста к среднему по подмножествам (Elenberg et al., 2018). В качестве консервативного значения по умолчанию рекомендуется $\gamma = 0.5$, что даёт гарантию $\approx 39\%$ от оптимума — что на практике значительно превышает случайный выбор. При полной независимости признаков (Naive Bayes) $\gamma \to 1$ и гарантия составляет $(1 - 1/e) \approx 63\%$.
+### 5.2. Computational Complexity
 
-### 5.2. Масштабируемость
-
-| $M$ (признаков) | Стратегия | Комбинаций | Время ($N \leq 10^4$) |
-|:---:|-----------|:---:|------|
-| ≤ 15 | Жадный (Runtime) / Полный перебор (Offline) | ≤ 6 435 | < 1 сек |
-| 16–20 | Жадный (Runtime) / Полный перебор (Offline) | ≤ 77 520 | ~ 1–5 сек |
-| 21–50 | Жадный + слабая субмодулярность | $O(M \cdot 7)$ | < 1 сек |
-| > 50 | Жадный + предварительный фильтр MI | $O(M \cdot 7)$ | < 1 сек |
-
-Каждый расчёт MI для одной комбинации — это операция $O(N)$ по сводной таблице частот (contingency table), где $N$ — число строк датасета. **Оговорка:** приведённые оценки времени соответствуют $N \leq 10^4$. Для $N > 10^5$ следует применять предварительно вычисленные маргинальные гистограммы с $O(k^d)$ обновлениями вместо $O(N)$ — это стандартная оптимизация, не влияющая на корректность алгоритма.
+| $M$ (Features) | Strategy | Combinations | Runtime ($N \leq 10^4$) |
+|:---:|---|:---:|:---:|
+| ≤ 15 | Greedy (Runtime) / Exhaustive (Offline) | ≤ 6,435 | < 1 sec |
+| 16–20 | Greedy (Runtime) / Exhaustive (Offline) | ≤ 77,520 | ~ 1–5 sec |
+| 21–50 | Greedy + Weak Submodularity | $O(M \cdot 7)$ | < 1 sec |
+| > 50 | Greedy + Pre-filtered MI | $O(M \cdot 7)$ | < 1 sec |
 
 ---
 
-## 6. Четыре сценария рендеринга (формализация)
+## 6. Four Rendering Scenarios
 
-### Сценарий А: Минимализм (2D/3D)
+### Scenario A: Minimalist (2D/3D)
+* **Trigger:** $d^* \leq 3$ (permutation test halted selection at 2nd or 3rd axis).
+* **Interpretation:** 95%+ of predictable variance is captured by 2–3 features. Additional channels yield no significant gain.
+* **Action:** Render spatial coordinates ($X, Y$ or $X, Y, Z$).
 
-* **Триггер:** $d^* \leq 3$ (пермутационный тест остановил отбор на 2-й или 3-й оси).
-* **Интерпретация:** 95%+ структуры объясняется 2–3 признаками. Добавление осей статистически не значимо.
-* **Действие:** Рендеринг только пространственных каналов ($X, Y$ или $X, Y, Z$).
+### Scenario B: Full Load (4D–7D)
+* **Trigger:** $d^* \in [4, 7]$ and $VIR \geq 0.85$.
+* **Interpretation:** Multidimensional structure. Each axis provides statistically significant predictive gain, capturing $\ge 85\%$ of total mutual information.
+* **Action:** Engage spatial + color + (optionally) temporal encoding channels.
 
-### Сценарий Б: Полная загрузка (4D–7D)
+### Scenario C: Warning (>7D)
+* **Trigger:** $d^* = 7$ and $VIR < 0.85$.
+* **Interpretation:** Top 7 visual axes lose >15% of significant target information due to display channel saturation.
+* **Action:** Display optimal 7D projection + mandatory XAI diagnostic banner highlighting $\mathcal{L}_{feat} = 1 - VIR$.
+* **XAI Message:** *"Feature Projection Loss = {𝓛_feat·100}%. Current visualization is incomplete: {M−7} significant features are unrendered."*
 
-* **Триггер:** $d^* \in [4, 7]$ и $VIR \geq 0.85$.
-* **Интерпретация:** Структура многомерна. Каждая ось статистически значимо улучшает модель. Выбранные 7 (или менее) осей захватывают ≥85% доступной информации.
-* **Действие:** Задействовать пространство + цвет + (опционально) время.
-
-### Сценарий В: Предупреждение (>7D)
-
-* **Триггер:** $d^* = 7$ и $VIR < 0.85$.
-* **Интерпретация:** Даже лучшие 7 осей теряют >15% информации. Полная структура требует больше каналов, чем доступно на дисплее.
-* **Действие:** Показать лучшую 7D-проекцию + обязательное предупреждение XAI с указанием $\mathcal{L}_{feat} = 1 - VIR$.
-* **XAI-сообщение:** *«Feature Projection Loss = {𝓛_feat·100}%. Текущая визуализация не полна. {M−7} значимых признаков не отображены.»*
-
-### Сценарий Г: Хаос (блокировка)
-
-* **Триггер:** $|F| = 0$ (ни один признак не прошёл пермутационный тест на значимость).
-* **Интерпретация:** Ни одна комбинация признаков не имеет статистически значимой связи с целевой переменной.
-* **Действие:** Блокировка рендеринга.
-* **XAI-сообщение:** *«В данных не обнаружена статистически значимая структура (p > {α} для всех признаков). Визуализация отменена для предотвращения ложных интерпретаций.»*
+### Scenario D: Chaos (Block / Abort)
+* **Trigger:** $|F| = 0$ (no feature passes marginal permutation test).
+* **Interpretation:** No statistically significant association with target variable.
+* **Action:** Block visualization to prevent spurious pattern synthesis (apophenia).
+* **XAI Message:** *"No statistically significant structure detected in data (p > {α} for all features). Visualization aborted to prevent misleading interpretations."*
 
 ---
 
-## 7. Протокол верификации (Evaluation Plan)
+## 7. Evaluation & Verification Protocol
 
-### 7.1. Количественная оценка (синтетические данные)
+### 7.1. Quantitative Benchmark (Synthetic & Benchmark Data)
+* **Ground Truth Benchmark:** Synthetic datasets with parameterized ground-truth dimensionality $d_{true} \in [2, 10]$ and controlled MI structures.
+* **Evaluation Metrics:**
+  * **Accuracy of $d^*$:** Exact match rate between $d^*$ and $d_{true}$.
+  * **Feature Recall@$d^*$:** Proportion of true causal features selected.
+  * **VIR Consistency:** Empirical correlation between predicted VIR and true joint MI.
 
-1. **Ground Truth Benchmark:** Генерация датасетов с известной истинной размерностью $d_{true}$ (от 2 до 10) и известной структурой MI.
-2. **Метрики:**
-   * **Accuracy of $d^*$:** Совпадение предсказанной размерности с $d_{true}$.
-   * **Feature Recall@$d^*$:** Доля правильно выбранных признаков.
-   * **VIR accuracy:** Корреляция предсказанного VIR с истинным $I_{true}$.
-
-### 7.2. Controlled User Study (минимум $n = 40$ участников)
-
-* **Задача:** Участники решают аналитические задачи (поиск кластеров, выбросов, тренда) на 4 условиях:
-  * **(A) VSF** — адаптивная размерность (наша система).
-  * **(B) Fixed-7D** — все 7 каналов всегда активны (заведомо слабый бейзлайн для проверки гипотезы блокировки).
-  * **(C) Expert Baseline** — эксперт по анализу данных выбирает оси вручную (человеческий золотой стандарт).
-  * **(D) Rank-by-Feature + mRMR (d=7)** — адаптивный метод с ручным выбором порога числа осей (ближайший алгоритмический конкурент).
-* **Измеряемые переменные:** Точность решений, время, когнитивная нагрузка (NASA-TLX), субъективная уверенность.
-* **Гипотеза:** $H_1$: VSF превосходит Fixed-7D и Rank-by-Feature по точности; $H_2$: VSF не уступает Expert Baseline при меньшей когнитивной нагрузке.
-
-> **Примечание:** Voyager 2 исключён из сравнения, поскольку является *рекомендательной системой*, выдающей множество вариантов визуализаций, что несопоставимо с задачей выбора единственного оптимального представления.
-
-### 7.3. Сравнение с Baseline-системами
-
-| Baseline | Метод отбора | Адаптивность $d^*$ |
-|----------|-------------|:---:|
-| Voyager 2 (Wongsuphasawat et al., 2017) | Перцептивные правила | Нет |
-| Scagnostics (Wilkinson et al., 2005) | Графовые метрики | Нет |
-| mRMR (Peng et al., 2005) | MI + редундантность | Нет |
-| Rank-by-Feature (Seo & Shneiderman, 2005) | Статистические метрики | Нет |
-| **VSF (наш)** | MI + пермутационный тест + PMD | **Да** |
+### 7.2. Controlled User Study ($n \ge 40$ participants)
+* **Conditions:**
+  * **(A) VSF** — Adaptive dimensionality (our system).
+  * **(B) Fixed-7D** — All 7 channels active regardless of data structure.
+  * **(C) Expert Baseline** — Manual axis selection by senior data scientists.
+  * **(D) Rank-by-Feature + mRMR (d=7)** — Fixed-threshold ranking baseline.
+* **Metrics:** Task completion accuracy, time-to-insight, NASA-TLX cognitive load score, and user confidence.
 
 ---
 
-## 8. Резюме научного вклада
+## 8. Summary of Scientific Contributions
 
-| # | Вклад | Тип | Новизна |
-|---|-------|-----|---------|
-| C1 | Visual Sufficiency Criterion — формальный критерий остановки на основе пермутационного теста для MVIG | Теоретический | Впервые применён для адаптивного выбора размерности визуализации |
-| C2 | Perceptually-Matched Discretization (PMD) — обоснование биннинга через пропускную способность визуальных каналов | Теоретический | Новая связь Rate-Distortion Theory ↔ Visualization |
-| C3 | Adaptive Visual Routing (AVR) — полный алгоритм маршрутизации 2D→7D с 4 сценариями | Алгоритмический | Ни одна существующая система не выбирает размерность адаптивно с MI-гарантией |
-| C4 | Projection Loss ($\mathcal{L}$) и VIR — формализованные метрики потери информации при проецировании | Метрический | Объединяет SDR и визуализацию |
-| C5 | XAI-блокировка рендеринга при отсутствии значимой структуры | Системный | Единственная система, которая *отказывается* визуализировать |
-
----
-
-## 9. Открытые проблемы и ограничения (Open Challenges & Limitations)
-
-### 9.1. Упорядочивание категориальных осей и XAI-диагностика режимов (Cluster-Preserving Categorical Ordering & Diagnostic Modes)
-
-* **Проблема:** В текущей версии фреймворка нечисловые/дискретные категории проецируются на пространственные оси ($X, Y, Z$) с использованием лексикографического (алфавитного) порядка. Математический аппарат Взаимной Информации $I(\tilde{Z}; \tilde{X}_S)$ инвариантен к перестановке меток категорий, однако **человеческое визуальное восприятие строго опирается на закон пространственной близости (Gestalt Principle of Proximity)**. При случайном порядке категорий связные кластеры искусственно распадаются.
-
-* **Архитектурное решение: Двухрежимное адаптивное упорядочивание (Dual-Mode Ordering):**
-  Система предоставляет два взаимодополняющих режима расположения меток на осях с возможностью переключения:
-
-  | Режим | Назначение и цель | Математический метод | Исследовательский вопрос (User Intent) |
-  |-------|-------------------|----------------------|-----------------------------------------|
-  | **Кластерный** *(По умолчанию)* | Выявление групп категорий со сходным поведением | 1D Spectral Ordering / Correspondence Analysis на матрице $p(\tilde{Z} \mid X_j)$ | *«Какие категории ведут себя одинаково относительно Z?»* |
-  | **По влиянию (Трендовый)** *(Опция)* | Отображение глобального градиента/силы влияния на цель | Target-Conditioned Sort (по условному $\mathbb{E}[Z \mid X_j = c]$ или вероятности целевого класса) | *«Какие категории сильнее всего сдвигают целевой показатель Z?»* |
-
-* **XAI-диагностика расхождения порядков (Diagnostic Order Discrepancy):**
-  Сравнение кластерного порядка ($\pi_{cluster}$) и трендового порядка ($\pi_{impact}$) превращает визуализацию из пассивного графика в активный инструмент статистической диагностики. Степень согласованности измеряется через **ранговый коэффициент корреляции Кендалла ($\tau$)**:
-
-  $$\tau(X_j) = \frac{C - D}{\frac{1}{2} K_j (K_j - 1)}$$
-  где $C$ и $D$ — число конкордантных и дискордантных пар между перестановками $\pi_{cluster}$ и $\pi_{impact}$, а $K_j$ — число уникальных категорий признака $X_j$.
-
-* **Интерпретация для системы объяснимого ИИ (XAI Inference):**
-  1. **Высокая согласованность ($\tau \approx +1$):** Монотонная и предсказуемая связь. Влияние признака на цель носит однородный линейный/монотонный характер.
-  2. **Существенное расхождение ($\tau \ll 1$):** *Предупреждение о нелинейности/мультимодальности*. Средние значения $(\mathbb{E}[Z \mid X_j])$ обманчивы; внутри категорий присутствуют скрытые подгруппы или бимодальные распределения.
-  3. **Локальные инверсии рангов:** Обнаружение скрытых взаимодействий (интеракций) с другими осями подмножества $S^*$ либо аномальных подвыборок.
-  
-  > *Принцип VSF XAI: система не просто переключает координаты, а формирует пояснительное сообщение о природе различий между кластерной структурой и монотонным трендом.*
-
-
-### 9.2. Коллизии дискретных координат, сокрытие плотности и поддержка разреженности (Discrete Overplotting & Sparsity-Preserving Support)
-
-* **Проблема:** Квантование (PMD) и дискретная природа признаков порождают две противоположные перцептивные ловушки:
-  1. **Скрытие плотности (Overplotting):** Множество объектов $\mathbf{x}_i$ проецируются в одну и ту же дискретную ячейку $(x_k, y_m, z_l)$. Одиночная точка и массивный кластер из 1000 совпавших сэмплов визуально неотличимы.
-  2. **Перцептивное исчезновение редких данных (Sparsity Loss / "Zero vs. Epsilon"):** Одиночные точки (выбросы или редкие субклассы) легко растворяются на фоне пустого трехмерного пространства и пропускаются аналитиком при беглом взгляде (Visual Search Threshold).
-
-* **Архитектурное решение 1: Двухуровневое визуальное кодирование плотности (Occupancy & Density Layering)**
-  Система разделяет отображение *факта наличия данных* и *массы данных*:
-  
-  1. **Подсветка активного носителя данных (Occupancy / Support Shading):**
-     * Любая дискретная ячейка сетки, содержащая хотя бы один объект ($N_{cell} \ge 1$), получает легкую контрастную фоновую заливку (Subtle Cell Shading).
-     * Пустые комбинации признаков ($N_{cell} = 0$) остаются абсолютно прозрачными/фоновыми.
-     * **Эффект:** Аналитик мгновенно различает теоретическое пространство комбинаций от фактически наблюдаемого носителя распределения (Data Support Manifold). Одиночные редкие точки не теряются, так как их ячейка явно подсвечена.
-  
-  2. **Внутриячеечное кодирование массы (Intra-Cell Frequency Scaling):**
-     * Внутри подсвеченной ячейки размер маркера или радиус вокселя масштабируется суб-линейно:
-       $$\text{Radius} \propto \sqrt{\log(1 + N_{cell})}$$
-     * При наличии нескольких классов $Z$ внутри одной ячейки маркер трансформируется в микро-круговую диаграмму (Pie Glyph) или мульти-цветовой воксель, показывающий пропорции классов.
-
-* **Архитектурное решение 2: Координированная матрица попарных проекций (Linked SPLOM / Contingency Grid)**
-  * **Роль в системе:** Матрица попарных 2D-проекций (Scatter Plot Matrix / Contingency Grid) для выбранных осей $S^*$ выступает не заменой 3D-пространства (так как 3D необходимо для выявления синергии $I(Z; X_1, X_2, X_3)$), а **синхронизированным вспомогательным представлением (Coordinated Linked View)**.
-  * **Функция:** Позволяет мгновенно устранить геометрическую окклюзию (перекрытие в ракурсе 3D-камеры) и точно исследовать двумерные проекции с подсветкой занятых ячеек в виде 2D-тепловой матрицы сопряженности.
+| # | Contribution | Type | Novelty |
+|---|---|---|---|
+| C1 | Visual Sufficiency Criterion — formal permutation stopping rule for MVIG | Theoretical | First application to adaptive visual dimensionality selection |
+| C2 | Perceptually-Matched Discretization (PMD) — channel capacity binning | Theoretical | New bridge between Rate-Distortion Theory and Visualization |
+| C3 | Adaptive Visual Routing (AVR) — 2D→7D routing engine across 4 scenarios | Algorithmic | First engine with information-theoretic guarantees |
+| C4 | Projection Loss ($\mathcal{L}$) & VIR — standardized visual loss metrics | Metric | Unifies SDR with visual analytics |
+| C5 | XAI Chaos Blocking — automated refusal to render spurious noise | Systemic | First visual framework that explicitly refuses misleading plots |
 
 ---
 
-## Ключевые ссылки
+## 9. Open Challenges & Architectural Solutions
+
+### 9.1. Cluster-Preserving Categorical Ordering & Diagnostic Modes
+* **Challenge:** Categorical variables have arbitrary default orderings (e.g. alphabetical), which may visually shatter coherent clusters.
+* **Dual-Mode Solution:**
+  1. **Cluster Mode (Default):** 1D Spectral Ordering on $p(\tilde{Z} \mid X_j)$ to group categories with similar outcome distributions.
+  2. **Target-Conditioned Trend Mode:** Sorted by conditional expectation $\mathbb{E}[Z \mid X_j = c]$.
+* **Diagnostic Order Discrepancy (Kendall's $\tau$):** Measures divergence between cluster and trend orderings to automatically flag multimodal or non-linear effects in XAI tooltips.
+
+### 9.2. Discrete Overplotting & Sparsity-Preserving Support
+* **Challenge:** Overplotting hides multi-sample densities in discrete grid coordinates, while isolated outliers risk visual disappearance.
+* **Solution 1 (Occupancy Shading):** Subtle background cell shading for any cell with $N_{cell} \ge 1$, preserving empty cells ($N_{cell} = 0$) as transparent.
+* **Solution 2 (Sub-linear Glyph Scaling):** Glyphs scale by $\sqrt{\log(1 + N_{cell})}$, preventing screen occlusion while maintaining perceptual distinguishability.
+* **Solution 3 (Linked Contingency Views):** Synchronized 2D cross-tabular slices provide immediate occlusion-free drill-downs.
+
+---
+
+## References
 
 * Shannon, C. E. (1948). A Mathematical Theory of Communication. *Bell System Technical Journal.*
 * Miller, G. A. (1956). The Magical Number Seven, Plus or Minus Two. *Psychological Review.*
