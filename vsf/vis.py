@@ -9,18 +9,120 @@ from typing import Dict, List, Optional, Union
 from .avr import AVRResult
 
 
+# Human-readable Russian translations for UCI Mushroom Dataset
+MUSHROOM_TRANSLATIONS = {
+    "columns": {
+        "class": "Съедобность",
+        "cap-shape": "Форма шляпки",
+        "cap-surface": "Поверхность шляпки",
+        "cap-color": "Цвет шляпки",
+        "bruises": "Пятна/синяки",
+        "odor": "Запах",
+        "gill-attachment": "Прикрепление пластинок",
+        "gill-spacing": "Частота пластинок",
+        "gill-size": "Размер пластинок",
+        "gill-color": "Цвет пластинок",
+        "stalk-shape": "Форма ножки",
+        "stalk-root": "Корень ножки",
+        "stalk-surface-above-ring": "Ножка выше кольца",
+        "stalk-surface-below-ring": "Ножка ниже кольца",
+        "stalk-color-above-ring": "Цвет выше кольца",
+        "stalk-color-below-ring": "Цвет ниже кольца",
+        "veil-type": "Тип покрывала",
+        "veil-color": "Цвет покрывала",
+        "ring-number": "Число колец",
+        "ring-type": "Тип кольца",
+        "spore-print-color": "Цвет спорового порошка",
+        "population": "Популяция",
+        "habitat": "Среда обитания",
+    },
+    "values": {
+        "class": {"e": "Съедобный (e)", "p": "Ядовитый (p)"},
+        "odor": {
+            "a": "миндаль", "l": "анис", "c": "креозот", "y": "рыбный", 
+            "f": "гнилостный/вонь", "m": "мускус", "n": "без запаха", "p": "едкий", "s": "пряный"
+        },
+        "spore-print-color": {
+            "k": "черный", "n": "коричневый", "b": "бурый", "h": "шоколадный", 
+            "r": "зеленый", "o": "оранжевый", "u": "пурпурный", "w": "белый", "y": "желтый"
+        },
+        "habitat": {
+            "g": "трава", "l": "листва", "m": "луг", "p": "тропинки", 
+            "u": "город/парк", "w": "пустыри", "d": "лес"
+        },
+        "cap-color": {
+            "n": "коричневый", "b": "бурый", "c": "корица", "g": "серый", "r": "зеленый",
+            "p": "розовый", "u": "пурпурный", "e": "красный", "w": "белый", "y": "желтый"
+        },
+        "cap-shape": {
+            "b": "колокол", "c": "конус", "x": "выпуклая", "f": "плоская", "k": "бугорчатая", "s": "вогнутая"
+        },
+        "bruises": {"t": "есть синяки", "f": "нет синяков"},
+        "population": {
+            "a": "обильная", "c": "скученная", "n": "многочисленная", "s": "рассеянная", "v": "группами", "y": "одиночная"
+        },
+        "gill-color": {
+            "k": "черный", "n": "коричневый", "b": "бурый", "h": "шоколадный", "g": "серый",
+            "r": "зеленый", "o": "оранжевый", "p": "розовый", "u": "пурпурный", "e": "красный", "w": "белый", "y": "желтый"
+        },
+    }
+}
+
+
+def humanize_val(col_name: str, val: str) -> str:
+    """Translates raw category code to human readable name if available."""
+    val_str = str(val)
+    if col_name in MUSHROOM_TRANSLATIONS["values"]:
+        return MUSHROOM_TRANSLATIONS["values"][col_name].get(val_str, val_str)
+    if "class" in col_name and val_str in MUSHROOM_TRANSLATIONS["values"]["class"]:
+        return MUSHROOM_TRANSLATIONS["values"]["class"][val_str]
+    return val_str
+
+
+def humanize_col(col_name: str) -> str:
+    """Translates column name to human readable name."""
+    ru_name = MUSHROOM_TRANSLATIONS["columns"].get(col_name, col_name)
+    return f"{ru_name} ({col_name})" if ru_name != col_name else col_name
+
+
+def target_conditioned_sort(x_vals: np.ndarray, z_vals: np.ndarray, col_name: str = ""):
+    """
+    Sorts categories of x_vals based on their association with the target z_vals.
+    Returns:
+        x_num: Integer coordinates for x_vals
+        x_sorted_labels: List of human-readable category string labels in sorted order (for axis ticks)
+    """
+    _, z_idx = np.unique(z_vals, return_inverse=True)
+    x_unique = np.unique(x_vals)
+    
+    scores = []
+    for c in x_unique:
+        mask = (x_vals == c)
+        score = np.mean(z_idx[mask]) if np.any(mask) else 0
+        scores.append(score)
+        
+    sorted_indices = np.argsort(scores)
+    x_sorted = x_unique[sorted_indices]
+    
+    x_to_num = {val: i for i, val in enumerate(x_sorted)}
+    x_num = np.array([x_to_num[val] for val in x_vals])
+    
+    # Translate tick labels into human readable Russian words
+    x_labels = [humanize_val(col_name, v) for v in x_sorted]
+    return x_num, x_labels
+
+
 def prepare_visualization_payload(
     result: AVRResult,
     X_matrix: np.ndarray,
     Z_target: np.ndarray,
     feature_names: Optional[List[str]] = None,
-    max_display_samples: int = 2000,
+    max_display_samples: int = 10000,
+    target_name: str = "class",
 ) -> Dict:
     """
-    Prepares a structured visualization payload from AVRResult, X matrix, and Z target.
-    
-    Returns:
-        Dict containing 3D coordinates, color encoding, hover metadata, and VSF HUD metrics.
+    Prepares a structured visualization payload with human readable Russian axis titles,
+    category labels, color mappings, and cluster occupancy density counts.
     """
     X_arr = np.asarray(X_matrix)
     Z_arr = np.asarray(Z_target).ravel()
@@ -29,7 +131,6 @@ def prepare_visualization_payload(
     if feature_names is None:
         feature_names = [f"Feature_{j+1}" for j in range(n_features)]
 
-    # Subsample if dataset > max_display_samples for smooth WebGL rendering
     if n_samples > max_display_samples:
         indices = np.random.default_rng(42).choice(n_samples, size=max_display_samples, replace=False)
         X_sub = X_arr[indices]
@@ -42,50 +143,163 @@ def prepare_visualization_payload(
     selected_idx = result.selected_features
     d_star = result.d_star
 
-    # Extract 3D Axes (X, Y, Z coordinates)
     x_col_idx = selected_idx[0] if len(selected_idx) > 0 else 0
     y_col_idx = selected_idx[1] if len(selected_idx) > 1 else (1 if n_features > 1 else 0)
     z_col_idx = selected_idx[2] if len(selected_idx) > 2 else (2 if n_features > 2 else 0)
+
+    x_name = feature_names[x_col_idx]
+    y_name = feature_names[y_col_idx]
+    z_name = feature_names[z_col_idx]
 
     x_vals = X_sub[:, x_col_idx]
     y_vals = X_sub[:, y_col_idx]
     z_vals = X_sub[:, z_col_idx]
 
-    # Convert non-numeric / string arrays to string representations for hover
-    x_str = [str(val) for val in x_vals]
-    y_str = [str(val) for val in y_vals]
-    z_str = [str(val) for val in z_vals]
-    z_target_str = [str(val) for val in Z_sub]
+    # Human-readable value strings
+    x_human = [humanize_val(x_name, v) for v in x_vals]
+    y_human = [humanize_val(y_name, v) for v in y_vals]
+    z_human = [humanize_val(z_name, v) for v in z_vals]
+    z_target_human = [humanize_val(target_name, v) for v in Z_sub]
 
-    # Discrete numeric mapping for 3D plot positioning
-    _, x_num = np.unique(x_vals, return_inverse=True)
-    _, y_num = np.unique(y_vals, return_inverse=True)
-    _, z_num = np.unique(z_vals, return_inverse=True)
-    _, color_num = np.unique(Z_sub, return_inverse=True)
+    # Target-Conditioned Categorical Ordering
+    x_num, x_ticks = target_conditioned_sort(x_vals, Z_sub, col_name=x_name)
+    y_num, y_ticks = target_conditioned_sort(y_vals, Z_sub, col_name=y_name)
+    z_num, z_ticks = target_conditioned_sort(z_vals, Z_sub, col_name=z_name)
+    
+    unique_targets, color_num = np.unique(Z_sub, return_inverse=True)
+    unique_target_labels = [humanize_val(target_name, t) for t in unique_targets]
+
+    # Group sample indices by cell for 3D Voxel Crystal Lattice Packing
+    from collections import defaultdict, Counter
+    cell_groups = defaultdict(list)
+    for idx_in_sub, (cx, cy, cz) in enumerate(zip(x_num, y_num, z_num)):
+        cell_groups[(cx, cy, cz)].append(idx_in_sub)
+
+    x_cube = np.zeros(len(x_num), dtype=float)
+    y_cube = np.zeros(len(y_num), dtype=float)
+    z_cube = np.zeros(len(z_num), dtype=float)
+
+    for (cx, cy, cz), cell_indices in cell_groups.items():
+        # Sort samples within cell by target class Z so colors form clean stratified layers in the cube
+        cell_indices.sort(key=lambda idx: color_num[idx])
+        N_cell = len(cell_indices)
+        
+        # Grid edge dimension S (cube root)
+        S = int(np.ceil(N_cell ** (1.0 / 3.0)))
+        if S <= 1:
+            step = 0.0
+        else:
+            # Clean spacing so individual spheres are clearly visible with gaps
+            step = min(0.052, 0.78 / max(S - 1, 1))
+
+        for rank, idx_in_sub in enumerate(cell_indices):
+            # Compute 3D lattice indices (i, j, k)
+            i = rank % S
+            j = (rank // S) % S
+            k = rank // (S * S)
+
+            off_x = (i - (S - 1) / 2.0) * step
+            off_y = (j - (S - 1) / 2.0) * step
+            off_z = (k - (S - 1) / 2.0) * step
+
+            x_cube[idx_in_sub] = np.round(cx + off_x, 4)
+            y_cube[idx_in_sub] = np.round(cy + off_y, 4)
+            z_cube[idx_in_sub] = np.round(cz + off_z, 4)
+
+    coords = list(zip(x_num, y_num, z_num))
+    cell_counts = Counter(coords)
+
+    target_display_name = humanize_col(target_name)
 
     hover_texts = [
-        f"<b>Sample #{idx}</b><br>"
-        f"Target ({'Class'}): {z_target_str[i]}<br>"
-        f"{feature_names[x_col_idx]}: {x_str[i]}<br>"
-        f"{feature_names[y_col_idx]}: {y_str[i]}<br>"
-        f"{feature_names[z_col_idx]}: {z_str[i]}"
+        f"<b>🍄 Образец #{idx+1}</b><br>"
+        f"🎯 <b>{target_display_name}:</b> {z_target_human[i]}<br>"
+        f"📍 <b>{humanize_col(x_name)}:</b> {x_human[i]}<br>"
+        f"📍 <b>{humanize_col(y_name)}:</b> {y_human[i]}<br>"
+        f"📍 <b>{humanize_col(z_name)}:</b> {z_human[i]}<br>"
+        f"📦 <b>Объем куба (плотность):</b> {cell_counts[(x_num[i], y_num[i], z_num[i])]} объектов в ячейке"
         for i, idx in enumerate(indices)
     ]
+
+    def build_grid(dim):
+        g_groups = defaultdict(list)
+        for idx_in_sub, (cx, cy, cz) in enumerate(zip(x_num, y_num, z_num)):
+            _cy = cy if dim >= 2 else -0.5
+            _cz = cz if dim >= 3 else -0.5
+            g_groups[(cx, _cy, _cz)].append(idx_in_sub)
+            
+        gx, gy, gz, gop, gpur, ghov = [], [], [], [], [], []
+        m_N = max([len(lst) for lst in g_groups.values()]) if g_groups else 1
+        
+        for (cx, cy, cz), c_idx in g_groups.items():
+            N_c = len(c_idx)
+            c_cols = [color_num[i] for i in c_idx]
+            pur = float(np.mean(c_cols)) / max(len(unique_targets) - 1, 1)
+            norm_d = 0.2 + 0.8 * (np.sqrt(N_c) / np.sqrt(m_N))
+            
+            gx.append(float(cx))
+            gy.append(float(cy))
+            gz.append(float(cz))
+            gop.append(float(norm_d))
+            gpur.append(float(pur))
+            
+            hx = x_human[c_idx[0]]
+            hy = y_human[c_idx[0]] if dim >= 2 else "Свернуто"
+            hz = z_human[c_idx[0]] if dim >= 3 else "Свернуто"
+            
+            
+            target_pos_label = unique_target_labels[-1] if unique_target_labels else "положительного класса"
+            
+            ghov.append(
+                f"<b>📍 Дискретный Центр ({dim}D)</b><br>"
+                f"🎯 <b>Доля {target_pos_label}:</b> {pur*100:.1f}%<br>"
+                f"📦 <b>Объектов:</b> {N_c} шт.<br>"
+                f"💠 <b>X:</b> {hx}<br>"
+                f"💠 <b>Y:</b> {hy}<br>"
+                f"💠 <b>Z:</b> {hz}"
+            )
+        return {"x": gx, "y": gy, "z": gz, "opacity": gop, "purity": gpur, "hover_text": ghov}
+
+    grids = {
+        "1": build_grid(1),
+        "2": build_grid(2),
+        "3": build_grid(3)
+    }
 
     return {
         "x": x_num.tolist(),
         "y": y_num.tolist(),
         "z": z_num.tolist(),
+        "x_jitter": x_cube.tolist(),
+        "y_jitter": y_cube.tolist(),
+        "z_jitter": z_cube.tolist(),
+        "grids": grids,
+        "grid_x": grids["3"]["x"],
+        "grid_y": grids["3"]["y"],
+        "grid_z": grids["3"]["z"],
+        "grid_opacity": grids["3"]["opacity"],
+        "grid_purity": grids["3"]["purity"],
+        "grid_hover_text": grids["3"]["hover_text"],
         "color": color_num.tolist(),
-        "target_labels": z_target_str,
+        "target_labels": z_target_human,
+        "unique_target_classes": unique_target_labels,
+        "raw_target_classes": [str(t) for t in unique_targets],
+        "target_name": target_display_name,
         "hover_text": hover_texts,
         "axis_names": {
-            "x": feature_names[x_col_idx],
-            "y": feature_names[y_col_idx],
-            "z": feature_names[z_col_idx],
+            "x": humanize_col(x_name),
+            "y": humanize_col(y_name),
+            "z": humanize_col(z_name),
         },
-        "all_feature_names": feature_names,
-        "selected_features": result.selected_feature_names,
+        "axis_ticks": {
+            "x": {"vals": list(range(len(x_ticks))), "text": x_ticks},
+            "y": {"vals": list(range(len(y_ticks))), "text": y_ticks},
+            "z": {"vals": list(range(len(z_ticks))), "text": z_ticks},
+        },
+        "total_samples": len(indices),
+        "all_feature_names": [humanize_col(fn) for fn in feature_names],
+        "raw_feature_names": feature_names,
+        "selected_features": [humanize_col(sfn) for sfn in result.selected_feature_names],
         "metrics": {
             "d_star": result.d_star,
             "scenario": result.scenario.value,
@@ -94,6 +308,12 @@ def prepare_visualization_payload(
             "l_feat": float(result.l_feat),
             "nmi_full": float(result.nmi_full),
             "xai_message": result.xai_message,
+            "history": [
+                {
+                    **h,
+                    "feature": humanize_col(h["feature"])
+                } for h in result.selection_history
+            ] if hasattr(result, 'selection_history') and result.selection_history else [],
         },
     }
 

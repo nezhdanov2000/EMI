@@ -34,6 +34,7 @@ class AVRResult:
     nmi_full: float
     xai_message: str
     submodularity_ratio: Optional[float] = None
+    selection_history: Optional[List[Dict]] = None
 
 
 class AVREngine:
@@ -129,6 +130,7 @@ class AVREngine:
                 l_feat=1.0,
                 nmi_full=0.0,
                 xai_message=xai_msg,
+                selection_history=[]
             )
 
         # -------------------------------------------------------------
@@ -139,8 +141,33 @@ class AVREngine:
             significant_features, key=lambda j: marginal_mis[j], reverse=True
         )
         
+        X_F_all = X_discrete[:, sorted_F]
+        i_F_all = mutual_information(Z_discrete, X_F_all)
+        selection_history = []
+        
         # Pick best first feature
         S = [sorted_F[0]]
+        i_1d = mutual_information(Z_discrete, X_discrete[:, S])
+        
+        alt_1d = []
+        for j in sorted_F[1:4]:
+            i_alt = marginal_mis[j]
+            alt_1d.append({
+                'feature': feature_names[j],
+                'mi': float(i_alt),
+                'vir': float(i_alt / i_F_all) if i_F_all > 1e-12 else 1.0,
+                'delta_mi': float(i_alt)
+            })
+            
+        selection_history.append({
+            'step': 1,
+            'feature': feature_names[S[0]],
+            'features_so_far': [feature_names[j] for j in S],
+            'mi': float(i_1d),
+            'vir': float(i_1d / i_F_all) if i_F_all > 1e-12 else 1.0,
+            'delta_mi': float(i_1d),
+            'alternatives': alt_1d
+        })
         
         # Greedy selection for d = 2 to min(max_d, |F|)
         max_steps = min(self.max_d, len(sorted_F))
@@ -152,6 +179,7 @@ class AVREngine:
                 
             best_candidate = None
             best_delta_i = -1.0
+            candidate_scores = []
             
             X_S_curr = X_discrete[:, S]
             
@@ -167,6 +195,7 @@ class AVREngine:
                 i_base = mutual_information(Z_discrete, X_S_curr)
                 i_comb = mutual_information(Z_discrete, x_comb)
                 delta_i = max(0.0, i_comb - i_base)
+                candidate_scores.append((j, delta_i, i_comb))
                 
                 if delta_i > best_delta_i:
                     best_delta_i = delta_i
@@ -191,6 +220,29 @@ class AVREngine:
                 
             S.append(best_candidate)
             
+            candidate_scores.sort(key=lambda x: x[1], reverse=True)
+            top_alts = [item for item in candidate_scores if item[0] != best_candidate][:3]
+            
+            alt_d = []
+            for j_alt, d_alt, i_alt in top_alts:
+                alt_d.append({
+                    'feature': feature_names[j_alt],
+                    'mi': float(i_alt),
+                    'vir': float(i_alt / i_F_all) if i_F_all > 1e-12 else 1.0,
+                    'delta_mi': float(d_alt)
+                })
+            
+            i_S_curr = mutual_information(Z_discrete, X_discrete[:, S])
+            selection_history.append({
+                'step': d,
+                'feature': feature_names[best_candidate],
+                'features_so_far': [feature_names[j] for j in S],
+                'mi': float(i_S_curr),
+                'vir': float(i_S_curr / i_F_all) if i_F_all > 1e-12 else 1.0,
+                'delta_mi': float(best_delta_i),
+                'alternatives': alt_d
+            })
+            
         d_star = len(S)
         selected_names = [feature_names[j] for j in S]
 
@@ -211,10 +263,8 @@ class AVREngine:
         # PHASE 3: Scenario Routing & Loss Calculation
         # -------------------------------------------------------------
         X_S_star = X_discrete[:, S]
-        X_F_all = X_discrete[:, sorted_F]
         
         i_S_star = mutual_information(Z_discrete, X_S_star)
-        i_F_all = mutual_information(Z_discrete, X_F_all)
         
         # Calculate VIR = I(Z; X_S*) / I(Z; X_F)
         if i_F_all > 1e-12:
@@ -264,4 +314,5 @@ class AVREngine:
             nmi_full=float(nmi_F_all),
             xai_message=xai_msg,
             submodularity_ratio=submod_ratio,
+            selection_history=selection_history
         )
