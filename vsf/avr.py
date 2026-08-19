@@ -117,8 +117,8 @@ class AVREngine:
         # Phase 1 Guard: If no features pass noise filter -> Scenario D (Chaos)
         if len(significant_features) == 0:
             xai_msg = (
-                f"No statistically significant structure detected in data "
-                f"(p > {self.alpha} for all features). Visualization aborted."
+                f"В данных не обнаружена статистически значимая структура "
+                f"(p > {self.alpha} для всех признаков). Визуализация отменена."
             )
             return AVRResult(
                 d_star=0,
@@ -283,25 +283,25 @@ class AVREngine:
         if d_star <= 3:
             scenario = Scenario.SCENARIO_A
             xai_msg = (
-                f"SCENARIO A (Minimalist): Selected d* = {d_star} visual axes. "
-                f"Data structure is explained by 2-3 features without loss of precision."
+                f"СЦЕНАРИЙ А (Минимализм): Выбрано d* = {d_star} осей. "
+                f"Структура данных объясняется 2-3 признаками без потери точности."
             )
         elif 4 <= d_star <= 7 and vir >= self.vir_threshold:
             scenario = Scenario.SCENARIO_B
             xai_msg = (
-                f"SCENARIO B (Full Load): Selected d* = {d_star} visual axes. "
-                f"VIR = {vir*100:.1f}% (>= {self.vir_threshold*100:.0f}%). High-dimensional structure is fully rendered."
+                f"СЦЕНАРИЙ Б (Полная загрузка): Выбрано d* = {d_star} осей. "
+                f"VIR = {vir*100:.1f}% (>= {self.vir_threshold*100:.0f}%). Многомерная структура полностью отображена."
             )
         elif d_star == 7 and vir < self.vir_threshold:
             scenario = Scenario.SCENARIO_C
             xai_msg = (
-                f"SCENARIO C (Warning: >7D): Feature Projection Loss = {l_feat*100:.1f}%. "
-                f"Current visualization is incomplete: {n_features - 7} significant features are unrendered."
+                f"СЦЕНАРИЙ В (Warning: >7D): Feature Projection Loss = {l_feat*100:.1f}%. "
+                f"Текущая визуализация не полна. {n_features - 7} значимых признаков не отображены."
             )
         else:
             # Fallback for boundary combinations
             scenario = Scenario.SCENARIO_B if vir >= self.vir_threshold else Scenario.SCENARIO_C
-            xai_msg = f"Routing completed: d* = {d_star}, VIR = {vir*100:.1f}%."
+            xai_msg = f"Маршрутизация выполнена: d* = {d_star}, VIR = {vir*100:.1f}%."
 
         return AVRResult(
             d_star=d_star,

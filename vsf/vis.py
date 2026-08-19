@@ -9,61 +9,61 @@ from typing import Dict, List, Optional, Union
 from .avr import AVRResult
 
 
-# Human-readable English translations for UCI Mushroom Dataset
+# Human-readable Russian translations for UCI Mushroom Dataset
 MUSHROOM_TRANSLATIONS = {
     "columns": {
-        "class": "Edibility",
-        "cap-shape": "Cap Shape",
-        "cap-surface": "Cap Surface",
-        "cap-color": "Cap Color",
-        "bruises": "Bruises",
-        "odor": "Odor",
-        "gill-attachment": "Gill Attachment",
-        "gill-spacing": "Gill Spacing",
-        "gill-size": "Gill Size",
-        "gill-color": "Gill Color",
-        "stalk-shape": "Stalk Shape",
-        "stalk-root": "Stalk Root",
-        "stalk-surface-above-ring": "Stalk Surface Above Ring",
-        "stalk-surface-below-ring": "Stalk Surface Below Ring",
-        "stalk-color-above-ring": "Stalk Color Above Ring",
-        "stalk-color-below-ring": "Stalk Color Below Ring",
-        "veil-type": "Veil Type",
-        "veil-color": "Veil Color",
-        "ring-number": "Ring Number",
-        "ring-type": "Ring Type",
-        "spore-print-color": "Spore Print Color",
-        "population": "Population",
-        "habitat": "Habitat",
+        "class": "Съедобность",
+        "cap-shape": "Форма шляпки",
+        "cap-surface": "Поверхность шляпки",
+        "cap-color": "Цвет шляпки",
+        "bruises": "Пятна/синяки",
+        "odor": "Запах",
+        "gill-attachment": "Прикрепление пластинок",
+        "gill-spacing": "Частота пластинок",
+        "gill-size": "Размер пластинок",
+        "gill-color": "Цвет пластинок",
+        "stalk-shape": "Форма ножки",
+        "stalk-root": "Корень ножки",
+        "stalk-surface-above-ring": "Ножка выше кольца",
+        "stalk-surface-below-ring": "Ножка ниже кольца",
+        "stalk-color-above-ring": "Цвет выше кольца",
+        "stalk-color-below-ring": "Цвет ниже кольца",
+        "veil-type": "Тип покрывала",
+        "veil-color": "Цвет покрывала",
+        "ring-number": "Число колец",
+        "ring-type": "Тип кольца",
+        "spore-print-color": "Цвет спорового порошка",
+        "population": "Популяция",
+        "habitat": "Среда обитания",
     },
     "values": {
-        "class": {"e": "Edible (e)", "p": "Poisonous (p)"},
+        "class": {"e": "Съедобный (e)", "p": "Ядовитый (p)"},
         "odor": {
-            "a": "almond", "l": "anise", "c": "creosote", "y": "fishy", 
-            "f": "foul", "m": "musty", "n": "none", "p": "pungent", "s": "spicy"
+            "a": "миндаль", "l": "анис", "c": "креозот", "y": "рыбный", 
+            "f": "гнилостный/вонь", "m": "мускус", "n": "без запаха", "p": "едкий", "s": "пряный"
         },
         "spore-print-color": {
-            "k": "black", "n": "brown", "b": "buff", "h": "chocolate", 
-            "r": "green", "o": "orange", "u": "purple", "w": "white", "y": "yellow"
+            "k": "черный", "n": "коричневый", "b": "бурый", "h": "шоколадный", 
+            "r": "зеленый", "o": "оранжевый", "u": "пурпурный", "w": "белый", "y": "желтый"
         },
         "habitat": {
-            "g": "grasses", "l": "leaves", "m": "meadows", "p": "paths", 
-            "u": "urban", "w": "waste", "d": "woods"
+            "g": "трава", "l": "листва", "m": "луг", "p": "тропинки", 
+            "u": "город/парк", "w": "пустыри", "d": "лес"
         },
         "cap-color": {
-            "n": "brown", "b": "buff", "c": "cinnamon", "g": "gray", "r": "green",
-            "p": "pink", "u": "purple", "e": "red", "w": "white", "y": "yellow"
+            "n": "коричневый", "b": "бурый", "c": "корица", "g": "серый", "r": "зеленый",
+            "p": "розовый", "u": "пурпурный", "e": "красный", "w": "белый", "y": "желтый"
         },
         "cap-shape": {
-            "b": "bell", "c": "conical", "x": "convex", "f": "flat", "k": "knobbed", "s": "sunken"
+            "b": "колокол", "c": "конус", "x": "выпуклая", "f": "плоская", "k": "бугорчатая", "s": "вогнутая"
         },
-        "bruises": {"t": "bruises", "f": "no bruises"},
+        "bruises": {"t": "есть синяки", "f": "нет синяков"},
         "population": {
-            "a": "abundant", "c": "clustered", "n": "numerous", "s": "scattered", "v": "several", "y": "solitary"
+            "a": "обильная", "c": "скученная", "n": "многочисленная", "s": "рассеянная", "v": "группами", "y": "одиночная"
         },
         "gill-color": {
-            "k": "black", "n": "brown", "b": "buff", "h": "chocolate", "g": "gray",
-            "r": "green", "o": "orange", "p": "pink", "u": "purple", "e": "red", "w": "white", "y": "yellow"
+            "k": "черный", "n": "коричневый", "b": "бурый", "h": "шоколадный", "g": "серый",
+            "r": "зеленый", "o": "оранжевый", "p": "розовый", "u": "пурпурный", "e": "красный", "w": "белый", "y": "желтый"
         },
     }
 }
@@ -80,9 +80,9 @@ def humanize_val(col_name: str, val: str) -> str:
 
 
 def humanize_col(col_name: str) -> str:
-    """Translates column name to human readable English name."""
-    en_name = MUSHROOM_TRANSLATIONS["columns"].get(col_name, col_name)
-    return f"{en_name} ({col_name})" if en_name != col_name else col_name
+    """Translates column name to human readable name."""
+    ru_name = MUSHROOM_TRANSLATIONS["columns"].get(col_name, col_name)
+    return f"{ru_name} ({col_name})" if ru_name != col_name else col_name
 
 
 def target_conditioned_sort(x_vals: np.ndarray, z_vals: np.ndarray, col_name: str = ""):
@@ -212,12 +212,12 @@ def prepare_visualization_payload(
     target_display_name = humanize_col(target_name)
 
     hover_texts = [
-        f"<b>🍄 Sample #{idx+1}</b><br>"
+        f"<b>🍄 Образец #{idx+1}</b><br>"
         f"🎯 <b>{target_display_name}:</b> {z_target_human[i]}<br>"
         f"📍 <b>{humanize_col(x_name)}:</b> {x_human[i]}<br>"
         f"📍 <b>{humanize_col(y_name)}:</b> {y_human[i]}<br>"
         f"📍 <b>{humanize_col(z_name)}:</b> {z_human[i]}<br>"
-        f"📦 <b>Cell Density:</b> {cell_counts[(x_num[i], y_num[i], z_num[i])]} objects in cell"
+        f"📦 <b>Объем куба (плотность):</b> {cell_counts[(x_num[i], y_num[i], z_num[i])]} объектов в ячейке"
         for i, idx in enumerate(indices)
     ]
 
@@ -244,15 +244,16 @@ def prepare_visualization_payload(
             gpur.append(float(pur))
             
             hx = x_human[c_idx[0]]
-            hy = y_human[c_idx[0]] if dim >= 2 else "Collapsed"
-            hz = z_human[c_idx[0]] if dim >= 3 else "Collapsed"
+            hy = y_human[c_idx[0]] if dim >= 2 else "Свернуто"
+            hz = z_human[c_idx[0]] if dim >= 3 else "Свернуто"
             
-            target_pos_label = unique_target_labels[-1] if unique_target_labels else "Positive Class"
+            
+            target_pos_label = unique_target_labels[-1] if unique_target_labels else "положительного класса"
             
             ghov.append(
-                f"<b>📍 Discrete Center ({dim}D)</b><br>"
-                f"🎯 <b>{target_pos_label} Ratio:</b> {pur*100:.1f}%<br>"
-                f"📦 <b>Count:</b> {N_c} pcs<br>"
+                f"<b>📍 Дискретный Центр ({dim}D)</b><br>"
+                f"🎯 <b>Доля {target_pos_label}:</b> {pur*100:.1f}%<br>"
+                f"📦 <b>Объектов:</b> {N_c} шт.<br>"
                 f"💠 <b>X:</b> {hx}<br>"
                 f"💠 <b>Y:</b> {hy}<br>"
                 f"💠 <b>Z:</b> {hz}"
