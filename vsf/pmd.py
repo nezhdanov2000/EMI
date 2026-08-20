@@ -4,14 +4,14 @@ Implements rate-distortion optimal quantization, visual channel limits,
 and grid capacity protection against Miller-Madow bias.
 """
 
-import numpy as np
 import warnings
-from typing import Dict, List, Optional, Tuple, Union
+
+import numpy as np
+
 from .math import normalized_mutual_information
 
-
 # 7 Visual Channels Limits (Lv) from VSF Spec Table Section 2.2
-CHANNEL_LIMITS: Dict[str, int] = {
+CHANNEL_LIMITS: dict[str, int] = {
     "position_x": 500,
     "position_y": 500,
     "position_z": 20,
@@ -49,11 +49,11 @@ def freedman_diaconis_bins(X: np.ndarray, max_bins: int = 200) -> int:
 
 def discretize_feature(
     X: np.ndarray,
-    n_bins: Optional[int] = None,
+    n_bins: int | None = None,
     channel_name: str = "default",
     strategy: str = "quantile",
-    user_bins: Optional[List[float]] = None,
-) -> Tuple[np.ndarray, int, float]:
+    user_bins: list[float] | None = None,
+) -> tuple[np.ndarray, int, float]:
     """
     Discretizes a 1D continuous feature X into k discrete bins.
     
@@ -122,7 +122,7 @@ def discretize_feature(
     return discrete_x, k_actual, distortion
 
 
-def check_grid_capacity(bin_counts: List[int], n_samples: int) -> bool:
+def check_grid_capacity(bin_counts: list[int], n_samples: int) -> bool:
     """
     Checks if hypervolume grid capacity prod(k_j) <= N / 10 (Section 2.3).
     Returns True if grid capacity limit is satisfied, False if exceeded.
@@ -133,7 +133,7 @@ def check_grid_capacity(bin_counts: List[int], n_samples: int) -> bool:
 
 
 def adaptively_coarsen_bins(
-    discrete_features: np.ndarray, n_samples: int, target_max_cells: Optional[int] = None
+    discrete_features: np.ndarray, n_samples: int, target_max_cells: int | None = None
 ) -> np.ndarray:
     """
     If hypervolume grid prod(k_j) > N/10, adaptively coarsens discrete bin levels
@@ -182,9 +182,9 @@ def adaptively_coarsen_bins(
 
 def discretize_dataset(
     X_matrix: np.ndarray,
-    feature_channels: Optional[List[str]] = None,
+    feature_channels: list[str] | None = None,
     strategy: str = "quantile",
-) -> Tuple[np.ndarray, List[int], List[float]]:
+) -> tuple[np.ndarray, list[int], list[float]]:
     """
     Discretizes a full feature matrix X (N x M) into a discrete integer matrix.
     

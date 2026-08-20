@@ -120,7 +120,7 @@
         main {
             flex: 1;
             display: grid;
-            grid-template-columns: 360px 1fr;
+            grid-template-columns: 360px 1fr 340px;
             gap: 1.5rem;
             padding: 1.5rem 2rem;
             max-width: 1800px;
@@ -138,6 +138,29 @@
             overflow: hidden;
             box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
             position: relative;
+        }
+
+        .settings-sidebar {
+            background: var(--bg-panel);
+            backdrop-filter: blur(16px);
+            border: 1px solid var(--border-color);
+            border-radius: 20px;
+            padding: 1.5rem;
+            display: flex;
+            flex-direction: column;
+            gap: 1.5rem;
+            overflow-y: auto;
+            overflow-x: hidden;
+            height: calc(100vh - 8rem);
+        }
+
+        .settings-sidebar::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        .settings-sidebar::-webkit-scrollbar-thumb {
+            background: var(--border-color);
+            border-radius: 4px;
         }
 
         .viewport-toolbar {

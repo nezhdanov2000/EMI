@@ -4,10 +4,11 @@ Implements Marginal Permutation Test (Definition 3) and Conditional Stratified
 Permutation Test (Definition 4) for Mutual Information feature selection.
 """
 
+
 import numpy as np
-from typing import List, Optional, Tuple, Union
-from .math import mutual_information, shannon_entropy, joint_entropy
-from .backend import get_backend, as_backend, as_numpy
+
+from .backend import as_backend, as_numpy, get_backend
+from .math import joint_entropy, shannon_entropy
 
 
 def marginal_permutation_test(
@@ -15,8 +16,8 @@ def marginal_permutation_test(
     X_j: np.ndarray,
     n_permutations: int = 1000,
     alpha: float = 0.01,
-    random_state: Optional[int] = None,
-) -> Tuple[float, float, bool]:
+    random_state: int | None = None,
+) -> tuple[float, float, bool]:
     """
     Performs Marginal Permutation Test for H0: I(Z; X_j) = 0 (Definition 3).
     
@@ -92,8 +93,8 @@ def conditional_permutation_test(
     X_S: np.ndarray,
     n_permutations: int = 1000,
     alpha: float = 0.01,
-    random_state: Optional[int] = None,
-) -> Tuple[float, float, bool]:
+    random_state: int | None = None,
+) -> tuple[float, float, bool]:
     """
     Performs Conditional Stratified Permutation Test for H0: Delta I(j | S) = 0 (Definition 4).
     

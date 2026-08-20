@@ -3,8 +3,9 @@ VSF Benchmark Module: Synthetic Dataset Generator & Evaluation Protocol
 Implements ground truth synthetic dataset generation (Section 7.1) and quantitative evaluation.
 """
 
+
 import numpy as np
-from typing import Dict, List, Tuple, Union
+
 from .avr import AVREngine, AVRResult
 
 
@@ -14,7 +15,7 @@ def generate_synthetic_dataset(
     n_noise_features: int = 5,
     noise_level: float = 0.2,
     random_state: int = 42,
-) -> Tuple[np.ndarray, np.ndarray, List[int], List[str]]:
+) -> tuple[np.ndarray, np.ndarray, list[int], list[str]]:
     """
     Generates a synthetic dataset with known ground truth dimensionality d_true.
     
@@ -63,10 +64,10 @@ def generate_synthetic_dataset(
 def evaluate_vsf_accuracy(
     engine: AVREngine,
     n_runs: int = 10,
-    d_true_list: List[int] = [2, 3, 5, 7, 9],
+    d_true_list: list[int] = [2, 3, 5, 7, 9],
     n_samples: int = 1000,
     random_state: int = 42,
-) -> Dict[str, Union[float, Dict]]:
+) -> dict[str, float | dict]:
     """
     Evaluates VSF engine accuracy across multiple synthetic benchmark ground truths.
     

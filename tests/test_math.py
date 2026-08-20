@@ -3,12 +3,13 @@ Unit tests for vsf.math module using standard unittest
 """
 
 import unittest
+
 import numpy as np
+
 from vsf.math import (
-    shannon_entropy,
-    joint_entropy,
     mutual_information,
     normalized_mutual_information,
+    shannon_entropy,
 )
 
 

@@ -5,14 +5,14 @@ and rendering scenario triggers (Scenario A, B, C, D).
 """
 
 import itertools
-import numpy as np
 from dataclasses import dataclass
 from enum import Enum
-from typing import Dict, List, Optional, Tuple, Union
 
-from .math import mutual_information, normalized_mutual_information, shannon_entropy
-from .pmd import discretize_dataset, check_grid_capacity, adaptively_coarsen_bins
-from .permutation import marginal_permutation_test, conditional_permutation_test
+import numpy as np
+
+from .math import mutual_information, normalized_mutual_information
+from .permutation import conditional_permutation_test, marginal_permutation_test
+from .pmd import adaptively_coarsen_bins, check_grid_capacity, discretize_dataset
 
 
 class Scenario(str, Enum):
@@ -25,16 +25,16 @@ class Scenario(str, Enum):
 @dataclass
 class AVRResult:
     d_star: int
-    selected_features: List[int]
-    selected_feature_names: List[str]
+    selected_features: list[int]
+    selected_feature_names: list[str]
     scenario: Scenario
     vir: float
     l_target: float
     l_feat: float
     nmi_full: float
     xai_message: str
-    submodularity_ratio: Optional[float] = None
-    selection_history: Optional[List[Dict]] = None
+    submodularity_ratio: float | None = None
+    selection_history: list[dict] | None = None
 
 
 class AVREngine:
@@ -54,7 +54,7 @@ class AVREngine:
         vir_threshold: float = 0.85,
         max_d: int = 7,
         n_permutations: int = 1000,
-        random_state: Optional[int] = 42,
+        random_state: int | None = 42,
     ):
         self.alpha = alpha
         self.vir_threshold = vir_threshold
@@ -66,8 +66,8 @@ class AVREngine:
         self,
         X: np.ndarray,
         Z: np.ndarray,
-        feature_names: Optional[List[str]] = None,
-        feature_channels: Optional[List[str]] = None,
+        feature_names: list[str] | None = None,
+        feature_channels: list[str] | None = None,
         offline_brute_force: bool = False,
     ) -> AVRResult:
         """
@@ -253,8 +253,7 @@ class AVREngine:
             for d_search in range(1, min(self.max_d, n_features) + 1):
                 for comb in itertools.combinations(range(n_features), d_search):
                     mi_comb = mutual_information(Z_discrete, X_discrete[:, list(comb)])
-                    if mi_comb > best_opt_mi:
-                        best_opt_mi = mi_comb
+                    best_opt_mi = max(best_opt_mi, mi_comb)
             greedy_mi = mutual_information(Z_discrete, X_discrete[:, S])
             if best_opt_mi > 0:
                 submod_ratio = greedy_mi / best_opt_mi

@@ -228,7 +228,7 @@ def prepare_visualization_payload(
             _cz = cz if dim >= 3 else -0.5
             g_groups[(cx, _cy, _cz)].append(idx_in_sub)
             
-        gx, gy, gz, gop, gpur, ghov = [], [], [], [], [], []
+        gx, gy, gz, gop, gpur, gsz, ghov = [], [], [], [], [], [], []
         m_N = max([len(lst) for lst in g_groups.values()]) if g_groups else 1
         
         for (cx, cy, cz), c_idx in g_groups.items():
@@ -242,6 +242,7 @@ def prepare_visualization_payload(
             gz.append(float(cz))
             gop.append(float(norm_d))
             gpur.append(float(pur))
+            gsz.append(N_c)
             
             hx = x_human[c_idx[0]]
             hy = y_human[c_idx[0]] if dim >= 2 else "Свернуто"
@@ -258,7 +259,7 @@ def prepare_visualization_payload(
                 f"💠 <b>Y:</b> {hy}<br>"
                 f"💠 <b>Z:</b> {hz}"
             )
-        return {"x": gx, "y": gy, "z": gz, "opacity": gop, "purity": gpur, "hover_text": ghov}
+        return {"x": gx, "y": gy, "z": gz, "opacity": gop, "purity": gpur, "sizes": gsz, "hover_text": ghov}
 
     grids = {
         "1": build_grid(1),

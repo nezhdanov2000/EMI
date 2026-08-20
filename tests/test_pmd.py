@@ -3,13 +3,14 @@ Unit tests for vsf.pmd module
 """
 
 import unittest
+
 import numpy as np
+
 from vsf.pmd import (
     CHANNEL_LIMITS,
-    discretize_feature,
-    discretize_dataset,
-    check_grid_capacity,
     adaptively_coarsen_bins,
+    check_grid_capacity,
+    discretize_feature,
 )
 
 

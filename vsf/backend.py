@@ -10,15 +10,19 @@ logger = logging.getLogger(__name__)
 
 import importlib
 
-# Attempt to dynamically import cupy and verify CUDA device
+# Attempt to dynamically import cupy and verify CUDA device & runtime libs
 try:
     cp = importlib.import_module("cupy")
     if cp.cuda.runtime.getDeviceCount() > 0:
+        # Verify basic memory allocation and random generation work
+        _test = cp.zeros(2, dtype=cp.int32)
+        _ = cp.random.permutation(2)
         HAS_GPU = True
     else:
         HAS_GPU = False
         cp = None
-except Exception:
+except Exception as exc:
+    logger.debug("CuPy GPU backend initialization failed: %s. Using NumPy fallback.", exc)
     cp = None
     HAS_GPU = False
 

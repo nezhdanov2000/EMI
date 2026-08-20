@@ -3,9 +3,9 @@ Unit tests for vsf.benchmark module
 """
 
 import unittest
-import numpy as np
-from vsf.benchmark import generate_synthetic_dataset, evaluate_vsf_accuracy
+
 from vsf.avr import AVREngine
+from vsf.benchmark import evaluate_vsf_accuracy, generate_synthetic_dataset
 
 
 class TestBenchmarkModule(unittest.TestCase):

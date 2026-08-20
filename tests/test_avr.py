@@ -3,7 +3,9 @@ Unit tests for vsf.avr module
 """
 
 import unittest
+
 import numpy as np
+
 from vsf.avr import AVREngine, Scenario
 
 

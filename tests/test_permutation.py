@@ -3,8 +3,10 @@ Unit tests for vsf.permutation module
 """
 
 import unittest
+
 import numpy as np
-from vsf.permutation import marginal_permutation_test, conditional_permutation_test
+
+from vsf.permutation import conditional_permutation_test, marginal_permutation_test
 
 
 class TestPermutationModule(unittest.TestCase):

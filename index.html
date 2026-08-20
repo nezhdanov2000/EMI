@@ -16,7 +16,7 @@
     <!-- Plotly.js -->
     <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
 
-    <link rel="stylesheet" href="/static/css/styles.css">
+    <link rel="stylesheet" href="/static/css/styles.css?v=2">
 </head>
 
 <body>
@@ -82,119 +82,113 @@
             </div>
 
             <div class="viewport-toolbar">
-                <div style="display: flex; align-items: center; gap: 0.75rem;">
-                    <span style="font-size: 0.85rem; color: var(--text-muted);">Режим отображения:</span>
-                    <div class="view-toggle-group">
-                        <button class="toggle-btn active" id="btn-grid">📐 Дискретные центры</button>
+                <div style="display: flex; gap: 1.5rem; align-items: center; width: 100%;">
+                    <div style="font-weight: 600; font-size: 0.9rem; color: #f8fafc; border-right: 1px solid var(--border-color); padding-right: 1.5rem;">📊 Метрики VSF</div>
+                    <div style="display: flex; gap: 1.5rem; flex: 1;">
+                        <div style="display: flex; align-items: baseline; gap: 6px;">
+                            <span style="font-size: 0.75rem; color: var(--text-dim);">Оптимально осей (d*):</span>
+                            <strong id="val-dstar" style="color: var(--accent-purple); font-size: 1rem;">-</strong>
+                        </div>
+                        <div style="display: flex; align-items: baseline; gap: 6px;">
+                            <span style="font-size: 0.75rem; color: var(--text-dim);">VIR:</span>
+                            <strong id="val-vir" style="color: var(--green); font-size: 1rem;">-</strong>
+                        </div>
+                        <div style="display: flex; align-items: baseline; gap: 6px;">
+                            <span style="font-size: 0.75rem; color: var(--text-dim);">p-value:</span>
+                            <strong id="val-pval" style="color: var(--accent-cyan); font-size: 1rem;">-</strong>
+                        </div>
+                        <div style="display: flex; align-items: baseline; gap: 6px;">
+                            <span style="font-size: 0.75rem; color: var(--text-dim);">Target Loss:</span>
+                            <strong id="val-loss" style="color: var(--amber); font-size: 1rem;">-</strong>
+                        </div>
                     </div>
-                </div>
-                <div style="font-size: 0.85rem; color: var(--text-dim);">
-                    Объектов в выборке: <strong id="totalSamplesVal" style="color: #fff;">8,124</strong>
-                </div>
-            </div>
-
-            <!-- Dynamic Color Legend -->
-            <div class="color-legend-bar" id="legendContainer">
-                <div class="legend-title">🎨 Цвет точек (<span id="legendTargetName">Съедобность</span>):</div>
-                <div class="legend-items" id="legendItems">
-                    <!-- Populated dynamically -->
-                </div>
-            </div>
-
-            <!-- Bivariate 2D Legend -->
-            <div class="bivariate-legend" id="bivariateLegend">
-                <div style="font-size: 0.8rem; color: #cbd5e1; margin-bottom: 8px; font-weight: 600;">Карта Концентрации
-                </div>
-                <div class="bivariate-map-container">
-                    <div class="biv-label-y" id="bivLabelY">Ядовитые ➔</div>
-                    <div class="bivariate-map"></div>
-                    <div class="biv-label-x" id="bivLabelX">Съедобные ➔</div>
+                    <div style="font-size: 0.85rem; color: var(--text-dim);">
+                        Объектов в выборке: <strong id="totalSamplesVal" style="color: #fff;">8,124</strong>
+                    </div>
                 </div>
             </div>
 
             <div id="plot-container"></div>
-            
-            <!-- Floating HUD Overlay -->
-            <div class="hud-overlay">
-                <!-- Mathematical Metrics Card -->
-                <div class="hud-card glass">
-                    <div class="card-label">📊 Метрики Достаточности (VSF)</div>
-                    <div class="stats-grid">
-                        <div class="stat-box">
-                            <div class="stat-value" id="val-dstar" style="color: var(--accent-purple);">-</div>
-                            <div class="stat-sub">Оптимально осей (d*)</div>
-                        </div>
-                        <div class="stat-box">
-                            <div class="stat-value" id="val-vir" style="color: var(--green);">-</div>
-                            <div class="stat-sub">Visual Info Ratio (VIR)</div>
-                        </div>
-                        <div class="stat-box">
-                            <div class="stat-value" id="val-pval" style="color: var(--accent-cyan);">-</div>
-                            <div class="stat-sub">p-value</div>
-                        </div>
-                        <div class="stat-box">
-                            <div class="stat-value" id="val-loss" style="color: var(--amber);">-</div>
-                            <div class="stat-sub">Target Loss (L_target)</div>
-                        </div>
-                    </div>
+        </section>
+
+        <!-- Visual Settings Sidebar -->
+        <aside class="settings-sidebar">
+            <div style="font-size: 1.1rem; font-weight: 600; color: #f8fafc; padding-bottom: 0.5rem; border-bottom: 1px solid var(--border-color);">
+                Настройки отображения
+            </div>
+
+            <!-- Display Mode -->
+            <div>
+                <div style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 8px;">Отображение пространства</div>
+                <div class="view-toggle-group">
+                    <button class="toggle-btn active" id="btn-grid" style="width: 100%;">📐 Дискретные центры</button>
                 </div>
+            </div>
 
-                <!-- Selected Axes Card -->
-                <div class="hud-card glass">
-                    <div class="card-label">🔍 Отобранные оси пространства</div>
-                    <div class="axes-list" id="axesListContainer">
-                        <div style="color: var(--text-dim); font-size: 0.85rem;">Загрузка...</div>
+            <!-- Stroke Settings -->
+            <div>
+                <div style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 8px;">✨ Обводка (Фокус)</div>
+                <div style="display: flex; flex-direction: column; gap: 10px; font-size: 0.85rem; background: rgba(15, 23, 42, 0.4); padding: 12px; border-radius: 12px; border: 1px solid var(--border-color);">
+                    <div style="display: flex; gap: 10px; align-items: center;">
+                        <label style="color: var(--text-muted); width: 60px;">Цвет:</label>
+                        <input type="color" id="strokeColor" value="#ffffff" style="background: transparent; border: 1px solid rgba(255,255,255,0.2); border-radius: 4px; padding: 0; width: 40px; height: 24px; cursor: pointer;">
+                        <label style="color: var(--text-muted); margin-left: 10px;">Толщина:</label>
+                        <input type="number" id="strokeWidth" min="0" max="10" step="0.5" value="2" style="background: rgba(15, 23, 42, 0.8); color: white; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 2px 6px; width: 50px;">
                     </div>
-                </div>
 
-                <!-- Stroke Settings Card -->
-                <div class="hud-card glass">
-                    <div class="card-label">✨ Обводка (Фокус)</div>
-                    <div style="display: flex; flex-direction: column; gap: 10px; font-size: 0.85rem;">
-                        <div style="display: flex; gap: 10px; align-items: center;">
-                            <label style="color: var(--text-muted); width: 60px;">Цвет:</label>
-                            <input type="color" id="strokeColor" value="#ffffff" style="background: transparent; border: 1px solid rgba(255,255,255,0.2); border-radius: 4px; padding: 0; width: 40px; height: 24px; cursor: pointer;">
-                            <label style="color: var(--text-muted); margin-left: 10px;">Толщина:</label>
-                            <input type="number" id="strokeWidth" min="0" max="10" step="0.5" value="2" style="background: rgba(15, 23, 42, 0.8); color: white; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 2px 6px; width: 50px;">
-                        </div>
-
-                        <div style="display: flex; gap: 8px; margin-top: 4px;">
-                            <button id="btnStrokeModeRange" class="filter-btn run-btn" style="flex:1; padding: 4px; font-size: 0.75rem;" onclick="setStrokeMode('range')">Диапазон</button>
-                            <button id="btnStrokeModeExact" class="filter-btn add-btn" style="flex:1; padding: 4px; font-size: 0.75rem;" onclick="setStrokeMode('exact')">Точное зн.</button>
-                        </div>
-
-                        <div id="strokeRangeControls" style="display: flex; gap: 10px; align-items: center; margin-top: 4px;">
-                            <label style="color: var(--text-muted);">От:</label>
-                            <input type="number" id="strokeMin" min="0" max="100" value="90" style="background: rgba(15, 23, 42, 0.8); color: white; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 2px 6px; width: 50px;">
-                            <span style="color: var(--text-muted);">%</span>
-                            
-                            <label style="color: var(--text-muted); margin-left: 10px;">До:</label>
-                            <input type="number" id="strokeMax" min="0" max="100" value="100" style="background: rgba(15, 23, 42, 0.8); color: white; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 2px 6px; width: 50px;">
-                            <span style="color: var(--text-muted);">%</span>
-                        </div>
-
-                        <div id="strokeExactControls" style="display: none; align-items: center; gap: 10px; margin-top: 4px;">
-                            <label style="color: var(--text-muted);">Значение:</label>
-                            <select id="strokeExactVal" style="background: rgba(15, 23, 42, 0.8); color: white; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 2px 6px; flex: 1;">
-                                <option value="">-- Выберите --</option>
-                            </select>
-                        </div>
-
-                        <div style="display: flex; gap: 8px; margin-top: 8px;">
-                            <button class="filter-btn add-btn" style="flex:1; padding: 6px;" onclick="applyStroke(false)">Выкл (Сброс)</button>
-                            <button class="filter-btn run-btn" style="flex:1; padding: 6px;" onclick="applyStroke(true)">Применить</button>
-                        </div>
+                    <div style="display: flex; gap: 8px; margin-top: 4px;">
+                        <button id="btnStrokeModeRange" class="filter-btn run-btn" style="flex:1; padding: 4px; font-size: 0.75rem;" onclick="setStrokeMode('range')">Диапазон</button>
+                        <button id="btnStrokeModeExact" class="filter-btn add-btn" style="flex:1; padding: 4px; font-size: 0.75rem;" onclick="setStrokeMode('exact')">Точное зн.</button>
                     </div>
-                </div>
 
-                <!-- XAI Inference Banner -->
-                <div class="hud-card glass" style="padding: 0; background: transparent; border: none; box-shadow: none;">
-                    <div class="xai-banner" id="xaiBanner">
-                        Инициализация системы объяснимого ИИ (XAI)...
+                    <div id="strokeRangeControls" style="display: flex; gap: 10px; align-items: center; margin-top: 4px;">
+                        <label style="color: var(--text-muted);">От:</label>
+                        <input type="number" id="strokeMin" min="0" max="100" value="90" style="background: rgba(15, 23, 42, 0.8); color: white; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 2px 6px; width: 50px;">
+                        <span style="color: var(--text-muted);">%</span>
+                        
+                        <label style="color: var(--text-muted); margin-left: 10px;">До:</label>
+                        <input type="number" id="strokeMax" min="0" max="100" value="100" style="background: rgba(15, 23, 42, 0.8); color: white; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 2px 6px; width: 50px;">
+                        <span style="color: var(--text-muted);">%</span>
+                    </div>
+
+                    <div id="strokeExactControls" style="display: none; align-items: center; gap: 10px; margin-top: 4px;">
+                        <label style="color: var(--text-muted);">Значение:</label>
+                        <select id="strokeExactVal" style="background: rgba(15, 23, 42, 0.8); color: white; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 2px 6px; flex: 1;">
+                            <option value="">-- Выберите --</option>
+                        </select>
+                    </div>
+
+                    <div style="display: flex; gap: 8px; margin-top: 8px;">
+                        <button class="filter-btn add-btn" style="flex:1; padding: 6px;" onclick="applyStroke(false)">Выкл (Сброс)</button>
+                        <button class="filter-btn run-btn" style="flex:1; padding: 6px;" onclick="applyStroke(true)">Применить</button>
                     </div>
                 </div>
             </div>
-        </section>
+
+            <!-- Noise Reduction -->
+            <div>
+                <div style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 8px;">🧹 Шумоподавление (Выбросы)</div>
+                <div style="display: flex; flex-direction: column; gap: 10px; font-size: 0.85rem; background: rgba(15, 23, 42, 0.4); padding: 12px; border-radius: 12px; border: 1px solid var(--border-color);">
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <label style="color: var(--text-muted);">Порог (мин. объектов):</label>
+                        <input type="number" id="noiseThreshold" min="0" max="1000" value="5" style="background: rgba(15, 23, 42, 0.8); color: white; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 2px 6px; width: 60px;">
+                    </div>
+                    
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 4px;">
+                        <label style="color: var(--text-muted);">Прозрачность шума:</label>
+                        <input type="range" id="noiseOpacity" min="0" max="1" step="0.1" value="0.2" style="width: 100px;">
+                    </div>
+
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 4px;">
+                        <label style="color: var(--text-muted);">Форма выбросов:</label>
+                        <select id="noiseShape" style="background: rgba(15, 23, 42, 0.8); color: white; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 2px 6px;">
+                            <option value="circle-open">⭕ Пустотелое кольцо</option>
+                            <option value="x">❌ Крестик</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+        </aside>
     </main>
 
     <script src="/static/js/app.js"></script>

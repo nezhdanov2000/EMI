@@ -3,9 +3,10 @@ VSF Core Math Module: Information-Theoretic Calculations
 Implements Shannon Entropy, Joint Entropy, Discrete Mutual Information, and NMI.
 """
 
+
 import numpy as np
-from typing import Union, List, Tuple
-from .backend import get_backend, as_backend, as_numpy
+
+from .backend import as_backend, as_numpy, get_backend
 
 
 def _encode_to_int(arr) -> np.ndarray:
@@ -51,7 +52,7 @@ def _flatten_2d_to_1d(arr, xp):
     return arr
 
 
-def shannon_entropy(X: Union[np.ndarray, List]) -> float:
+def shannon_entropy(X: np.ndarray | list) -> float:
     """
     Computes Shannon Entropy H(X) in bits.
     
@@ -80,7 +81,7 @@ def shannon_entropy(X: Union[np.ndarray, List]) -> float:
     return float(-xp.sum(probs * xp.log2(probs)))
 
 
-def joint_entropy(X: Union[np.ndarray, List], Y: Union[np.ndarray, List]) -> float:
+def joint_entropy(X: np.ndarray | list, Y: np.ndarray | list) -> float:
     """
     Computes Joint Entropy H(X, Y) in bits.
     
@@ -102,7 +103,7 @@ def joint_entropy(X: Union[np.ndarray, List], Y: Union[np.ndarray, List]) -> flo
     return shannon_entropy(joint_arr)
 
 
-def mutual_information(Z: Union[np.ndarray, List], X_S: Union[np.ndarray, List]) -> float:
+def mutual_information(Z: np.ndarray | list, X_S: np.ndarray | list) -> float:
     """
     Computes Discrete Mutual Information I(Z; X_S) in bits.
     
@@ -116,7 +117,7 @@ def mutual_information(Z: Union[np.ndarray, List], X_S: Union[np.ndarray, List])
     return max(0.0, float(mi))  # Floating point accuracy guard
 
 
-def normalized_mutual_information(Z: Union[np.ndarray, List], X_S: Union[np.ndarray, List]) -> float:
+def normalized_mutual_information(Z: np.ndarray | list, X_S: np.ndarray | list) -> float:
     """
     Computes Normalized Mutual Information NMI(Z; X_S).
     
