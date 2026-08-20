@@ -61,7 +61,15 @@ class VSFRequestHandler(http.server.SimpleHTTPRequestHandler):
             for c in raw_cols:
                 ru_title = vsf.vis.MUSHROOM_TRANSLATIONS["columns"].get(c, c)
                 display_label = f"{ru_title} ({c})" if ru_title != c else c
-                ru_cols.append({"id": c, "label": display_label})
+                
+                unique_vals = df[c].dropna().unique().tolist()
+                criteria = []
+                for val in unique_vals:
+                    val_str = str(val)
+                    human_val = vsf.vis.humanize_val(c, val_str)
+                    criteria.append({"id": val_str, "label": human_val})
+                    
+                ru_cols.append({"id": c, "label": display_label, "criteria": criteria})
 
             self._send_json_response(200, {
                 "columns": ru_cols,
@@ -105,14 +113,43 @@ class VSFRequestHandler(http.server.SimpleHTTPRequestHandler):
             post_data = self.rfile.read(content_length)
             req = json.loads(post_data.decode("utf-8"))
 
+            composite_target = req.get("composite_target", None)
             target_col = req.get("target", "class")
+            criterion = req.get("criterion", None)
             df = pd.read_csv(DATASET_PATH)
 
-            if target_col not in df.columns:
-                target_col = "class"
+            drop_cols = []
+            if composite_target:
+                mask = pd.Series([True] * len(df))
+                display_parts = []
+                for cond in composite_target:
+                    col = cond.get("col")
+                    val = str(cond.get("val"))
+                    if col in df.columns:
+                        mask = mask & (df[col].astype(str) == val)
+                        human_col = vsf.vis.humanize_col(col)
+                        human_val = vsf.vis.humanize_val(col, val)
+                        display_parts.append(f"{human_col}={human_val}")
+                        drop_cols.append(col)
+                
+                Z = mask.astype(int).values
+                display_target_name = " AND ".join(display_parts) if display_parts else "Сложный фильтр"
+                X_df = df.drop(columns=drop_cols)
+            else:
+                if target_col not in df.columns:
+                    target_col = "class"
 
-            Z = df[target_col].values
-            X_df = df.drop(columns=[target_col])
+                if criterion is not None:
+                    Z = (df[target_col].astype(str) == str(criterion)).astype(int).values
+                    human_criterion = vsf.vis.humanize_val(target_col, str(criterion))
+                    human_col = vsf.vis.humanize_col(target_col)
+                    display_target_name = f"{human_col} = {human_criterion}"
+                else:
+                    Z = df[target_col].values
+                    display_target_name = target_col
+                
+                X_df = df.drop(columns=[target_col])
+
             feature_names = list(X_df.columns)
             X = X_df.values
 
@@ -121,7 +158,7 @@ class VSFRequestHandler(http.server.SimpleHTTPRequestHandler):
             )
             res = engine.fit(X, Z, feature_names=feature_names)
             payload = vsf.prepare_visualization_payload(
-                res, X, Z, feature_names=feature_names, target_name=target_col
+                res, X, Z, feature_names=feature_names, target_name=display_target_name
             )
 
             self._send_json_response(200, payload)
@@ -133,8 +170,8 @@ class VSFRequestHandler(http.server.SimpleHTTPRequestHandler):
 def main() -> None:
     """Entry point for the VSF Local Web Server."""
     os.chdir(os.path.dirname(__file__))
-    socketserver.TCPServer.allow_reuse_address = True
-    with socketserver.TCPServer(("", PORT), VSFRequestHandler) as httpd:
+    http.server.ThreadingHTTPServer.allow_reuse_address = True
+    with http.server.ThreadingHTTPServer(("", PORT), VSFRequestHandler) as httpd:
         print("=" * 70)
         print(f" VSF Interactive Visual Dashboard Server Running!")
         print(f" Local URL: http://localhost:{PORT}")

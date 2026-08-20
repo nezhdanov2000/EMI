@@ -1,5 +1,7 @@
 let currentPayload = null;
         let activeDimensionality = null;
+        let activeCritItem = null;
+        let allColumnsData = [];
 
         // Predefined color palettes for clear class separation
         const CLASS_COLORS = [
@@ -19,60 +21,110 @@ let currentPayload = null;
                 const colRes = await fetch('/api/columns');
                 if (colRes.ok) {
                     const colData = await colRes.json();
-                    populateColumns(colData.columns, colData.default_target);
+                    allColumnsData = colData.columns;
+                    populateCatalog(colData.columns, colData.default_target);
+                    // Add default first filter row
+                    addFilterRow();
                 }
-                await runAnalysis('class');
+                await runAnalysis('class', null);
             } catch (err) {
                 console.error("Initialization error:", err);
-                await runAnalysis('class');
+                await runAnalysis('class', null);
             }
         }
 
-        function populateColumns(cols, defaultTarget) {
-            const select = document.getElementById('targetSelect');
-            select.innerHTML = '';
-            cols.forEach(item => {
-                const opt = document.createElement('option');
-                const colId = typeof item === 'object' ? item.id : item;
-                const colLabel = typeof item === 'object' ? item.label : item;
-                opt.value = colId;
-                opt.innerText = colLabel;
-                if (colId === defaultTarget) opt.selected = true;
-                select.appendChild(opt);
+        function populateCatalog(cols, defaultTarget) {
+            const accordion = document.getElementById('catalogAccordion');
+            accordion.innerHTML = '';
+
+            cols.forEach(col => {
+                const charItem = document.createElement('div');
+                charItem.className = 'char-item';
+                
+                const charHeader = document.createElement('div');
+                charHeader.className = 'char-header';
+                charHeader.innerHTML = `
+                    <span class="char-title">${col.label}</span>
+                    <span class="char-icon">▶</span>
+                `;
+                
+                const charContent = document.createElement('div');
+                charContent.className = 'char-content';
+                
+                charHeader.onclick = () => {
+                    charItem.classList.toggle('open');
+                };
+
+                col.criteria.forEach(crit => {
+                    const critItem = document.createElement('div');
+                    critItem.className = 'crit-item';
+                    
+                    const critHeader = document.createElement('div');
+                    critHeader.className = 'crit-header';
+                    critHeader.innerHTML = `<span>${crit.label}</span>`;
+                    
+                    const critContent = document.createElement('div');
+                    critContent.className = 'crit-content';
+                    // Unique ID for the history container
+                    const historyListId = `history-${col.id}-${crit.id.replace(/[^a-zA-Z0-9]/g, '_')}`;
+                    critContent.id = historyListId;
+                    
+                    critHeader.onclick = async (e) => {
+                        e.stopPropagation();
+                        if (activeCritItem && activeCritItem !== critItem) {
+                            activeCritItem.classList.remove('active');
+                            activeCritItem.classList.remove('open');
+                        }
+                        
+                        const isActive = critItem.classList.contains('active');
+                        if (!isActive) {
+                            critItem.classList.add('active');
+                            activeCritItem = critItem;
+                            critContent.innerHTML = '<div style="color:var(--text-dim);font-size:0.8rem;padding:4px;">Анализ Парето-фронта...</div>';
+                            critItem.classList.add('open');
+                            await runAnalysis(col.id, crit.id, historyListId);
+                        } else {
+                            critItem.classList.toggle('open');
+                        }
+                    };
+                    
+                    critItem.appendChild(critHeader);
+                    critItem.appendChild(critContent);
+                    charContent.appendChild(critItem);
+                });
+
+                charItem.appendChild(charHeader);
+                charItem.appendChild(charContent);
+                accordion.appendChild(charItem);
+                
+                if (col.id === defaultTarget) {
+                    charItem.classList.add('open');
+                }
             });
         }
 
-        async function onTargetChange() {
-            const select = document.getElementById('targetSelect');
-            const target = select.value;
-            await runAnalysis(target);
-        }
-
-        async function runAnalysis(targetCol) {
+        async function runAnalysis(targetCol, criterion = null, targetHistoryContainerId = null) {
             showLoader(true);
             try {
+                const reqBody = { target: targetCol };
+                if (criterion !== null) {
+                    reqBody.criterion = criterion;
+                }
                 const response = await fetch('/api/analyze', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ target: targetCol })
+                    body: JSON.stringify(reqBody)
                 });
 
                 if (response.ok) {
                     currentPayload = await response.json();
                     activeDimensionality = null; // Reset on new analysis
-                    updateDashboard(currentPayload);
+                    updateDashboard(currentPayload, targetHistoryContainerId);
                 } else {
                     console.error("Error fetching analysis", response.status);
                 }
             } catch (err) {
-                console.warn("API POST failed, trying GET /api/mushroom:", err);
-                try {
-                    const fallbackRes = await fetch('/api/mushroom');
-                    currentPayload = await fallbackRes.json();
-                    updateDashboard(currentPayload);
-                } catch (fallbackErr) {
-                    console.error("Fallback error:", fallbackErr);
-                }
+                console.error("API POST failed:", err);
             } finally {
                 showLoader(false);
             }
@@ -85,7 +137,7 @@ let currentPayload = null;
         }
 
 
-        function updateDashboard(payload) {
+        function updateDashboard(payload, targetHistoryContainerId) {
             const m = payload.metrics;
             if (activeDimensionality === null) {
                 activeDimensionality = Math.min(m.d_star, 3) || 1;
@@ -93,86 +145,125 @@ let currentPayload = null;
 
             document.getElementById('val-dstar').innerText = `${m.d_star}D`;
             document.getElementById('val-vir').innerText = `${(m.vir * 100).toFixed(1)}%`;
-            document.getElementById('val-pval').innerText = 'p < 0.001 (α=0.01)';
+            document.getElementById('val-pval').innerText = 'p < 0.001';
             document.getElementById('val-loss').innerText = `${(m.l_target * 100).toFixed(1)}%`;
             document.getElementById('totalSamplesVal').innerText = (payload.total_samples || payload.x.length).toLocaleString();
 
             const pill = document.getElementById('scenarioPill');
-            pill.className = 'scenario-pill ' + m.scenario;
-            document.getElementById('scenarioText').innerText = m.scenario;
+            if(pill) {
+                pill.className = 'scenario-pill ' + m.scenario;
+                document.getElementById('scenarioText').innerText = m.scenario;
+            }
 
             document.getElementById('xaiBanner').innerHTML = `💡 <b>XAI Инсайт:</b> ${m.xai_message}`;
 
             // Selected Axes List
             const axesContainer = document.getElementById('axesListContainer');
-            axesContainer.innerHTML = '';
-            const labels = ['X-Ось', 'Y-Ось', 'Z-Ось', 'Цвет', 'Размер', 'Время'];
-            payload.selected_features.forEach((feat, idx) => {
-                const item = document.createElement('div');
-                item.className = 'axis-pill';
-                item.innerHTML = `
-                    <span style="font-weight: 500;">${feat}</span>
-                    <span class="axis-badge">${labels[idx] || 'Канал ' + (idx + 1)}</span>
-                `;
-                axesContainer.appendChild(item);
-            });
+            if (axesContainer) {
+                axesContainer.innerHTML = '';
+                const labels = ['X-Ось', 'Y-Ось', 'Z-Ось', 'Цвет', 'Размер', 'Время'];
+                payload.selected_features.forEach((feat, idx) => {
+                    const item = document.createElement('div');
+                    item.className = 'axis-pill';
+                    item.innerHTML = `
+                        <span style="font-weight: 500;">${feat}</span>
+                        <span class="axis-badge">${labels[idx] || 'Канал ' + (idx + 1)}</span>
+                    `;
+                    axesContainer.appendChild(item);
+                });
+            }
 
             // Update Color Legend
-            document.getElementById('legendTargetName').innerText = payload.target_name || 'Целевая переменная';
+            const legendTargetName = document.getElementById('legendTargetName');
+            if (legendTargetName) legendTargetName.innerText = payload.target_name || 'Целевая переменная';
+            
             const legendItems = document.getElementById('legendItems');
-            legendItems.innerHTML = '';
-
             const uniqueClasses = payload.unique_target_classes || [];
-            uniqueClasses.forEach((cls, idx) => {
-                const colorHex = CLASS_COLORS[idx % CLASS_COLORS.length];
-                const legItem = document.createElement('div');
-                legItem.className = 'legend-item';
-                legItem.innerHTML = `
-                    <span class="color-dot" style="background-color: ${colorHex};"></span>
-                    <span style="font-weight: 500;">${cls}</span>
-                `;
-                legendItems.appendChild(legItem);
-            });
-
-            // Selection History List
-            const historyContainer = document.getElementById('historyListContainer');
-            if (historyContainer && m.history) {
-                historyContainer.innerHTML = '';
-                m.history.forEach((step, idx) => {
-                    const item = document.createElement('div');
-                    item.className = 'history-item' + (step.step === activeDimensionality ? ' active' : '');
-
-                    const virPct = (step.vir * 100).toFixed(1);
-                    const deltaPct = step.step === 1 ? '' : `(+${(step.delta_mi * 100).toFixed(1)}%)`;
-
-                    let altsHtml = '';
-                    if (step.alternatives && step.alternatives.length > 0) {
-                        altsHtml = '<div style="margin-top: 8px; padding-top: 6px; border-top: 1px solid rgba(255,255,255,0.05); font-size: 0.75rem; color: var(--text-dim);">';
-                        altsHtml += '<div style="margin-bottom: 3px; font-weight: 600;">Альтернативы:</div>';
-                        step.alternatives.forEach(a => {
-                            altsHtml += `<div>• ${a.feature} (MI: ${(a.vir * 100).toFixed(1)}%)</div>`;
-                        });
-                        altsHtml += '</div>';
-                    }
-
-                    item.innerHTML = `
-                        <div style="width: 100%;">
-                            <div style="display: flex; justify-content: space-between; align-items: center;">
-                                <div>
-                                    <div class="history-step">${step.step}D-Система</div>
-                                    <div class="history-feature">${step.feature}</div>
-                                </div>
-                                <div class="history-stats">
-                                    <div class="history-mi">MI: ${virPct}%</div>
-                                    <div class="history-delta">${deltaPct}</div>
-                                </div>
-                            </div>
-                            ${altsHtml}
-                        </div>
+            if (legendItems) {
+                legendItems.innerHTML = '';
+                uniqueClasses.forEach((cls, idx) => {
+                    const colorHex = CLASS_COLORS[idx % CLASS_COLORS.length];
+                    const legItem = document.createElement('div');
+                    legItem.className = 'legend-item';
+                    legItem.innerHTML = `
+                        <span class="color-dot" style="background-color: ${colorHex};"></span>
+                        <span style="font-weight: 500;">${cls}</span>
                     `;
-                    item.onclick = () => setDimensionality(step.step);
-                    historyContainer.appendChild(item);
+                    legendItems.appendChild(legItem);
                 });
+            }
+
+            // Update Bivariate Map Labels (Concentration Map)
+            const bivLabelX = document.getElementById('bivLabelX');
+            const bivLabelY = document.getElementById('bivLabelY');
+            if (bivLabelX && bivLabelY && uniqueClasses.length > 0) {
+                bivLabelX.innerText = uniqueClasses[0] + ' ➔';
+                bivLabelY.innerText = uniqueClasses[uniqueClasses.length - 1] + ' ➔';
+            }
+
+            // Populate Exact Values for Stroke settings
+            const exactSelect = document.getElementById('strokeExactVal');
+            if (exactSelect) {
+                exactSelect.innerHTML = '<option value="">-- Выберите --</option>';
+                // Extract unique purities from the current dimensionality grid
+                let dimStr = activeDimensionality.toString();
+                let g = payload.grids ? payload.grids[dimStr] : null;
+                let purities = g ? g.purity : payload.grid_purity;
+                if (purities) {
+                    let uniqueP = [...new Set(purities)].sort((a,b) => a - b);
+                    uniqueP.forEach(p => {
+                        let pct = (p * 100).toFixed(1);
+                        exactSelect.innerHTML += `<option value="${p}">${pct}%</option>`;
+                    });
+                }
+            }
+
+            // Selection History List (Pareto Systems)
+            if (targetHistoryContainerId && m.history) {
+                const historyContainer = document.getElementById(targetHistoryContainerId);
+                if (historyContainer) {
+                    historyContainer.innerHTML = '';
+                    m.history.forEach((step, idx) => {
+                        const item = document.createElement('div');
+                        item.className = 'history-item' + (step.step === activeDimensionality ? ' active' : '');
+
+                        const virPct = (step.vir * 100).toFixed(1);
+                        const deltaPct = step.step === 1 ? '' : `(+${(step.delta_mi * 100).toFixed(1)}%)`;
+
+                        let altsHtml = '';
+                        if (step.alternatives && step.alternatives.length > 0) {
+                            altsHtml = '<div style="margin-top: 8px; padding-top: 6px; border-top: 1px solid rgba(255,255,255,0.05); font-size: 0.75rem; color: var(--text-dim);">';
+                            altsHtml += '<div style="margin-bottom: 3px; font-weight: 600;">Альтернативы:</div>';
+                            step.alternatives.forEach(a => {
+                                altsHtml += `<div>• ${a.feature} (MI: ${(a.vir * 100).toFixed(1)}%)</div>`;
+                            });
+                            altsHtml += '</div>';
+                        }
+
+                        item.innerHTML = `
+                            <div style="width: 100%;">
+                                <div style="display: flex; justify-content: space-between; align-items: center;">
+                                    <div>
+                                        <div class="history-step">${step.step}D-Система</div>
+                                        <div class="history-feature">${step.feature}</div>
+                                    </div>
+                                    <div class="history-stats">
+                                        <div class="history-mi">MI: ${virPct}%</div>
+                                        <div class="history-delta">${deltaPct}</div>
+                                    </div>
+                                </div>
+                                ${altsHtml}
+                            </div>
+                        `;
+                        item.onclick = (e) => {
+                            e.stopPropagation();
+                            Array.from(historyContainer.children).forEach(c => c.classList.remove('active'));
+                            item.classList.add('active');
+                            setDimensionality(step.step);
+                        };
+                        historyContainer.appendChild(item);
+                    });
+                }
             }
 
             renderPlot(payload);
@@ -183,9 +274,8 @@ let currentPayload = null;
             if (activeDimensionality === d) return;
             activeDimensionality = d;
 
-            // Re-render UI
             if (currentPayload) {
-                updateDashboard(currentPayload);
+                renderPlot(currentPayload);
             }
         }
 
@@ -361,6 +451,189 @@ let currentPayload = null;
             };
 
             Plotly.newPlot('plot-container', plotTraces, layout, { responsive: true, displayModeBar: false });
+            
+            // Re-apply stroke if it was active
+            applyStroke(window._isStrokeActive || false);
+        }
+
+        let currentStrokeMode = 'range';
+        window._isStrokeActive = false;
+
+        function setStrokeMode(mode) {
+            currentStrokeMode = mode;
+            const btnRange = document.getElementById('btnStrokeModeRange');
+            const btnExact = document.getElementById('btnStrokeModeExact');
+            const divRange = document.getElementById('strokeRangeControls');
+            const divExact = document.getElementById('strokeExactControls');
+
+            if (mode === 'range') {
+                btnRange.className = 'filter-btn run-btn';
+                btnExact.className = 'filter-btn add-btn';
+                divRange.style.display = 'flex';
+                divExact.style.display = 'none';
+            } else {
+                btnExact.className = 'filter-btn run-btn';
+                btnRange.className = 'filter-btn add-btn';
+                divExact.style.display = 'flex';
+                divRange.style.display = 'none';
+            }
+        }
+
+        function applyStroke(enable) {
+            window._isStrokeActive = enable;
+            if (!currentPayload) return;
+
+            let dimStr = activeDimensionality.toString();
+            let g = currentPayload.grids ? currentPayload.grids[dimStr] : null;
+            let currentPurity = g ? g.purity : currentPayload.grid_purity;
+            
+            if (!currentPurity) return;
+
+            const n = currentPurity.length;
+            let lineColors = new Array(n).fill('rgba(0,0,0,0)');
+            let lineWidths = new Array(n).fill(0);
+            let markerSizes = new Array(n).fill(12);
+
+            if (enable) {
+                const color = document.getElementById('strokeColor').value || '#ffffff';
+                const width = parseFloat(document.getElementById('strokeWidth').value) || 2;
+                
+                let checkMatch = (p) => false;
+                
+                if (currentStrokeMode === 'range') {
+                    const minP = parseFloat(document.getElementById('strokeMin').value) / 100.0;
+                    const maxP = parseFloat(document.getElementById('strokeMax').value) / 100.0;
+                    checkMatch = (p) => (p >= minP - 0.001 && p <= maxP + 0.001);
+                } else {
+                    const exactVal = document.getElementById('strokeExactVal').value;
+                    if (exactVal !== "") {
+                        const targetP = parseFloat(exactVal);
+                        checkMatch = (p) => Math.abs(p - targetP) < 0.001;
+                    }
+                }
+
+                for (let i = 0; i < n; i++) {
+                    if (checkMatch(currentPurity[i])) {
+                        lineColors[i] = color;
+                        lineWidths[i] = width;
+                        markerSizes[i] = 15; // Slightly larger for highlighted points
+                    }
+                }
+            }
+
+            // Trace 0 is cell boundaries, Trace 1 is the scatter points
+            Plotly.restyle('plot-container', {
+                'marker.line.color': [lineColors],
+                'marker.line.width': [lineWidths],
+                'marker.size': [markerSizes]
+            }, 1);
+        }
+
+        function toggleMainAcc(id) {
+            const isCatalog = (id === 'catalog');
+            const hSearch = document.getElementById('headerSearch');
+            const cSearch = document.getElementById('contentSearch');
+            const hCat = document.getElementById('headerCatalog');
+            const cCat = document.getElementById('contentCatalog');
+            
+            if (isCatalog) {
+                hSearch.classList.remove('open');
+                cSearch.classList.remove('open');
+                hCat.classList.add('open');
+                cCat.classList.add('open');
+            } else {
+                hCat.classList.remove('open');
+                cCat.classList.remove('open');
+                hSearch.classList.add('open');
+                cSearch.classList.add('open');
+            }
+        }
+
+        function addFilterRow() {
+            const container = document.getElementById('filterRowsContainer');
+            const row = document.createElement('div');
+            row.className = 'filter-row';
+
+            const colSelect = document.createElement('select');
+            colSelect.className = 'filter-select';
+            let colOptions = '<option value="">-- Характеристика --</option>';
+            allColumnsData.forEach(c => {
+                colOptions += `<option value="${c.id}">${c.label}</option>`;
+            });
+            colSelect.innerHTML = colOptions;
+
+            const valSelect = document.createElement('select');
+            valSelect.className = 'filter-select';
+            valSelect.innerHTML = '<option value="">-- Значение --</option>';
+
+            colSelect.onchange = () => {
+                const colId = colSelect.value;
+                const col = allColumnsData.find(c => c.id === colId);
+                valSelect.innerHTML = '<option value="">-- Значение --</option>';
+                if (col) {
+                    col.criteria.forEach(crit => {
+                        valSelect.innerHTML += `<option value="${crit.id}">${crit.label}</option>`;
+                    });
+                }
+            };
+
+            const removeBtn = document.createElement('button');
+            removeBtn.className = 'filter-remove';
+            removeBtn.innerHTML = '×';
+            removeBtn.title = 'Удалить';
+            removeBtn.onclick = () => row.remove();
+
+            row.appendChild(colSelect);
+            row.appendChild(valSelect);
+            row.appendChild(removeBtn);
+            container.appendChild(row);
+        }
+
+        async function runCompositeAnalysis() {
+            const container = document.getElementById('filterRowsContainer');
+            const rows = container.querySelectorAll('.filter-row');
+            
+            const compositeTarget = [];
+            rows.forEach(row => {
+                const selects = row.querySelectorAll('select');
+                const col = selects[0].value;
+                const val = selects[1].value;
+                if (col && val) {
+                    compositeTarget.push({col: col, val: val});
+                }
+            });
+
+            if (compositeTarget.length === 0) {
+                alert("Пожалуйста, добавьте хотя бы одно полное условие (Характеристика + Значение).");
+                return;
+            }
+
+            showLoader(true);
+            try {
+                const reqBody = { composite_target: compositeTarget };
+                const response = await fetch('/api/analyze', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(reqBody)
+                });
+
+                if (response.ok) {
+                    currentPayload = await response.json();
+                    activeDimensionality = null;
+                    if (activeCritItem) {
+                        activeCritItem.classList.remove('active');
+                        activeCritItem.classList.remove('open');
+                        activeCritItem = null;
+                    }
+                    updateDashboard(currentPayload, 'compositeHistoryContainer');
+                } else {
+                    console.error("Error fetching composite analysis", response.status);
+                }
+            } catch (err) {
+                console.error("API POST failed:", err);
+            } finally {
+                showLoader(false);
+            }
         }
 
         window.addEventListener('DOMContentLoaded', init);

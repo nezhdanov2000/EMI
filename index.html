@@ -34,6 +34,46 @@
     </header>
 
     <main>
+        <!-- Master Panel: Insights Catalog -->
+        <aside class="catalog-sidebar">
+            
+            <!-- Main Accordion Header for Search -->
+            <div class="main-acc-header" id="headerSearch" onclick="toggleMainAcc('search')">
+                <div class="main-acc-title">🔍 Поиск по фильтрам</div>
+                <div class="main-acc-icon">▶</div>
+            </div>
+            <!-- Main Accordion Content for Search -->
+            <div class="main-acc-content" id="contentSearch">
+                <div class="filter-ui-container">
+                    <div style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 12px;">
+                        Создайте комбинацию условий (И) для анализа.
+                    </div>
+                    <div id="filterRowsContainer" style="display: flex; flex-direction: column; gap: 8px;">
+                        <!-- Filter rows injected by JS -->
+                    </div>
+                    <div style="display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap;">
+                        <button class="filter-btn add-btn" onclick="addFilterRow()">+ Условие</button>
+                        <button class="filter-btn run-btn" onclick="runCompositeAnalysis()">Анализировать</button>
+                    </div>
+                    <!-- Place for history to render for composite -->
+                    <div id="compositeHistoryContainer" class="history-list" style="margin-top: 16px;"></div>
+                </div>
+            </div>
+
+            <!-- Main Accordion Header for Catalog -->
+            <div class="main-acc-header open" id="headerCatalog" onclick="toggleMainAcc('catalog')">
+                <div class="main-acc-title">📚 Каталог Инсайтов</div>
+                <div class="main-acc-icon">▶</div>
+            </div>
+            <!-- Main Accordion Content for Catalog -->
+            <div class="main-acc-content open" id="contentCatalog">
+                <div class="catalog-subtitle" style="padding: 0 1.5rem 0.5rem 1.5rem;">Auto-Discovery (Пропозиционализация)</div>
+                <div id="catalogAccordion" class="catalog-accordion">
+                    <div style="color: var(--text-dim); font-size: 0.85rem; padding: 1rem;">Загрузка структуры датасета...</div>
+                </div>
+            </div>
+        </aside>
+
         <!-- Visualization Area -->
         <section class="viz-viewport">
             <div id="loader" class="loader-overlay active">
@@ -66,76 +106,95 @@
                 <div style="font-size: 0.8rem; color: #cbd5e1; margin-bottom: 8px; font-weight: 600;">Карта Концентрации
                 </div>
                 <div class="bivariate-map-container">
-                    <div class="biv-label-y">Ядовитые ➔</div>
+                    <div class="biv-label-y" id="bivLabelY">Ядовитые ➔</div>
                     <div class="bivariate-map"></div>
-                    <div class="biv-label-x">Съедобные ➔</div>
+                    <div class="biv-label-x" id="bivLabelX">Съедобные ➔</div>
                 </div>
             </div>
 
             <div id="plot-container"></div>
+            
+            <!-- Floating HUD Overlay -->
+            <div class="hud-overlay">
+                <!-- Mathematical Metrics Card -->
+                <div class="hud-card glass">
+                    <div class="card-label">📊 Метрики Достаточности (VSF)</div>
+                    <div class="stats-grid">
+                        <div class="stat-box">
+                            <div class="stat-value" id="val-dstar" style="color: var(--accent-purple);">-</div>
+                            <div class="stat-sub">Оптимально осей (d*)</div>
+                        </div>
+                        <div class="stat-box">
+                            <div class="stat-value" id="val-vir" style="color: var(--green);">-</div>
+                            <div class="stat-sub">Visual Info Ratio (VIR)</div>
+                        </div>
+                        <div class="stat-box">
+                            <div class="stat-value" id="val-pval" style="color: var(--accent-cyan);">-</div>
+                            <div class="stat-sub">p-value</div>
+                        </div>
+                        <div class="stat-box">
+                            <div class="stat-value" id="val-loss" style="color: var(--amber);">-</div>
+                            <div class="stat-sub">Target Loss (L_target)</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Selected Axes Card -->
+                <div class="hud-card glass">
+                    <div class="card-label">🔍 Отобранные оси пространства</div>
+                    <div class="axes-list" id="axesListContainer">
+                        <div style="color: var(--text-dim); font-size: 0.85rem;">Загрузка...</div>
+                    </div>
+                </div>
+
+                <!-- Stroke Settings Card -->
+                <div class="hud-card glass">
+                    <div class="card-label">✨ Обводка (Фокус)</div>
+                    <div style="display: flex; flex-direction: column; gap: 10px; font-size: 0.85rem;">
+                        <div style="display: flex; gap: 10px; align-items: center;">
+                            <label style="color: var(--text-muted); width: 60px;">Цвет:</label>
+                            <input type="color" id="strokeColor" value="#ffffff" style="background: transparent; border: 1px solid rgba(255,255,255,0.2); border-radius: 4px; padding: 0; width: 40px; height: 24px; cursor: pointer;">
+                            <label style="color: var(--text-muted); margin-left: 10px;">Толщина:</label>
+                            <input type="number" id="strokeWidth" min="0" max="10" step="0.5" value="2" style="background: rgba(15, 23, 42, 0.8); color: white; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 2px 6px; width: 50px;">
+                        </div>
+
+                        <div style="display: flex; gap: 8px; margin-top: 4px;">
+                            <button id="btnStrokeModeRange" class="filter-btn run-btn" style="flex:1; padding: 4px; font-size: 0.75rem;" onclick="setStrokeMode('range')">Диапазон</button>
+                            <button id="btnStrokeModeExact" class="filter-btn add-btn" style="flex:1; padding: 4px; font-size: 0.75rem;" onclick="setStrokeMode('exact')">Точное зн.</button>
+                        </div>
+
+                        <div id="strokeRangeControls" style="display: flex; gap: 10px; align-items: center; margin-top: 4px;">
+                            <label style="color: var(--text-muted);">От:</label>
+                            <input type="number" id="strokeMin" min="0" max="100" value="90" style="background: rgba(15, 23, 42, 0.8); color: white; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 2px 6px; width: 50px;">
+                            <span style="color: var(--text-muted);">%</span>
+                            
+                            <label style="color: var(--text-muted); margin-left: 10px;">До:</label>
+                            <input type="number" id="strokeMax" min="0" max="100" value="100" style="background: rgba(15, 23, 42, 0.8); color: white; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 2px 6px; width: 50px;">
+                            <span style="color: var(--text-muted);">%</span>
+                        </div>
+
+                        <div id="strokeExactControls" style="display: none; align-items: center; gap: 10px; margin-top: 4px;">
+                            <label style="color: var(--text-muted);">Значение:</label>
+                            <select id="strokeExactVal" style="background: rgba(15, 23, 42, 0.8); color: white; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 2px 6px; flex: 1;">
+                                <option value="">-- Выберите --</option>
+                            </select>
+                        </div>
+
+                        <div style="display: flex; gap: 8px; margin-top: 8px;">
+                            <button class="filter-btn add-btn" style="flex:1; padding: 6px;" onclick="applyStroke(false)">Выкл (Сброс)</button>
+                            <button class="filter-btn run-btn" style="flex:1; padding: 6px;" onclick="applyStroke(true)">Применить</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- XAI Inference Banner -->
+                <div class="hud-card glass" style="padding: 0; background: transparent; border: none; box-shadow: none;">
+                    <div class="xai-banner" id="xaiBanner">
+                        Инициализация системы объяснимого ИИ (XAI)...
+                    </div>
+                </div>
+            </div>
         </section>
-
-        <!-- Sidebar HUD -->
-        <aside class="sidebar">
-            <!-- Target Selection Card -->
-            <div class="hud-card">
-                <div class="card-label">🎯 Выбор Целевой Переменной (Z)</div>
-                <div class="target-select-wrapper">
-                    <select id="targetSelect" onchange="onTargetChange()">
-                        <option value="class">Съедобность (class)</option>
-                    </select>
-                    <div style="font-size: 0.75rem; color: var(--text-dim);">
-                        Смена $Z$ запускает фазу AVR заново с адаптивной пересортировкой категорий на осях.
-                    </div>
-                </div>
-            </div>
-
-            <!-- Mathematical Metrics Card -->
-            <div class="hud-card">
-                <div class="card-label">📊 Метрики Достаточности (VSF)</div>
-                <div class="stats-grid">
-                    <div class="stat-box">
-                        <div class="stat-value" id="val-dstar" style="color: var(--accent-purple);">-</div>
-                        <div class="stat-sub">Оптимально осей (d*)</div>
-                    </div>
-                    <div class="stat-box">
-                        <div class="stat-value" id="val-vir" style="color: var(--green);">-</div>
-                        <div class="stat-sub">Visual Info Ratio (VIR)</div>
-                    </div>
-                    <div class="stat-box">
-                        <div class="stat-value" id="val-pval" style="color: var(--accent-cyan);">-</div>
-                        <div class="stat-sub">Пермутационный p-value</div>
-                    </div>
-                    <div class="stat-box">
-                        <div class="stat-value" id="val-loss" style="color: var(--amber);">-</div>
-                        <div class="stat-sub">Target Loss (L_target)</div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Selected Axes Card -->
-            <div class="hud-card">
-                <div class="card-label">🔍 Отобранные оси пространства</div>
-                <div class="axes-list" id="axesListContainer">
-                    <div style="color: var(--text-dim); font-size: 0.85rem;">Загрузка...</div>
-                </div>
-            </div>
-
-            <!-- History Card -->
-            <div class="hud-card" id="historyCard">
-                <div class="card-label">⏳ История отбора осей (MI)</div>
-                <div class="history-list" id="historyListContainer">
-                    <div style="color: var(--text-dim); font-size: 0.85rem;">Загрузка...</div>
-                </div>
-            </div>
-
-            <!-- XAI Inference Banner -->
-            <div class="hud-card" style="padding: 0; background: transparent; border: none;">
-                <div class="xai-banner" id="xaiBanner">
-                    Инициализация системы объяснимого ИИ (XAI)...
-                </div>
-            </div>
-        </aside>
     </main>
 
     <script src="/static/js/app.js"></script>
