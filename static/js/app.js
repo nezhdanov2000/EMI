@@ -359,7 +359,7 @@ function renderPlot(payload) {
 
     let currentPurity = g ? g.purity : payload.grid_purity;
     let currentOpacity = g ? g.opacity : payload.grid_opacity;
-    let currentBlue = g ? g.blue_concentration : payload.grid_blue_concentration;
+    let currentBlue = g ? g.blue : payload.grid_blue_concentration;
 
     // Parse thresholds
     let blueThresholds = [0, 0.25, 0.5, 0.75, 1.0];
