@@ -190,13 +190,27 @@
                         <span style="font-size: 0.7rem; color: var(--text-dim);">Удаляйте или добавляйте новые границы</span>
                     </div>
 
-                    <div id="blueLegendSection" style="display: none; margin-top: 8px;">
-                        <div style="font-size: 0.75rem; color: var(--text-dim); margin-bottom: 4px;">Свечение (Синий) = <span id="blueLegendName">Признак</span>:</div>
-                        <div style="height: 12px; border-radius: 6px; background: linear-gradient(to right, rgb(64,64,64), rgb(0,0,255)); margin-bottom: 4px;"></div>
-                        <div style="display: flex; justify-content: space-between; font-size: 0.65rem; color: var(--text-muted);">
-                            <span>0%</span>
-                            <span>100%</span>
+                    <div id="blueLegendSection" style="display: none; margin-top: 10px;">
+                        <div style="font-size: 0.75rem; color: var(--text-dim); margin-bottom: 6px; font-weight: 500;">
+                            🗺️ 2D-Палитра (<span id="blueLegendName" style="color: var(--accent-cyan);">Признак</span>):
                         </div>
+                        
+                        <div class="discrete-matrix-wrapper">
+                            <div class="matrix-y-axis">
+                                <span>100%</span>
+                                <div class="matrix-axis-title-y">Синий канал ↑</div>
+                                <span>0%</span>
+                            </div>
+                            
+                            <div class="discrete-matrix-content">
+                                <div id="discreteMatrixGrid" class="discrete-matrix-grid"></div>
+                                <div class="matrix-x-axis">
+                                    <span style="color: #4ade80;">← Съед.</span>
+                                    <span style="color: #f87171;">Ядов. →</span>
+                                </div>
+                            </div>
+                        </div>
+                        <div id="matrixTooltip" class="matrix-tooltip"></div>
                     </div>
 
                     <button class="filter-btn run-btn" style="margin-top: 8px; padding: 6px;" onclick="applyBlueFeature()">Применить</button>

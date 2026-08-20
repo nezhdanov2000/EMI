@@ -26,6 +26,7 @@ async function init() {
             // Add default first filter row
             addFilterRow();
             populateBlueFeatureDropdowns(colData.columns);
+            renderDiscreteColorMatrix();
         }
         await runAnalysis('class', null);
     } catch (err) {
@@ -173,6 +174,68 @@ function onBlueColChange() {
     }
 }
 
+function renderDiscreteColorMatrix() {
+    const grid = document.getElementById('discreteMatrixGrid');
+    if (!grid) return;
+
+    // Parse thresholds
+    let blueThresholds = [0, 0.25, 0.5, 0.75, 1.0];
+    const thresInput = document.getElementById('blueThresholds');
+    if (thresInput) {
+        let vals = thresInput.value.split(',').map(v => parseFloat(v.trim()) / 100).filter(v => !isNaN(v));
+        if (vals.length > 0) {
+            blueThresholds = vals.sort((a, b) => a - b);
+        }
+    }
+
+    const numRows = Math.max(blueThresholds.length - 1, 1);
+    const numCols = 4; // 4 discrete intervals for Purity: 0-25%, 25-50%, 50-75%, 75-100%
+
+    grid.style.gridTemplateColumns = `repeat(${numCols}, 1fr)`;
+    grid.style.gridTemplateRows = `repeat(${numRows}, 1fr)`;
+    grid.innerHTML = '';
+
+    const tooltip = document.getElementById('matrixTooltip');
+
+    // Rows go from top (highest blue) to bottom (0% blue)
+    for (let r = numRows - 1; r >= 0; r--) {
+        const bucketIndex = r;
+        const b = (bucketIndex / Math.max(numRows - 1, 1)) * 255;
+        
+        const bMinPct = (blueThresholds[r] * 100).toFixed(0);
+        const bMaxPct = (blueThresholds[Math.min(r + 1, blueThresholds.length - 1)] * 100).toFixed(0);
+
+        for (let c = 0; c < numCols; c++) {
+            // Purity p from 0.0 (left = Edible) to 1.0 (right = Poisonous)
+            const p = (c + 0.5) / numCols;
+            const red = p * 255;
+            const green = (1.0 - p) * 255;
+
+            const pMinPct = (c * (100 / numCols)).toFixed(0);
+            const pMaxPct = ((c + 1) * (100 / numCols)).toFixed(0);
+
+            const cell = document.createElement('div');
+            cell.className = 'matrix-cell';
+            cell.style.backgroundColor = `rgb(${red.toFixed(0)}, ${green.toFixed(0)}, ${b.toFixed(0)})`;
+
+            // Hover tooltip
+            cell.addEventListener('mouseenter', () => {
+                if (tooltip) {
+                    tooltip.style.display = 'block';
+                    tooltip.innerHTML = `🍄 Съедобность: <b>${pMinPct}%–${pMaxPct}%</b><br>🔷 Синий: <b>${bMinPct}%–${bMaxPct}%</b>`;
+                }
+            });
+            cell.addEventListener('mouseleave', () => {
+                if (tooltip) {
+                    tooltip.style.display = 'none';
+                }
+            });
+
+            grid.appendChild(cell);
+        }
+    }
+}
+
 function applyBlueFeature() {
     const colSelect = document.getElementById('blueFeatureCol');
     const valSelect = document.getElementById('blueFeatureVal');
@@ -187,6 +250,7 @@ function applyBlueFeature() {
             const valLabel = valSelect.options[valSelect.selectedIndex].text;
             blueLegendName.innerText = `${colLabel} = ${valLabel}`;
         }
+        renderDiscreteColorMatrix();
     } else {
         currentBlueFeature = null;
         const blueLegendSection = document.getElementById('blueLegendSection');
@@ -200,6 +264,7 @@ function applyBlueFeature() {
 }
 
 function updateBlueThresholds() {
+    renderDiscreteColorMatrix();
     if (currentPayload) {
         renderPlot(currentPayload);
         applyStroke(window._isStrokeActive || false);
