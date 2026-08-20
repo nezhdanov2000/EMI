@@ -7,7 +7,13 @@ import http.server
 import json
 import os
 import socketserver
+import urllib.parse
+from datetime import datetime
 from typing import Any, Dict
+
+# Global cache to speed up visual-only updates (e.g. blue_feature changes)
+_last_params = None
+_last_res = None
 
 import numpy as np
 import pandas as pd
@@ -161,10 +167,30 @@ class VSFRequestHandler(http.server.SimpleHTTPRequestHandler):
             feature_names = list(X_df.columns)
             X = X_df.values
 
-            engine = vsf.AVREngine(
-                alpha=0.01, vir_threshold=0.85, max_d=7, n_permutations=100, random_state=42
-            )
-            res = engine.fit(X, Z, feature_names=feature_names)
+            global _last_params, _last_res
+            cache_key = {
+                "composite_target": req.get("composite_target"),
+                "target_col": req.get("target", "class"),
+                "criterion": req.get("criterion")
+            }
+
+            if _last_params == cache_key and _last_res is not None:
+                res, cached_X, cached_Z, cached_features, cached_target_name = _last_res
+                # Use cached items to prevent redundant 1-second delay
+                X = cached_X
+                Z = cached_Z
+                feature_names = cached_features
+                display_target_name = cached_target_name
+            else:
+                engine = vsf.AVREngine(
+                    alpha=0.01, vir_threshold=0.85, max_d=7, n_permutations=100, random_state=42
+                )
+                res = engine.fit(X, Z, feature_names=feature_names)
+                
+                # Update cache
+                _last_params = cache_key
+                _last_res = (res, X, Z, feature_names, display_target_name)
+
             payload = vsf.prepare_visualization_payload(
                 res, X, Z, feature_names=feature_names, target_name=display_target_name,
                 blue_mask=blue_mask

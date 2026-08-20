@@ -141,8 +141,6 @@ function showLoader(show) {
 }
 
 
-}
-
 let currentBlueFeature = null;
 
 function populateBlueFeatureDropdowns(cols) {
@@ -474,8 +472,8 @@ function renderPlot(payload) {
         z: zCoords,
         mode: 'markers',
         marker: {
-            // Constant size as requested
-            size: 12.0,
+            // Size based on density (currentOpacity maps from 0.2 to 1.0)
+            size: currentOpacity ? currentPurity.map((_, i) => 6 + currentOpacity[i] * 18) : 12.0,
             color: mappedColors,
             opacity: 1, // Full opacity is required to enforce proper WebGL depth sorting (Z-buffer)
             line: {
@@ -544,34 +542,12 @@ function renderPlot(payload) {
     Plotly.newPlot('plot-container', plotTraces, layout, { responsive: true, displayModeBar: false });
 
     const plotDiv = document.getElementById('plot-container');
-    if (plotDiv.removeAllListeners) {
-        plotDiv.removeAllListeners('plotly_relayout');
-    }
-    plotDiv.on('plotly_relayout', function(eventData) {
-        if (eventData && eventData['scene.camera']) {
-            let cam = eventData['scene.camera'];
-            if (cam.eye) {
-                let dist = Math.sqrt(cam.eye.x**2 + cam.eye.y**2 + cam.eye.z**2);
-                let baseDist = Math.sqrt(1.6**2 + 1.6**2 + 1.3**2);
-                let newScale = baseDist / dist;
-                newScale = Math.max(0.1, Math.min(newScale, 15));
-                
-                window._currentCameraScale = window._currentCameraScale || 1.0;
-                if (Math.abs(window._currentCameraScale - newScale) > 0.05) {
-                    window._currentCameraScale = newScale;
-                    applyStroke(window._isStrokeActive || false);
-                }
-            }
-        }
-    });
-
     // Re-apply stroke if it was active
     applyStroke(window._isStrokeActive || false);
 }
 
 let currentStrokeMode = 'range';
 window._isStrokeActive = false;
-window._currentCameraScale = 1.0;
 
 function setStrokeMode(mode) {
     currentStrokeMode = mode;
@@ -605,15 +581,12 @@ function applyStroke(enable) {
     if (!currentPurity) return;
 
     const n = currentPurity.length;
-    let scale = window._currentCameraScale || 1.0;
-    
     let lineColors = new Array(n).fill('rgb(0,0,0)');
     let lineWidths = new Array(n).fill(0);
     let markerSizes = new Array(n);
     
     for (let i = 0; i < n; i++) {
-        let baseSize = currentOpacity ? (6 + currentOpacity[i] * 18) : 12;
-        markerSizes[i] = baseSize * scale;
+        markerSizes[i] = currentOpacity ? (6 + currentOpacity[i] * 18) : 12;
     }
 
     if (enable) {
@@ -639,7 +612,7 @@ function applyStroke(enable) {
                 lineColors[i] = color;
                 lineWidths[i] = width;
                 let baseSize = currentOpacity ? (6 + currentOpacity[i] * 18) : 12;
-                markerSizes[i] = (baseSize + 6) * scale; // Slightly larger for highlighted points
+                markerSizes[i] = baseSize + 6; // Slightly larger for highlighted points
             }
         }
     }
