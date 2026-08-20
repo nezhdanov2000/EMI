@@ -165,6 +165,44 @@
                 </div>
             </div>
 
+            <!-- Third Dimension (Blue Channel) -->
+            <div>
+                <div style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 8px;">🌟 Третье измерение (Синий цвет)</div>
+                <div style="display: flex; flex-direction: column; gap: 10px; font-size: 0.85rem; background: rgba(15, 23, 42, 0.4); padding: 12px; border-radius: 12px; border: 1px solid var(--border-color);">
+                    
+                    <div style="display: flex; flex-direction: column; gap: 4px;">
+                        <label style="color: var(--text-muted);">Признак (Колонка):</label>
+                        <select id="blueFeatureCol" style="background: rgba(15, 23, 42, 0.8); color: white; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 4px 6px;" onchange="onBlueColChange()">
+                            <option value="">-- Выключено --</option>
+                        </select>
+                    </div>
+
+                    <div style="display: flex; flex-direction: column; gap: 4px;">
+                        <label style="color: var(--text-muted);">Категория (Искомое значение):</label>
+                        <select id="blueFeatureVal" style="background: rgba(15, 23, 42, 0.8); color: white; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 4px 6px;">
+                            <option value="">-- Выберите --</option>
+                        </select>
+                    </div>
+
+                    <div style="display: flex; flex-direction: column; gap: 4px; margin-top: 4px;">
+                        <label style="color: var(--text-muted);">Пороги (через запятую, %):</label>
+                        <input type="text" id="blueThresholds" value="0, 25, 50, 75, 100" style="background: rgba(15, 23, 42, 0.8); color: white; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 4px 6px; width: 100%;" onchange="updateBlueThresholds()">
+                        <span style="font-size: 0.7rem; color: var(--text-dim);">Удаляйте или добавляйте новые границы</span>
+                    </div>
+
+                    <div id="blueLegendSection" style="display: none; margin-top: 8px;">
+                        <div style="font-size: 0.75rem; color: var(--text-dim); margin-bottom: 4px;">Свечение (Синий) = <span id="blueLegendName">Признак</span>:</div>
+                        <div style="height: 12px; border-radius: 6px; background: linear-gradient(to right, rgb(64,64,64), rgb(0,0,255)); margin-bottom: 4px;"></div>
+                        <div style="display: flex; justify-content: space-between; font-size: 0.65rem; color: var(--text-muted);">
+                            <span>0%</span>
+                            <span>100%</span>
+                        </div>
+                    </div>
+
+                    <button class="filter-btn run-btn" style="margin-top: 8px; padding: 6px;" onclick="applyBlueFeature()">Применить</button>
+                </div>
+            </div>
+
             <!-- Noise Reduction -->
             <div>
                 <div style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 8px;">🧹 Шумоподавление (Выбросы)</div>

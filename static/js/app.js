@@ -25,6 +25,7 @@ async function init() {
             populateCatalog(colData.columns, colData.default_target);
             // Add default first filter row
             addFilterRow();
+            populateBlueFeatureDropdowns(colData.columns);
         }
         await runAnalysis('class', null);
     } catch (err) {
@@ -110,6 +111,9 @@ async function runAnalysis(targetCol, criterion = null, targetHistoryContainerId
         if (criterion !== null) {
             reqBody.criterion = criterion;
         }
+        if (currentBlueFeature !== null) {
+            reqBody.blue_feature = currentBlueFeature;
+        }
         const response = await fetch('/api/analyze', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -136,6 +140,73 @@ function showLoader(show) {
     else loader.classList.remove('active');
 }
 
+
+}
+
+let currentBlueFeature = null;
+
+function populateBlueFeatureDropdowns(cols) {
+    const colSelect = document.getElementById('blueFeatureCol');
+    if (!colSelect) return;
+    
+    cols.forEach(col => {
+        const option = document.createElement('option');
+        option.value = col.id;
+        option.innerText = col.label;
+        colSelect.appendChild(option);
+    });
+}
+
+function onBlueColChange() {
+    const colSelect = document.getElementById('blueFeatureCol');
+    const valSelect = document.getElementById('blueFeatureVal');
+    valSelect.innerHTML = '<option value="">-- Выберите --</option>';
+    
+    if (colSelect.value === '') return;
+    
+    const colData = allColumnsData.find(c => c.id === colSelect.value);
+    if (colData && colData.criteria) {
+        colData.criteria.forEach(crit => {
+            const option = document.createElement('option');
+            option.value = crit.id;
+            option.innerText = crit.label;
+            valSelect.appendChild(option);
+        });
+    }
+}
+
+function applyBlueFeature() {
+    const colSelect = document.getElementById('blueFeatureCol');
+    const valSelect = document.getElementById('blueFeatureVal');
+    
+    if (colSelect.value && valSelect.value) {
+        currentBlueFeature = { col: colSelect.value, val: valSelect.value };
+        const blueLegendSection = document.getElementById('blueLegendSection');
+        const blueLegendName = document.getElementById('blueLegendName');
+        if (blueLegendSection) blueLegendSection.style.display = 'block';
+        if (blueLegendName) {
+            const colLabel = colSelect.options[colSelect.selectedIndex].text.split(' ')[0];
+            const valLabel = valSelect.options[valSelect.selectedIndex].text;
+            blueLegendName.innerText = `${colLabel} = ${valLabel}`;
+        }
+    } else {
+        currentBlueFeature = null;
+        const blueLegendSection = document.getElementById('blueLegendSection');
+        if (blueLegendSection) blueLegendSection.style.display = 'none';
+    }
+    
+    // Rerun analysis with the new blue feature if we have a current target
+    if (currentPayload && currentPayload.target_labels) {
+        runAnalysis('class', null);
+    }
+}
+
+function updateBlueThresholds() {
+    if (currentPayload) {
+        renderPlot(currentPayload);
+        applyStroke(window._isStrokeActive || false);
+    }
+}
 
 function updateDashboard(payload, targetHistoryContainerId) {
     const m = payload.metrics;
@@ -290,6 +361,17 @@ function renderPlot(payload) {
 
     let currentPurity = g ? g.purity : payload.grid_purity;
     let currentOpacity = g ? g.opacity : payload.grid_opacity;
+    let currentBlue = g ? g.blue_concentration : payload.grid_blue_concentration;
+
+    // Parse thresholds
+    let blueThresholds = [0, 0.25, 0.5, 0.75, 1.0];
+    const thresInput = document.getElementById('blueThresholds');
+    if (thresInput) {
+        let vals = thresInput.value.split(',').map(v => parseFloat(v.trim()) / 100).filter(v => !isNaN(v));
+        if (vals.length > 0) {
+            blueThresholds = vals.sort((a, b) => a - b);
+        }
+    }
     let currentHover = g ? g.hover_text : payload.grid_hover_text;
 
     // Generate Cell Boundary Dividers (Grid lines placed strictly BETWEEN categories at -0.5, 0.5, 1.5...)
@@ -363,11 +445,24 @@ function renderPlot(payload) {
             // Green = Edible (p=0)
             // Red = Poisonous (p=1)
             const r = p * 255;
-            const g = (1.0 - p) * 255;
-            const b = 0;
+            const g_col = (1.0 - p) * 255;
+            
+            // Blue Channel Thresholding
+            let b = 0;
+            if (currentBlue && currentBlue[i] !== undefined) {
+                const b_val = currentBlue[i];
+                let bucket = 0;
+                for (let t = 0; t < blueThresholds.length; t++) {
+                    if (b_val >= blueThresholds[t]) {
+                        bucket = t;
+                    }
+                }
+                const numBuckets = Math.max(blueThresholds.length - 1, 1);
+                b = (bucket / numBuckets) * 255;
+            }
 
             // Use fully opaque RGB to prevent depth-sorting artifacts in WebGL
-            mappedColors.push(`rgb(${r.toFixed(0)}, ${g.toFixed(0)}, ${b.toFixed(0)})`);
+            mappedColors.push(`rgb(${r.toFixed(0)}, ${g_col.toFixed(0)}, ${b.toFixed(0)})`);
         }
     } else {
         mappedColors = payload.color;
@@ -639,6 +734,9 @@ async function runCompositeAnalysis() {
     showLoader(true);
     try {
         const reqBody = { composite_target: compositeTarget };
+        if (currentBlueFeature !== null) {
+            reqBody.blue_feature = currentBlueFeature;
+        }
         const response = await fetch('/api/analyze', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },

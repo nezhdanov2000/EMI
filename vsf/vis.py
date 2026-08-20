@@ -119,6 +119,7 @@ def prepare_visualization_payload(
     feature_names: Optional[List[str]] = None,
     max_display_samples: int = 10000,
     target_name: str = "class",
+    blue_mask: Optional[np.ndarray] = None,
 ) -> Dict:
     """
     Prepares a structured visualization payload with human readable Russian axis titles,
@@ -135,10 +136,12 @@ def prepare_visualization_payload(
         indices = np.random.default_rng(42).choice(n_samples, size=max_display_samples, replace=False)
         X_sub = X_arr[indices]
         Z_sub = Z_arr[indices]
+        blue_mask_sub = blue_mask[indices] if blue_mask is not None else None
     else:
         indices = np.arange(n_samples)
         X_sub = X_arr
         Z_sub = Z_arr
+        blue_mask_sub = blue_mask
 
     selected_idx = result.selected_features
     d_star = result.d_star
@@ -228,7 +231,7 @@ def prepare_visualization_payload(
             _cz = cz if dim >= 3 else -0.5
             g_groups[(cx, _cy, _cz)].append(idx_in_sub)
             
-        gx, gy, gz, gop, gpur, gsz, ghov = [], [], [], [], [], [], []
+        gx, gy, gz, gop, gpur, gsz, ghov, gblue = [], [], [], [], [], [], [], []
         m_N = max([len(lst) for lst in g_groups.values()]) if g_groups else 1
         
         for (cx, cy, cz), c_idx in g_groups.items():
@@ -243,6 +246,11 @@ def prepare_visualization_payload(
             gop.append(float(norm_d))
             gpur.append(float(pur))
             gsz.append(N_c)
+            if blue_mask_sub is not None:
+                b_val = float(np.mean([blue_mask_sub[i] for i in c_idx]))
+                gblue.append(b_val)
+            else:
+                gblue.append(0.0)
             
             hx = x_human[c_idx[0]]
             hy = y_human[c_idx[0]] if dim >= 2 else "Свернуто"
@@ -251,7 +259,7 @@ def prepare_visualization_payload(
             
             target_pos_label = unique_target_labels[-1] if unique_target_labels else "положительного класса"
             
-            ghov.append(
+            hov = (
                 f"<b>📍 Дискретный Центр ({dim}D)</b><br>"
                 f"🎯 <b>Доля {target_pos_label}:</b> {pur*100:.1f}%<br>"
                 f"📦 <b>Объектов:</b> {N_c} шт.<br>"
@@ -259,7 +267,11 @@ def prepare_visualization_payload(
                 f"💠 <b>Y:</b> {hy}<br>"
                 f"💠 <b>Z:</b> {hz}"
             )
-        return {"x": gx, "y": gy, "z": gz, "opacity": gop, "purity": gpur, "sizes": gsz, "hover_text": ghov}
+            if blue_mask_sub is not None:
+                hov += f"<br>🌟 <b>Свечение (Синий):</b> {gblue[-1]*100:.1f}%"
+                
+            ghov.append(hov)
+        return {"x": gx, "y": gy, "z": gz, "opacity": gop, "purity": gpur, "blue": gblue, "sizes": gsz, "hover_text": ghov}
 
     grids = {
         "1": build_grid(1),
@@ -280,6 +292,7 @@ def prepare_visualization_payload(
         "grid_z": grids["3"]["z"],
         "grid_opacity": grids["3"]["opacity"],
         "grid_purity": grids["3"]["purity"],
+        "grid_blue_concentration": grids["3"]["blue"],
         "grid_hover_text": grids["3"]["hover_text"],
         "color": color_num.tolist(),
         "target_labels": z_target_human,

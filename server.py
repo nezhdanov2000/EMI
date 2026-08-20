@@ -118,6 +118,14 @@ class VSFRequestHandler(http.server.SimpleHTTPRequestHandler):
             criterion = req.get("criterion", None)
             df = pd.read_csv(DATASET_PATH)
 
+            blue_feature = req.get("blue_feature", None)
+            blue_mask = None
+            if blue_feature:
+                b_col = blue_feature.get("col")
+                b_val = str(blue_feature.get("val"))
+                if b_col in df.columns:
+                    blue_mask = (df[b_col].astype(str) == b_val).astype(int).values
+
             drop_cols = []
             if composite_target:
                 mask = pd.Series([True] * len(df))
@@ -158,7 +166,8 @@ class VSFRequestHandler(http.server.SimpleHTTPRequestHandler):
             )
             res = engine.fit(X, Z, feature_names=feature_names)
             payload = vsf.prepare_visualization_payload(
-                res, X, Z, feature_names=feature_names, target_name=display_target_name
+                res, X, Z, feature_names=feature_names, target_name=display_target_name,
+                blue_mask=blue_mask
             )
 
             self._send_json_response(200, payload)
