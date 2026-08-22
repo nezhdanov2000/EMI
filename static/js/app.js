@@ -174,116 +174,34 @@ function onBlueColChange() {
     }
 }
 
-const DEFAULT_2D_PALETTE = [
-    // Ряд 0 (Низ: 25% – 50%): [0-25% Съед (Ядовитый / Красный), 25-50% (Оранжевый), 50-75% (Салатовый), 75-100% (Съедобный / Зеленый)]
-    ['#E82B10', '#EB751A', '#6BBF26', '#52FF33'],
-    // Ряд 1 (Середина: 50% – 75%): [Желтый, Коричневый, Темно-зеленый, Белый]
-    ['#EBF033', '#661A00', '#2C5A14', '#FFFFFF'],
-    // Ряд 2 (Верх: 75% – 100%): [Розовый, Фиолетовый, Синий, Голубой]
-    ['#F024EB', '#7E0CF5', '#0018F5', '#52F5FF']
+// 5-bin Probability Scale
+const PROB_COLORS = [
+    '#53ea4c', // Green (0-15%)
+    '#ffeb3b', // Yellow (15-30%)
+    '#57463a', // Dark Brown (30-70%) - Murky Zone
+    '#ff9800', // Orange (70-85%)
+    '#f44336'  // Red (85-100%)
 ];
+const PALETTE_COUNT = PROB_COLORS.length;
 
-// Flat list of all 12 unique palette colors (row0col0, row0col1, ..., row2col3)
-// Index 0..3 = Row 0 (25-50%), Index 4..7 = Row 1 (50-75%), Index 8..11 = Row 2 (>75%)
-const PALETTE_FLAT = DEFAULT_2D_PALETTE.flat();
-const PALETTE_COUNT = PALETTE_FLAT.length; // 12
-
-// Build a Plotly discrete colorscale: array of [normalizedVal, hexColor]
-// Each color occupies a band of width 1/12 in the [0, 1] range
 function buildDiscreteColorscale() {
     const scale = [];
     for (let i = 0; i < PALETTE_COUNT; i++) {
         const lo = i / PALETTE_COUNT;
         const hi = (i + 1) / PALETTE_COUNT;
-        scale.push([lo, PALETTE_FLAT[i]]);
-        scale.push([hi, PALETTE_FLAT[i]]);
+        scale.push([lo, PROB_COLORS[i]]);
+        scale.push([hi, PROB_COLORS[i]]);
     }
     return scale;
 }
 const DISCRETE_COLORSCALE = buildDiscreteColorscale();
 
-function get2DMatrixColorIndex(purity, blueVal, hasBlueFeature = false) {
-    // purity: 0.0 = 100% Edible, 1.0 = 100% Poisonous
-    // col 0 = Ядовитый (0-25% Edible), col 3 = Съедобный (75-100% Edible)
-    const edible_ratio = Math.max(0, Math.min(1, 1.0 - purity));
-    let col = Math.min(3, Math.floor(edible_ratio * 4));
-
-    // If blue feature is NOT applied: 1D mode, use Row 0
-    if (!hasBlueFeature || blueVal === undefined || blueVal === null) {
-        return { colorIndex: 0 * 4 + col, isNoise: false };
-    }
-
-    // Noise filtering: < 25%
-    if (blueVal < 0.25) {
-        return { colorIndex: -1, isNoise: true };
-    }
-
-    let row = 0;
-    if (blueVal >= 0.75) {
-        row = 2;
-    } else if (blueVal >= 0.50) {
-        row = 1;
-    } else {
-        row = 0;
-    }
-
-    return { colorIndex: row * 4 + col, isNoise: false };
-}
-
-function renderDiscreteColorMatrix() {
-    const grid = document.getElementById('discreteMatrixGrid');
-    if (!grid) return;
-
-    const numRows = 3;
-    const numCols = 4;
-
-    grid.style.gridTemplateColumns = `repeat(${numCols}, 1fr)`;
-    grid.style.gridTemplateRows = `repeat(${numRows}, 1fr)`;
-    grid.innerHTML = '';
-
-    const tooltip = document.getElementById('matrixTooltip');
-    const rowRanges = [
-        { label: '25%–50%' },
-        { label: '50%–75%' },
-        { label: '>75%' }
-    ];
-
-    const colRanges = [
-        { label: '0%–25% (Ядовитый)' },
-        { label: '25%–50%' },
-        { label: '50%–75%' },
-        { label: '75%–100% (Съедобный)' }
-    ];
-
-    // Render from Row 2 (Top: >75%) down to Row 0 (Bottom: 25-50%)
-    for (let r = numRows - 1; r >= 0; r--) {
-        for (let c = 0; c < numCols; c++) {
-            const cellColor = DEFAULT_2D_PALETTE[r][c];
-            const cell = document.createElement('div');
-            cell.className = 'matrix-cell';
-            cell.style.backgroundColor = cellColor;
-            cell.style.border = '1px solid rgba(255, 255, 255, 0.15)';
-            cell.style.borderRadius = '3px';
-            cell.style.cursor = 'pointer';
-
-            const rowInfo = rowRanges[r];
-            const colInfo = colRanges[c];
-
-            cell.addEventListener('mouseenter', () => {
-                if (tooltip) {
-                    tooltip.style.display = 'block';
-                    tooltip.innerHTML = `🍄 Съедобность: <b>${colInfo.label}</b><br>🔷 Признак: <b>${rowInfo.label}</b><br><span style="font-size:0.68rem; color:#94a3b8;">Цвет: ${cellColor}</span>`;
-                }
-            });
-            cell.addEventListener('mouseleave', () => {
-                if (tooltip) {
-                    tooltip.style.display = 'none';
-                }
-            });
-
-            grid.appendChild(cell);
-        }
-    }
+function getColorIndexForPurity(purity) {
+    if (purity < 0.15) return 0;
+    if (purity < 0.30) return 1;
+    if (purity < 0.70) return 2;
+    if (purity < 0.85) return 3;
+    return 4;
 }
 
 function applyBlueFeature() {
@@ -292,32 +210,13 @@ function applyBlueFeature() {
 
     if (colSelect.value && valSelect.value) {
         currentBlueFeature = { col: colSelect.value, val: valSelect.value };
-        const blueLegendSection = document.getElementById('blueLegendSection');
-        const blueLegendName = document.getElementById('blueLegendName');
-        if (blueLegendSection) blueLegendSection.style.display = 'block';
-        if (blueLegendName) {
-            const colLabel = colSelect.options[colSelect.selectedIndex].text.split(' ')[0];
-            const valLabel = valSelect.options[valSelect.selectedIndex].text;
-            blueLegendName.innerText = `${colLabel} = ${valLabel}`;
-        }
-        renderDiscreteColorMatrix();
     } else {
         currentBlueFeature = null;
-        const blueLegendSection = document.getElementById('blueLegendSection');
-        if (blueLegendSection) blueLegendSection.style.display = 'none';
     }
 
     // Rerun analysis with the new blue feature if we have a current target
     if (currentPayload && currentPayload.target_labels) {
         runAnalysis('class', null);
-    }
-}
-
-function updateBlueThresholds() {
-    renderDiscreteColorMatrix();
-    if (currentPayload) {
-        renderPlot(currentPayload);
-        applyStroke(window._isStrokeActive || false);
     }
 }
 
@@ -558,7 +457,7 @@ function renderPlot(payload) {
     };
 
     const hasBlue = (currentBlueFeature !== null && currentBlueFeature.col);
-    
+
     let fx = [];
     let fy = [];
     let fz = [];
@@ -575,19 +474,19 @@ function renderPlot(payload) {
         const op = (currentOpacity && currentOpacity[i] !== undefined) ? currentOpacity[i] : 0.5;
         const b_val = (hasBlue && currentBlue && currentBlue[i] !== undefined) ? currentBlue[i] : null;
 
-        const res = get2DMatrixColorIndex(p, b_val, hasBlue);
-
-        // Completely EXCLUDE noise points (<25%) from the dataset
-        if (res.isNoise) {
+        // If secondary feature selected, use it as a visibility filter (exclude if < 25%)
+        if (hasBlue && b_val !== null && b_val < 0.25) {
             continue;
         }
+
+        const colorIndex = getColorIndexForPurity(p);
 
         fx.push(xCoords[i]);
         fy.push(yCoords[i]);
         fz.push(zCoords[i]);
 
-        // Convert palette hex to rgb() string — NO rgba, NO alpha channel anywhere
-        const hex = PALETTE_FLAT[res.colorIndex];
+        // Convert palette hex to rgb() string for Plotly
+        const hex = PROB_COLORS[colorIndex];
         const rr = parseInt(hex.slice(1, 3), 16);
         const gg = parseInt(hex.slice(3, 5), 16);
         const bb = parseInt(hex.slice(5, 7), 16);
@@ -687,12 +586,12 @@ function renderPlot(payload) {
 
     // Default camera distance is ~2.608 (sqrt(1.6^2 + 1.6^2 + 1.3^2))
     window._currentCameraScale = 1.0;
-    
+
     // Re-apply stroke if it was active
     applyStroke(window._isStrokeActive || false);
 
     const plotDiv = document.getElementById('plot-container');
-    plotDiv.on('plotly_relayout', function(eventData) {
+    plotDiv.on('plotly_relayout', function (eventData) {
         let eye = null;
         if (eventData['scene.camera'] && eventData['scene.camera'].eye) {
             eye = eventData['scene.camera'].eye;
@@ -704,7 +603,7 @@ function renderPlot(payload) {
             const distance = Math.sqrt(eye.x * eye.x + eye.y * eye.y + eye.z * eye.z);
             let scale = 2.61 / distance;
             scale = Math.max(0.1, Math.min(scale, 10.0)); // Restrict scaling limits
-            
+
             // Only restyle if the scale changed by at least 2% to avoid lag during drag
             const currentScale = window._currentCameraScale || 1.0;
             if (Math.abs(scale - currentScale) > 0.02) {
@@ -749,7 +648,7 @@ function applyStroke(enable) {
     let lineColors = new Array(n).fill('rgb(0,0,0)');
     let lineWidths = new Array(n).fill(0);
     let markerSizes = new Array(n);
-    
+
     const scale = window._currentCameraScale || 1.0;
 
     for (let i = 0; i < n; i++) {
@@ -792,22 +691,15 @@ function applyStroke(enable) {
 }
 
 function toggleMainAcc(id) {
-    const isCatalog = (id === 'catalog');
-    const hSearch = document.getElementById('headerSearch');
-    const cSearch = document.getElementById('contentSearch');
-    const hCat = document.getElementById('headerCatalog');
-    const cCat = document.getElementById('contentCatalog');
-
-    if (isCatalog) {
-        hSearch.classList.remove('open');
-        cSearch.classList.remove('open');
-        hCat.classList.add('open');
-        cCat.classList.add('open');
+    const header = document.getElementById(id === 'catalog' ? 'headerCatalog' : 'headerSearch');
+    const content = document.getElementById(id === 'catalog' ? 'contentCatalog' : 'contentSearch');
+    
+    if (header.classList.contains('open')) {
+        header.classList.remove('open');
+        content.classList.remove('open');
     } else {
-        hCat.classList.remove('open');
-        cCat.classList.remove('open');
-        hSearch.classList.add('open');
-        cSearch.classList.add('open');
+        header.classList.add('open');
+        content.classList.add('open');
     }
 }
 
