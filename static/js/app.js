@@ -279,6 +279,9 @@ function updateDashboard(payload, targetHistoryContainerId) {
 
     document.getElementById('val-dstar').innerText = `${m.d_star}D`;
     document.getElementById('val-vir').innerText = `${(m.vir * 100).toFixed(1)}%`;
+    const nmiVal = (m.nmi !== undefined) ? m.nmi : (1.0 - m.l_target);
+    const nmiEl = document.getElementById('val-nmi');
+    if (nmiEl) nmiEl.innerText = `${(nmiVal * 100).toFixed(1)}%`;
     document.getElementById('val-pval').innerText = 'p < 0.001';
     document.getElementById('val-loss').innerText = `${(m.l_target * 100).toFixed(1)}%`;
     document.getElementById('totalSamplesVal').innerText = (payload.total_samples || payload.x.length).toLocaleString();
@@ -363,6 +366,8 @@ function updateDashboard(payload, targetHistoryContainerId) {
                 item.className = 'history-item' + (step.step === activeDimensionality ? ' active' : '');
 
                 const virPct = (step.vir * 100).toFixed(1);
+                const nmiStepVal = (step.nmi !== undefined) ? step.nmi : (step.step === m.d_star ? (1.0 - m.l_target) : 0);
+                const nmiPct = (nmiStepVal * 100).toFixed(1);
                 const deltaPct = step.step === 1 ? '' : `(+${(step.delta_mi * 100).toFixed(1)}%)`;
 
                 let altsHtml = '';
@@ -370,7 +375,10 @@ function updateDashboard(payload, targetHistoryContainerId) {
                     altsHtml = '<div style="margin-top: 8px; padding-top: 6px; border-top: 1px solid rgba(255,255,255,0.05); font-size: 0.75rem; color: var(--text-dim);">';
                     altsHtml += '<div style="margin-bottom: 3px; font-weight: 600;">Альтернативы:</div>';
                     step.alternatives.forEach(a => {
-                        altsHtml += `<div>• ${a.feature} (MI: ${(a.vir * 100).toFixed(1)}%)</div>`;
+                        const altVir = (a.vir * 100).toFixed(1);
+                        const altNmi = a.nmi !== undefined ? `NMI: ${(a.nmi * 100).toFixed(1)}%` : `VIR: ${altVir}%`;
+                        const extraVir = a.nmi !== undefined ? ` (VIR: ${altVir}%)` : '';
+                        altsHtml += `<div>• ${a.feature} (${altNmi}${extraVir})</div>`;
                     });
                     altsHtml += '</div>';
                 }
@@ -383,7 +391,8 @@ function updateDashboard(payload, targetHistoryContainerId) {
                                         <div class="history-feature">${step.feature}</div>
                                     </div>
                                     <div class="history-stats">
-                                        <div class="history-mi">MI: ${virPct}%</div>
+                                        <div class="history-nmi" title="Normalized Mutual Information (NMI): реальная предсказательная сила центров относительно цели">NMI: ${nmiPct}%</div>
+                                        <div class="history-vir" title="Visual Information Ratio (VIR): полнота осей относительно всего датасета">VIR: ${virPct}%</div>
                                         <div class="history-delta">${deltaPct}</div>
                                     </div>
                                 </div>

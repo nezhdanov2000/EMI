@@ -16,7 +16,7 @@
     <!-- Plotly.js -->
     <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
 
-    <link rel="stylesheet" href="/static/css/styles.css?v=2">
+    <link rel="stylesheet" href="/static/css/styles.css?v=3">
 </head>
 
 <body>
@@ -82,24 +82,28 @@
             </div>
 
             <div class="viewport-toolbar">
-                <div style="display: flex; gap: 1.5rem; align-items: center; width: 100%;">
-                    <div style="font-weight: 600; font-size: 0.9rem; color: #f8fafc; border-right: 1px solid var(--border-color); padding-right: 1.5rem;">📊 Метрики VSF</div>
-                    <div style="display: flex; gap: 1.5rem; flex: 1;">
-                        <div style="display: flex; align-items: baseline; gap: 6px;">
+                <div style="display: flex; gap: 1.25rem; align-items: center; width: 100%; flex-wrap: wrap;">
+                    <div style="font-weight: 600; font-size: 0.9rem; color: #f8fafc; border-right: 1px solid var(--border-color); padding-right: 1.25rem;">📊 Метрики VSF</div>
+                    <div style="display: flex; gap: 1.25rem; flex: 1; flex-wrap: wrap;">
+                        <div style="display: flex; align-items: baseline; gap: 6px;" title="Normalized Mutual Information (NMI) — реальная предсказательная сила центров относительно цели (0% = хаос, 100% = точное разделение)">
+                            <span style="font-size: 0.75rem; color: var(--text-dim);">NMI (Сила связи):</span>
+                            <strong id="val-nmi" style="color: var(--accent-cyan); font-size: 1rem;">-</strong>
+                        </div>
+                        <div style="display: flex; align-items: baseline; gap: 6px;" title="Target Loss (100% - NMI) — потеря информации о цели. Чем выше, тем сильнее смешаны классы в центрах">
+                            <span style="font-size: 0.75rem; color: var(--text-dim);">Target Loss:</span>
+                            <strong id="val-loss" style="color: var(--amber); font-size: 1rem;">-</strong>
+                        </div>
+                        <div style="display: flex; align-items: baseline; gap: 6px;" title="Visual Information Ratio (VIR) — какую долю информации датасета отображает данный график">
+                            <span style="font-size: 0.75rem; color: var(--text-dim);">VIR (Полнота осей):</span>
+                            <strong id="val-vir" style="color: var(--green); font-size: 1rem;">-</strong>
+                        </div>
+                        <div style="display: flex; align-items: baseline; gap: 6px;" title="Оптимальное количество визуальных осей (размерность d*)">
                             <span style="font-size: 0.75rem; color: var(--text-dim);">Оптимально осей (d*):</span>
                             <strong id="val-dstar" style="color: var(--accent-purple); font-size: 1rem;">-</strong>
                         </div>
-                        <div style="display: flex; align-items: baseline; gap: 6px;">
-                            <span style="font-size: 0.75rem; color: var(--text-dim);">VIR:</span>
-                            <strong id="val-vir" style="color: var(--green); font-size: 1rem;">-</strong>
-                        </div>
-                        <div style="display: flex; align-items: baseline; gap: 6px;">
+                        <div style="display: flex; align-items: baseline; gap: 6px;" title="Статистическая значимость связи (пермутационный тест)">
                             <span style="font-size: 0.75rem; color: var(--text-dim);">p-value:</span>
-                            <strong id="val-pval" style="color: var(--accent-cyan); font-size: 1rem;">-</strong>
-                        </div>
-                        <div style="display: flex; align-items: baseline; gap: 6px;">
-                            <span style="font-size: 0.75rem; color: var(--text-dim);">Target Loss:</span>
-                            <strong id="val-loss" style="color: var(--amber); font-size: 1rem;">-</strong>
+                            <strong id="val-pval" style="color: var(--text-muted); font-size: 1rem;">-</strong>
                         </div>
                     </div>
                     <div style="font-size: 0.85rem; color: var(--text-dim);">
@@ -243,7 +247,7 @@
         </aside>
     </main>
 
-    <script src="/static/js/app.js"></script>
+    <script src="/static/js/app.js?v=3"></script>
 </body>
 
 </html>

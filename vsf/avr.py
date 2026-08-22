@@ -148,13 +148,16 @@ class AVREngine:
         # Pick best first feature
         S = [sorted_F[0]]
         i_1d = mutual_information(Z_discrete, X_discrete[:, S])
+        nmi_1d = normalized_mutual_information(Z_discrete, X_discrete[:, S])
         
         alt_1d = []
         for j in sorted_F[1:4]:
             i_alt = marginal_mis[j]
+            nmi_alt = normalized_mutual_information(Z_discrete, X_discrete[:, [j]])
             alt_1d.append({
                 'feature': feature_names[j],
                 'mi': float(i_alt),
+                'nmi': float(nmi_alt),
                 'vir': float(i_alt / i_F_all) if i_F_all > 1e-12 else 1.0,
                 'delta_mi': float(i_alt)
             })
@@ -164,6 +167,7 @@ class AVREngine:
             'feature': feature_names[S[0]],
             'features_so_far': [feature_names[j] for j in S],
             'mi': float(i_1d),
+            'nmi': float(nmi_1d),
             'vir': float(i_1d / i_F_all) if i_F_all > 1e-12 else 1.0,
             'delta_mi': float(i_1d),
             'alternatives': alt_1d
@@ -225,19 +229,24 @@ class AVREngine:
             
             alt_d = []
             for j_alt, d_alt, i_alt in top_alts:
+                x_alt_comb = np.column_stack([X_S_curr, X_discrete[:, j_alt]])
+                nmi_alt = normalized_mutual_information(Z_discrete, x_alt_comb)
                 alt_d.append({
                     'feature': feature_names[j_alt],
                     'mi': float(i_alt),
+                    'nmi': float(nmi_alt),
                     'vir': float(i_alt / i_F_all) if i_F_all > 1e-12 else 1.0,
                     'delta_mi': float(d_alt)
                 })
             
             i_S_curr = mutual_information(Z_discrete, X_discrete[:, S])
+            nmi_S_curr = normalized_mutual_information(Z_discrete, X_discrete[:, S])
             selection_history.append({
                 'step': d,
                 'feature': feature_names[best_candidate],
                 'features_so_far': [feature_names[j] for j in S],
                 'mi': float(i_S_curr),
+                'nmi': float(nmi_S_curr),
                 'vir': float(i_S_curr / i_F_all) if i_F_all > 1e-12 else 1.0,
                 'delta_mi': float(best_delta_i),
                 'alternatives': alt_d
@@ -281,15 +290,22 @@ class AVREngine:
         # Routing Triggers:
         if d_star <= 3:
             scenario = Scenario.SCENARIO_A
-            xai_msg = (
-                f"СЦЕНАРИЙ А (Минимализм): Выбрано d* = {d_star} осей. "
-                f"Структура данных объясняется 2-3 признаками без потери точности."
-            )
+            if l_target > 0.70:
+                xai_msg = (
+                    f"СЦЕНАРИЙ А (Минимализм): Выбрано d* = {d_star} осей. "
+                    f"Проекция охватывает {vir*100:.1f}% информации датасета (VIR). "
+                    f"Однако связь с целью слабая (NMI = {nmi_S_star*100:.1f}%, Target Loss = {l_target*100:.1f}%), центры смешаны."
+                )
+            else:
+                xai_msg = (
+                    f"СЦЕНАРИЙ А (Минимализм): Выбрано d* = {d_star} осей. "
+                    f"Структура цели объясняется {d_star} признаками (VIR = {vir*100:.1f}%, NMI = {nmi_S_star*100:.1f}%)."
+                )
         elif 4 <= d_star <= 7 and vir >= self.vir_threshold:
             scenario = Scenario.SCENARIO_B
             xai_msg = (
                 f"СЦЕНАРИЙ Б (Полная загрузка): Выбрано d* = {d_star} осей. "
-                f"VIR = {vir*100:.1f}% (>= {self.vir_threshold*100:.0f}%). Многомерная структура полностью отображена."
+                f"VIR = {vir*100:.1f}% (>= {self.vir_threshold*100:.0f}%), NMI = {nmi_S_star*100:.1f}%. Многомерная структура отображена."
             )
         elif d_star == 7 and vir < self.vir_threshold:
             scenario = Scenario.SCENARIO_C

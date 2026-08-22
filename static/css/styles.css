@@ -664,16 +664,32 @@
 
         .history-stats {
             text-align: right;
+            display: flex;
+            flex-direction: column;
+            align-items: flex-end;
+            gap: 2px;
+        }
+
+        .history-nmi {
+            font-size: 0.85rem;
+            color: var(--accent-cyan);
+            font-weight: 600;
+        }
+
+        .history-vir {
+            font-size: 0.75rem;
+            color: var(--green);
+            font-weight: 500;
         }
 
         .history-mi {
-            font-size: 0.9rem;
+            font-size: 0.85rem;
             color: var(--green);
             font-weight: 600;
         }
 
         .history-delta {
-            font-size: 0.75rem;
+            font-size: 0.7rem;
             color: var(--text-dim);
         }
 

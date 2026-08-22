@@ -318,6 +318,7 @@ def prepare_visualization_payload(
             "d_star": result.d_star,
             "scenario": result.scenario.value,
             "vir": float(result.vir),
+            "nmi": float(result.nmi_full if result.d_star == 0 else (1.0 - result.l_target)),
             "l_target": float(result.l_target),
             "l_feat": float(result.l_feat),
             "nmi_full": float(result.nmi_full),
@@ -325,7 +326,13 @@ def prepare_visualization_payload(
             "history": [
                 {
                     **h,
-                    "feature": humanize_col(h["feature"])
+                    "feature": humanize_col(h["feature"]),
+                    "alternatives": [
+                        {
+                            **alt,
+                            "feature": humanize_col(alt["feature"])
+                        } for alt in h.get("alternatives", [])
+                    ]
                 } for h in result.selection_history
             ] if hasattr(result, 'selection_history') and result.selection_history else [],
         },
