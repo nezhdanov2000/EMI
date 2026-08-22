@@ -150,24 +150,35 @@ def prepare_visualization_payload(
     y_col_idx = selected_idx[1] if len(selected_idx) > 1 else (1 if n_features > 1 else 0)
     z_col_idx = selected_idx[2] if len(selected_idx) > 2 else (2 if n_features > 2 else 0)
 
+    # 4th dimension (slice axis) — extracted when d* >= 4
+    has_4d = d_star >= 4 and len(selected_idx) >= 4
+    w_col_idx = selected_idx[3] if has_4d else None
+
     x_name = feature_names[x_col_idx]
     y_name = feature_names[y_col_idx]
     z_name = feature_names[z_col_idx]
+    w_name = feature_names[w_col_idx] if has_4d else None
 
     x_vals = X_sub[:, x_col_idx]
     y_vals = X_sub[:, y_col_idx]
     z_vals = X_sub[:, z_col_idx]
+    w_vals = X_sub[:, w_col_idx] if has_4d else None
 
     # Human-readable value strings
     x_human = [humanize_val(x_name, v) for v in x_vals]
     y_human = [humanize_val(y_name, v) for v in y_vals]
     z_human = [humanize_val(z_name, v) for v in z_vals]
+    w_human = [humanize_val(w_name, v) for v in w_vals] if has_4d else None
     z_target_human = [humanize_val(target_name, v) for v in Z_sub]
 
     # Target-Conditioned Categorical Ordering
     x_num, x_ticks = target_conditioned_sort(x_vals, Z_sub, col_name=x_name)
     y_num, y_ticks = target_conditioned_sort(y_vals, Z_sub, col_name=y_name)
     z_num, z_ticks = target_conditioned_sort(z_vals, Z_sub, col_name=z_name)
+    if has_4d:
+        w_num, w_ticks = target_conditioned_sort(w_vals, Z_sub, col_name=w_name)
+    else:
+        w_num, w_ticks = None, None
     
     unique_targets, color_num = np.unique(Z_sub, return_inverse=True)
     unique_target_labels = [humanize_val(target_name, t) for t in unique_targets]
@@ -224,9 +235,12 @@ def prepare_visualization_payload(
         for i, idx in enumerate(indices)
     ]
 
-    def build_grid(dim):
+    def build_grid(dim, slice_mask=None):
+        """Build discrete center grid. If slice_mask is provided, only include samples where slice_mask[i] is True."""
         g_groups = defaultdict(list)
         for idx_in_sub, (cx, cy, cz) in enumerate(zip(x_num, y_num, z_num)):
+            if slice_mask is not None and not slice_mask[idx_in_sub]:
+                continue
             _cy = cy if dim >= 2 else -0.5
             _cz = cz if dim >= 3 else -0.5
             g_groups[(cx, _cy, _cz)].append(idx_in_sub)
@@ -256,17 +270,22 @@ def prepare_visualization_payload(
             hy = y_human[c_idx[0]] if dim >= 2 else "Свернуто"
             hz = z_human[c_idx[0]] if dim >= 3 else "Свернуто"
             
+            # Include 4D slice label in hover if applicable
+            hw = w_human[c_idx[0]] if (has_4d and w_human and slice_mask is not None) else None
             
             target_pos_label = unique_target_labels[-1] if unique_target_labels else "положительного класса"
             
+            dim_label = "4D Срез" if (slice_mask is not None and has_4d) else f"{dim}D"
             hov = (
-                f"<b>📍 Дискретный Центр ({dim}D)</b><br>"
+                f"<b>📍 Дискретный Центр ({dim_label})</b><br>"
                 f"🎯 <b>Доля {target_pos_label}:</b> {pur*100:.1f}%<br>"
                 f"📦 <b>Объектов:</b> {N_c} шт.<br>"
                 f"💠 <b>X:</b> {hx}<br>"
                 f"💠 <b>Y:</b> {hy}<br>"
                 f"💠 <b>Z:</b> {hz}"
             )
+            if hw is not None:
+                hov += f"<br>🎞️ <b>{humanize_col(w_name)}:</b> {hw}"
             if blue_mask_sub is not None:
                 hov += f"<br>🌟 <b>Свечение (Синий):</b> {gblue[-1]*100:.1f}%"
                 
@@ -278,6 +297,20 @@ def prepare_visualization_payload(
         "2": build_grid(2),
         "3": build_grid(3)
     }
+
+    # Generate per-slice grids for 4D visualization
+    slice_axis_info = None
+    if has_4d and w_num is not None and w_ticks is not None:
+        slice_counts = []
+        for sv_idx in range(len(w_ticks)):
+            mask = (w_num == sv_idx)
+            grids[f"4_{sv_idx}"] = build_grid(3, slice_mask=mask)
+            slice_counts.append(int(np.sum(mask)))
+        slice_axis_info = {
+            "name": humanize_col(w_name),
+            "ticks": w_ticks,
+            "counts": slice_counts
+        }
 
     return {
         "x": x_num.tolist(),
@@ -310,6 +343,7 @@ def prepare_visualization_payload(
             "y": {"vals": list(range(len(y_ticks))), "text": y_ticks},
             "z": {"vals": list(range(len(z_ticks))), "text": z_ticks},
         },
+        "slice_axis": slice_axis_info,
         "total_samples": len(indices),
         "all_feature_names": [humanize_col(fn) for fn in feature_names],
         "raw_feature_names": feature_names,

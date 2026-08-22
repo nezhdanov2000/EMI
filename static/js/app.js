@@ -2,6 +2,7 @@ let currentPayload = null;
 let activeDimensionality = null;
 let activeCritItem = null;
 let allColumnsData = [];
+let activeSliceIndex = null;  // Current 4D slice index (null = show all / no 4D)
 
 // Predefined color palettes for clear class separation
 const CLASS_COLORS = [
@@ -226,6 +227,16 @@ function updateDashboard(payload, targetHistoryContainerId) {
         activeDimensionality = Math.min(m.d_star, 3) || 1;
     }
 
+    // Handle 4D slice controller
+    if (payload.slice_axis) {
+        activeSliceIndex = 0;  // Default to first slice
+        renderSliceTabs(payload);
+    } else {
+        activeSliceIndex = null;
+        const sliceCtrl = document.getElementById('slice-controller');
+        if (sliceCtrl) sliceCtrl.style.display = 'none';
+    }
+
     document.getElementById('val-dstar').innerText = `${m.d_star}D`;
     document.getElementById('val-vir').innerText = `${(m.vir * 100).toFixed(1)}%`;
     const nmiVal = (m.nmi !== undefined) ? m.nmi : (1.0 - m.l_target);
@@ -372,9 +383,66 @@ function setDimensionality(d) {
     }
 }
 
+function renderSliceTabs(payload) {
+    const sliceCtrl = document.getElementById('slice-controller');
+    const sliceName = document.getElementById('slice-axis-name');
+    const sliceTabsContainer = document.getElementById('slice-tabs');
+    
+    if (!sliceCtrl || !payload.slice_axis) return;
+    
+    sliceCtrl.style.display = 'flex';
+    sliceName.textContent = payload.slice_axis.name;
+    
+    let tabsHtml = '';
+    // "All" tab
+    tabsHtml += `<button class="slice-tab" onclick="selectSlice(null)" data-slice="all">Все<span class="slice-count">(${payload.total_samples})</span></button>`;
+    
+    // Per-category tabs
+    payload.slice_axis.ticks.forEach((label, idx) => {
+        const count = payload.slice_axis.counts[idx];
+        const activeClass = (idx === activeSliceIndex) ? ' active' : '';
+        tabsHtml += `<button class="slice-tab${activeClass}" onclick="selectSlice(${idx})" data-slice="${idx}">${label}<span class="slice-count">(n=${count})</span></button>`;
+    });
+    
+    sliceTabsContainer.innerHTML = tabsHtml;
+}
+
+function selectSlice(idx) {
+    activeSliceIndex = idx;
+    
+    // Update tab active states
+    const tabs = document.querySelectorAll('#slice-tabs .slice-tab');
+    tabs.forEach(tab => {
+        const tabSlice = tab.getAttribute('data-slice');
+        if (idx === null && tabSlice === 'all') {
+            tab.classList.add('active');
+        } else if (idx !== null && tabSlice === String(idx)) {
+            tab.classList.add('active');
+        } else {
+            tab.classList.remove('active');
+        }
+    });
+    
+    // Re-render plot with new slice
+    if (currentPayload) {
+        renderPlot(currentPayload);
+    }
+}
+
 function renderPlot(payload) {
     let dimStr = activeDimensionality.toString();
-    let g = payload.grids ? payload.grids[dimStr] : null;
+    
+    // Determine which grid to use: 4D slice or standard dimension
+    let gridKey = dimStr;
+    if (payload.slice_axis && activeSliceIndex !== null) {
+        gridKey = `4_${activeSliceIndex}`;
+    }
+    let g = payload.grids ? payload.grids[gridKey] : null;
+    
+    // Fallback to standard 3D grid if slice grid not found
+    if (!g && payload.grids) {
+        g = payload.grids[dimStr];
+    }
 
     let xCoords = g ? g.x : payload.grid_x;
     let yCoords = g ? g.y : payload.grid_y;

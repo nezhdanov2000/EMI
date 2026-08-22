@@ -16,7 +16,7 @@
     <!-- Plotly.js -->
     <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
 
-    <link rel="stylesheet" href="/static/css/styles.css?v=7">
+    <link rel="stylesheet" href="/static/css/styles.css?v=9">
 </head>
 
 <body>
@@ -122,6 +122,17 @@
             </div>
 
             <div id="plot-container"></div>
+
+            <!-- 4D Slice Controller -->
+            <div id="slice-controller" class="slice-controller" style="display: none;">
+                <div class="slice-label">
+                    <span>🎞️</span>
+                    <span>4D Срез: <strong id="slice-axis-name">—</strong></span>
+                </div>
+                <div id="slice-tabs" class="slice-tabs">
+                    <!-- Tabs injected by JS -->
+                </div>
+            </div>
         </section>
 
         <!-- Visual Settings Sidebar -->
@@ -287,7 +298,7 @@
         </aside>
     </main>
 
-    <script src="/static/js/app.js?v=15"></script>
+    <script src="/static/js/app.js?v=16"></script>
 </body>
 
 </html>
