@@ -513,6 +513,7 @@ function renderSliceTabs(payload) {
 }
 
 function selectSlice(idx) {
+    window._lastActiveSliceIndex = activeSliceIndex;
     activeSliceIndex = idx;
     
     const tabs = document.querySelectorAll('#slice-tabs .slice-tab');
@@ -539,7 +540,7 @@ function selectSlice(idx) {
         if (currentRenderedDim === null) {
             renderPlot(currentPayload);
         } else {
-            renderPlot(currentPayload);
+            transitionDimensionality(currentRenderedDim, 4, window._lastActiveSliceIndex);
         }
     }
 }
@@ -665,6 +666,7 @@ function buildPlotData(payload, dim, sliceIndex) {
     const layout = {
         paper_bgcolor: '#070a13', plot_bgcolor: '#070a13', showlegend: false,
         scene: {
+            aspectmode: 'cube',
             xaxis: {
                 title: { text: payload.axis_names.x, font: { color: '#c084fc', size: 13 } },
                 tickvals: payload.axis_ticks ? payload.axis_ticks.x.vals : undefined,
@@ -884,45 +886,159 @@ function animateScatter3d(startX, startY, startZ, startSizes, startColors, endX,
     requestAnimationFrame(update);
 }
 
-function transitionDimensionality(fromDim, toDim) {
-    if (fromDim === toDim) return;
-    isAnimating = true;
+function getSliceMap(payload) {
+    const map = {};
+    if (!payload || !payload.grids || !payload.slice_axis || !payload.slice_axis.ticks) return map;
+    const count = payload.slice_axis.ticks.length;
+    for (let i = 0; i < count; i++) {
+        const grid = payload.grids[`4_${i}`];
+        if (grid) {
+            for (let j = 0; j < grid.x.length; j++) {
+                const key = `${grid.x[j]}_${grid.y[j]}_${grid.z[j]}`;
+                if (map[key] === undefined) {
+                    map[key] = i; // Store first slice where it appears
+                }
+            }
+        }
+    }
+    return map;
+}
+
+function buildAnimationArrays(startData, endData, payload, refSlice) {
+    const startTrace = startData.traces[1];
+    const endTrace = endData.traces[1];
+    const sliceMap = getSliceMap(payload);
     
+    const startX = [], startY = [], startZ = [], startSizes = [], startColors = [], startHover = [];
+    const endX = [], endY = [], endZ = [], endSizes = [], endColors = [], endHover = [];
+    
+    const startDict = {};
+    for (let i = 0; i < startTrace.x.length; i++) {
+        const key = `${startTrace.x[i]}_${startTrace.y[i]}_${startTrace.z[i]}`;
+        startDict[key] = i;
+    }
+    
+    const endDict = {};
+    for (let i = 0; i < endTrace.x.length; i++) {
+        const key = `${endTrace.x[i]}_${endTrace.y[i]}_${endTrace.z[i]}`;
+        endDict[key] = i;
+    }
+    
+    const unionKeys = new Set([...Object.keys(startDict), ...Object.keys(endDict)]);
+    if (refSlice === undefined || refSlice === null) refSlice = 0;
+    
+    unionKeys.forEach(key => {
+        const sIdx = startDict[key];
+        const eIdx = endDict[key];
+        let pointSlice = sliceMap[key];
+        if (pointSlice === undefined) pointSlice = 0;
+        
+        let xOffset = 0;
+        if (pointSlice < refSlice) xOffset = -25;
+        else if (pointSlice > refSlice) xOffset = 25;
+        else xOffset = (Math.random() > 0.5 ? 25 : -25);
+        
+        let cx, cy, cz;
+        if (sIdx !== undefined && eIdx !== undefined) {
+            cx = startTrace.x[sIdx]; cy = startTrace.y[sIdx]; cz = startTrace.z[sIdx];
+            startX.push(cx); startY.push(cy); startZ.push(cz);
+            startSizes.push(startTrace.marker.size[sIdx]);
+            startColors.push(startTrace.marker.color[sIdx]);
+            startHover.push(startTrace.hovertext[sIdx]);
+            
+            endX.push(endTrace.x[eIdx]); endY.push(endTrace.y[eIdx]); endZ.push(endTrace.z[eIdx]);
+            endSizes.push(endTrace.marker.size[eIdx]);
+            endColors.push(endTrace.marker.color[eIdx]);
+            endHover.push(endTrace.hovertext[eIdx]);
+        } else if (sIdx !== undefined) {
+            cx = startTrace.x[sIdx]; cy = startTrace.y[sIdx]; cz = startTrace.z[sIdx];
+            startX.push(cx); startY.push(cy); startZ.push(cz);
+            startSizes.push(startTrace.marker.size[sIdx]);
+            startColors.push(startTrace.marker.color[sIdx]);
+            startHover.push(startTrace.hovertext[sIdx]);
+            
+            endX.push(cx + xOffset); endY.push(cy); endZ.push(cz);
+            endSizes.push(0.1);
+            endColors.push(startTrace.marker.color[sIdx]);
+            endHover.push(startTrace.hovertext[sIdx]);
+        } else if (eIdx !== undefined) {
+            cx = endTrace.x[eIdx]; cy = endTrace.y[eIdx]; cz = endTrace.z[eIdx];
+            startX.push(cx + xOffset); startY.push(cy); startZ.push(cz);
+            startSizes.push(0.1);
+            startColors.push(endTrace.marker.color[eIdx]);
+            startHover.push(endTrace.hovertext[eIdx]);
+            
+            endX.push(cx); endY.push(cy); endZ.push(cz);
+            endSizes.push(endTrace.marker.size[eIdx]);
+            endColors.push(endTrace.marker.color[eIdx]);
+            endHover.push(endTrace.hovertext[eIdx]);
+        }
+    });
+    
+    return { startX, startY, startZ, startSizes, startColors, startHover, endX, endY, endZ, endSizes, endColors, endHover };
+}
+
+function transitionDimensionality(fromDim, toDim, oldSliceIndex = null) {
+    if (fromDim === toDim && toDim !== 4) return;
+    if (fromDim === 4 && toDim === 4 && oldSliceIndex === activeSliceIndex) return;
+    
+    isAnimating = true;
     const wasStrokeActive = window._isStrokeActive;
     if (wasStrokeActive) applyStroke(false);
     
-    const duration = 600; // ms
+    const duration = 600;
     
-    if (fromDim < toDim) {
-        // SPLIT
+    if (fromDim === 4 || toDim === 4) {
+        // Film Strip / 4D Transition
+        let refSlice = toDim === 4 ? activeSliceIndex : oldSliceIndex;
+        if (refSlice === undefined || refSlice === null) refSlice = 0;
+        
+        let actualFromSlice = fromDim === 4 ? (toDim === 4 ? oldSliceIndex : activeSliceIndex) : null;
+        const startData = buildPlotData(currentPayload, fromDim, actualFromSlice);
+        const targetData = buildPlotData(currentPayload, toDim, activeSliceIndex);
+        
+        const anim = buildAnimationArrays(startData, targetData, currentPayload, refSlice);
+        
+        window._lastFilteredData = {
+            purity: targetData.fPurity, opacity: targetData.fOpacity, baseSizes: targetData.fSizes
+        };
+        
+        Plotly.restyle('plot-container', {
+            'x': [anim.startX], 'y': [anim.startY], 'z': [anim.startZ],
+            'marker.size': [anim.startSizes], 'marker.color': [anim.startColors], 'hovertext': [anim.startHover]
+        }, 1).then(() => {
+            currentRenderedDim = toDim;
+            requestAnimationFrame(() => {
+                animateScatter3d(
+                    anim.startX, anim.startY, anim.startZ, anim.startSizes, anim.startColors,
+                    anim.endX, anim.endY, anim.endZ, anim.endSizes, anim.endColors,
+                    duration, () => {
+                        isAnimating = false;
+                        if (wasStrokeActive) applyStroke(true);
+                        Plotly.restyle('plot-container', {
+                            'x': [targetData.traces[1].x], 'y': [targetData.traces[1].y], 'z': [targetData.traces[1].z],
+                            'marker.size': [targetData.traces[1].marker.size], 'marker.color': [targetData.traces[1].marker.color], 'hovertext': [targetData.traces[1].hovertext]
+                        }, 1);
+                    }
+                );
+            });
+        });
+    } else if (fromDim < toDim) {
+        // SPLIT (1D/2D -> 3D)
         const targetData = buildPlotData(currentPayload, toDim, activeSliceIndex);
         const traceToAnimate = targetData.traces[1];
         const flatStart = flattenCoordinates(traceToAnimate.x, traceToAnimate.y, traceToAnimate.z, fromDim);
         
-        const origX = traceToAnimate.x;
-        const origY = traceToAnimate.y;
-        const origZ = traceToAnimate.z;
-        const origSizes = traceToAnimate.marker.size;
-        const origColors = traceToAnimate.marker.color;
-        const origHover = traceToAnimate.hovertext;
+        const origX = traceToAnimate.x, origY = traceToAnimate.y, origZ = traceToAnimate.z;
+        const origSizes = traceToAnimate.marker.size, origColors = traceToAnimate.marker.color, origHover = traceToAnimate.hovertext;
         
-        window._lastFilteredData = {
-            purity: targetData.fPurity,
-            opacity: targetData.fOpacity,
-            baseSizes: targetData.fSizes
-        };
+        window._lastFilteredData = { purity: targetData.fPurity, opacity: targetData.fOpacity, baseSizes: targetData.fSizes };
         
-        // Immediately set points to flatStart to simulate 2D
         Plotly.restyle('plot-container', {
-            'x': [flatStart.x],
-            'y': [flatStart.y],
-            'z': [flatStart.z],
-            'marker.size': [origSizes],
-            'marker.color': [origColors],
-            'hovertext': [origHover]
+            'x': [flatStart.x], 'y': [flatStart.y], 'z': [flatStart.z],
+            'marker.size': [origSizes], 'marker.color': [origColors], 'hovertext': [origHover]
         }, 1).then(() => {
             currentRenderedDim = toDim;
-            // Next frame start animating out to true 3D
             requestAnimationFrame(() => {
                 animateScatter3d(
                     flatStart.x, flatStart.y, flatStart.z, origSizes, origColors,
@@ -935,18 +1051,14 @@ function transitionDimensionality(fromDim, toDim) {
             });
         });
     } else {
-        // COLLAPSE
+        // COLLAPSE (3D -> 1D/2D)
         const startData = buildPlotData(currentPayload, fromDim, activeSliceIndex);
         const traceToAnimate = startData.traces[1];
-        
         const flatEnd = flattenCoordinates(traceToAnimate.x, traceToAnimate.y, traceToAnimate.z, toDim);
         const targetData = buildPlotData(currentPayload, toDim, activeSliceIndex);
         
-        const origX = traceToAnimate.x;
-        const origY = traceToAnimate.y;
-        const origZ = traceToAnimate.z;
-        const origSizes = traceToAnimate.marker.size;
-        const origColors = traceToAnimate.marker.color;
+        const origX = traceToAnimate.x, origY = traceToAnimate.y, origZ = traceToAnimate.z;
+        const origSizes = traceToAnimate.marker.size, origColors = traceToAnimate.marker.color;
         
         const targetSizes = targetData.traces[1].marker.size;
         const targetColors = targetData.traces[1].marker.color;
@@ -956,19 +1068,10 @@ function transitionDimensionality(fromDim, toDim) {
             origX, origY, origZ, origSizes, origColors,
             flatEnd.x, flatEnd.y, flatEnd.z, origSizes, origColors,
             duration, () => {
-                window._lastFilteredData = {
-                    purity: targetData.fPurity,
-                    opacity: targetData.fOpacity,
-                    baseSizes: targetData.fSizes
-                };
-                // Instant swap to aggregated lower dimension data without touching layout
+                window._lastFilteredData = { purity: targetData.fPurity, opacity: targetData.fOpacity, baseSizes: targetData.fSizes };
                 Plotly.restyle('plot-container', {
-                    'x': [targetData.traces[1].x],
-                    'y': [targetData.traces[1].y],
-                    'z': [targetData.traces[1].z],
-                    'marker.size': [targetSizes],
-                    'marker.color': [targetColors],
-                    'hovertext': [targetHover]
+                    'x': [targetData.traces[1].x], 'y': [targetData.traces[1].y], 'z': [targetData.traces[1].z],
+                    'marker.size': [targetSizes], 'marker.color': [targetColors], 'hovertext': [targetHover]
                 }, 1).then(() => {
                     currentRenderedDim = toDim;
                     isAnimating = false;
