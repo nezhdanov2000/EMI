@@ -292,6 +292,13 @@ def prepare_visualization_payload(
             ghov.append(hov)
         return {"x": gx, "y": gy, "z": gz, "opacity": gop, "purity": gpur, "blue": gblue, "sizes": gsz, "hover_text": ghov}
 
+    # Calculate global max points per cell for consistent scaling
+    g_groups_3d = {}
+    for idx_in_sub, (cx, cy, cz) in enumerate(zip(x_num, y_num, z_num)):
+        key = (cx, cy, cz)
+        g_groups_3d[key] = g_groups_3d.get(key, 0) + 1
+    global_max_n = max(g_groups_3d.values()) if g_groups_3d else 1
+
     grids = {
         "1": build_grid(1),
         "2": build_grid(2),
@@ -321,6 +328,8 @@ def prepare_visualization_payload(
         "y_jitter": y_cube.tolist(),
         "z_jitter": z_cube.tolist(),
         "grids": grids,
+        "global_max_n": global_max_n,
+        "grid_sizes": grids["3"]["sizes"],
         "grid_x": grids["3"]["x"],
         "grid_y": grids["3"]["y"],
         "grid_z": grids["3"]["z"],

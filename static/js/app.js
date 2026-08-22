@@ -566,7 +566,7 @@ function buildPlotData(payload, dim, sliceIndex) {
     let zCoords = g ? g.z : payload.grid_z;
 
     let currentPurity = g ? g.purity : payload.grid_purity;
-    let currentOpacity = g ? g.opacity : payload.grid_opacity;
+    let currentSizes = g ? g.sizes : payload.grid_sizes;
     let currentBlue = g ? g.blue : payload.grid_blue_concentration;
     let currentHover = g ? g.hover_text : payload.grid_hover_text;
 
@@ -625,7 +625,7 @@ function buildPlotData(payload, dim, sliceIndex) {
     const totalPts = xCoords ? xCoords.length : 0;
     for (let i = 0; i < totalPts; i++) {
         const p = (currentPurity && currentPurity[i] !== undefined) ? currentPurity[i] : 0.5;
-        const op = (currentOpacity && currentOpacity[i] !== undefined) ? currentOpacity[i] : 0.5;
+        const n_c = (currentSizes && currentSizes[i] !== undefined) ? currentSizes[i] : 1;
         const b_val = (hasBlue && currentBlue && currentBlue[i] !== undefined) ? currentBlue[i] : null;
 
         if (hasBlue && b_val !== null && b_val < 0.25) continue;
@@ -643,9 +643,10 @@ function buildPlotData(payload, dim, sliceIndex) {
         fColors.push(`rgb(${rr}, ${gg}, ${bb})`);
 
         fPurity.push(p);
-        fOpacity.push(op);
 
-        const baseSize = 6 + op * 18.0;
+        // Area Scaling (Q1 Standard): Diameter ~ sqrt(N)
+        const maxN = payload.global_max_n || 1;
+        const baseSize = 3 + 13 * Math.sqrt(n_c / maxN);
         fSizes.push(baseSize);
 
         if (currentHover && currentHover[i]) fHover.push(currentHover[i]);
