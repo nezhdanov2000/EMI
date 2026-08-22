@@ -147,7 +147,7 @@ let currentBlueFeature = null;
 function populateBlueFeatureDropdowns(cols) {
     const colSelect = document.getElementById('blueFeatureCol');
     if (!colSelect) return;
-    
+
     cols.forEach(col => {
         const option = document.createElement('option');
         option.value = col.id;
@@ -160,9 +160,9 @@ function onBlueColChange() {
     const colSelect = document.getElementById('blueFeatureCol');
     const valSelect = document.getElementById('blueFeatureVal');
     valSelect.innerHTML = '<option value="">-- Выберите --</option>';
-    
+
     if (colSelect.value === '') return;
-    
+
     const colData = allColumnsData.find(c => c.id === colSelect.value);
     if (colData && colData.criteria) {
         colData.criteria.forEach(crit => {
@@ -174,55 +174,105 @@ function onBlueColChange() {
     }
 }
 
+const DEFAULT_2D_PALETTE = [
+    // Ряд 0 (Низ: 25% – 50%): [0-25% Съед (Ядовитый / Красный), 25-50% (Оранжевый), 50-75% (Салатовый), 75-100% (Съедобный / Зеленый)]
+    ['#E82B10', '#EB751A', '#6BBF26', '#52FF33'],
+    // Ряд 1 (Середина: 50% – 75%): [Желтый, Коричневый, Темно-зеленый, Белый]
+    ['#EBF033', '#661A00', '#2C5A14', '#FFFFFF'],
+    // Ряд 2 (Верх: 75% – 100%): [Розовый, Фиолетовый, Синий, Голубой]
+    ['#F024EB', '#7E0CF5', '#0018F5', '#52F5FF']
+];
+
+// Flat list of all 12 unique palette colors (row0col0, row0col1, ..., row2col3)
+// Index 0..3 = Row 0 (25-50%), Index 4..7 = Row 1 (50-75%), Index 8..11 = Row 2 (>75%)
+const PALETTE_FLAT = DEFAULT_2D_PALETTE.flat();
+const PALETTE_COUNT = PALETTE_FLAT.length; // 12
+
+// Build a Plotly discrete colorscale: array of [normalizedVal, hexColor]
+// Each color occupies a band of width 1/12 in the [0, 1] range
+function buildDiscreteColorscale() {
+    const scale = [];
+    for (let i = 0; i < PALETTE_COUNT; i++) {
+        const lo = i / PALETTE_COUNT;
+        const hi = (i + 1) / PALETTE_COUNT;
+        scale.push([lo, PALETTE_FLAT[i]]);
+        scale.push([hi, PALETTE_FLAT[i]]);
+    }
+    return scale;
+}
+const DISCRETE_COLORSCALE = buildDiscreteColorscale();
+
+function get2DMatrixColorIndex(purity, blueVal, hasBlueFeature = false) {
+    // purity: 0.0 = 100% Edible, 1.0 = 100% Poisonous
+    // col 0 = Ядовитый (0-25% Edible), col 3 = Съедобный (75-100% Edible)
+    const edible_ratio = Math.max(0, Math.min(1, 1.0 - purity));
+    let col = Math.min(3, Math.floor(edible_ratio * 4));
+
+    // If blue feature is NOT applied: 1D mode, use Row 0
+    if (!hasBlueFeature || blueVal === undefined || blueVal === null) {
+        return { colorIndex: 0 * 4 + col, isNoise: false };
+    }
+
+    // Noise filtering: < 25%
+    if (blueVal < 0.25) {
+        return { colorIndex: -1, isNoise: true };
+    }
+
+    let row = 0;
+    if (blueVal >= 0.75) {
+        row = 2;
+    } else if (blueVal >= 0.50) {
+        row = 1;
+    } else {
+        row = 0;
+    }
+
+    return { colorIndex: row * 4 + col, isNoise: false };
+}
+
 function renderDiscreteColorMatrix() {
     const grid = document.getElementById('discreteMatrixGrid');
     if (!grid) return;
 
-    // Parse thresholds
-    let blueThresholds = [0, 0.25, 0.5, 0.75, 1.0];
-    const thresInput = document.getElementById('blueThresholds');
-    if (thresInput) {
-        let vals = thresInput.value.split(',').map(v => parseFloat(v.trim()) / 100).filter(v => !isNaN(v));
-        if (vals.length > 0) {
-            blueThresholds = vals.sort((a, b) => a - b);
-        }
-    }
-
-    const numRows = Math.max(blueThresholds.length - 1, 1);
-    const numCols = 4; // 4 discrete intervals for Purity: 0-25%, 25-50%, 50-75%, 75-100%
+    const numRows = 3;
+    const numCols = 4;
 
     grid.style.gridTemplateColumns = `repeat(${numCols}, 1fr)`;
     grid.style.gridTemplateRows = `repeat(${numRows}, 1fr)`;
     grid.innerHTML = '';
 
     const tooltip = document.getElementById('matrixTooltip');
+    const rowRanges = [
+        { label: '25%–50%' },
+        { label: '50%–75%' },
+        { label: '>75%' }
+    ];
 
-    // Rows go from top (highest blue) to bottom (0% blue)
+    const colRanges = [
+        { label: '0%–25% (Ядовитый)' },
+        { label: '25%–50%' },
+        { label: '50%–75%' },
+        { label: '75%–100% (Съедобный)' }
+    ];
+
+    // Render from Row 2 (Top: >75%) down to Row 0 (Bottom: 25-50%)
     for (let r = numRows - 1; r >= 0; r--) {
-        const bucketIndex = r;
-        const b = (bucketIndex / Math.max(numRows - 1, 1)) * 255;
-        
-        const bMinPct = (blueThresholds[r] * 100).toFixed(0);
-        const bMaxPct = (blueThresholds[Math.min(r + 1, blueThresholds.length - 1)] * 100).toFixed(0);
-
         for (let c = 0; c < numCols; c++) {
-            // Purity p from 0.0 (left = Edible) to 1.0 (right = Poisonous)
-            const p = (c + 0.5) / numCols;
-            const red = p * 255;
-            const green = (1.0 - p) * 255;
-
-            const pMinPct = (c * (100 / numCols)).toFixed(0);
-            const pMaxPct = ((c + 1) * (100 / numCols)).toFixed(0);
-
+            const cellColor = DEFAULT_2D_PALETTE[r][c];
             const cell = document.createElement('div');
             cell.className = 'matrix-cell';
-            cell.style.backgroundColor = `rgb(${red.toFixed(0)}, ${green.toFixed(0)}, ${b.toFixed(0)})`;
+            cell.style.backgroundColor = cellColor;
+            cell.style.border = '1px solid rgba(255, 255, 255, 0.15)';
+            cell.style.borderRadius = '3px';
+            cell.style.cursor = 'pointer';
 
-            // Hover tooltip
+            const rowInfo = rowRanges[r];
+            const colInfo = colRanges[c];
+
             cell.addEventListener('mouseenter', () => {
                 if (tooltip) {
                     tooltip.style.display = 'block';
-                    tooltip.innerHTML = `🍄 Съедобность: <b>${pMinPct}%–${pMaxPct}%</b><br>🔷 Синий: <b>${bMinPct}%–${bMaxPct}%</b>`;
+                    tooltip.innerHTML = `🍄 Съедобность: <b>${colInfo.label}</b><br>🔷 Признак: <b>${rowInfo.label}</b><br><span style="font-size:0.68rem; color:#94a3b8;">Цвет: ${cellColor}</span>`;
                 }
             });
             cell.addEventListener('mouseleave', () => {
@@ -239,7 +289,7 @@ function renderDiscreteColorMatrix() {
 function applyBlueFeature() {
     const colSelect = document.getElementById('blueFeatureCol');
     const valSelect = document.getElementById('blueFeatureVal');
-    
+
     if (colSelect.value && valSelect.value) {
         currentBlueFeature = { col: colSelect.value, val: valSelect.value };
         const blueLegendSection = document.getElementById('blueLegendSection');
@@ -256,7 +306,7 @@ function applyBlueFeature() {
         const blueLegendSection = document.getElementById('blueLegendSection');
         if (blueLegendSection) blueLegendSection.style.display = 'none';
     }
-    
+
     // Rerun analysis with the new blue feature if we have a current target
     if (currentPayload && currentPayload.target_labels) {
         runAnalysis('class', null);
@@ -507,55 +557,75 @@ function renderPlot(payload) {
         name: 'Сетка ячеек'
     };
 
-    // Generate exact RGBA array to support per-point intensity in WebGL scatter3d
-    let mappedColors = [];
-    if (currentPurity && currentOpacity) {
-        for (let i = 0; i < currentPurity.length; i++) {
-            const p = currentPurity[i];
+    const hasBlue = (currentBlueFeature !== null && currentBlueFeature.col);
+    
+    let fx = [];
+    let fy = [];
+    let fz = [];
+    let fColors = [];
+    let fSizes = [];
+    let fHover = [];
+    let fPurity = [];
+    let fOpacity = [];
 
-            // 1D Gradient Mapping (Purity Only):
-            // Green = Edible (p=0)
-            // Red = Poisonous (p=1)
-            const r = p * 255;
-            const g_col = (1.0 - p) * 255;
-            
-            // Blue Channel Thresholding
-            let b = 0;
-            if (currentBlue && currentBlue[i] !== undefined) {
-                const b_val = currentBlue[i];
-                let bucket = 0;
-                for (let t = 0; t < blueThresholds.length; t++) {
-                    if (b_val >= blueThresholds[t]) {
-                        bucket = t;
-                    }
-                }
-                const numBuckets = Math.max(blueThresholds.length - 1, 1);
-                b = (bucket / numBuckets) * 255;
-            }
+    const totalPts = xCoords ? xCoords.length : 0;
 
-            // Use fully opaque RGB to prevent depth-sorting artifacts in WebGL
-            mappedColors.push(`rgb(${r.toFixed(0)}, ${g_col.toFixed(0)}, ${b.toFixed(0)})`);
+    for (let i = 0; i < totalPts; i++) {
+        const p = (currentPurity && currentPurity[i] !== undefined) ? currentPurity[i] : 0.5;
+        const op = (currentOpacity && currentOpacity[i] !== undefined) ? currentOpacity[i] : 0.5;
+        const b_val = (hasBlue && currentBlue && currentBlue[i] !== undefined) ? currentBlue[i] : null;
+
+        const res = get2DMatrixColorIndex(p, b_val, hasBlue);
+
+        // Completely EXCLUDE noise points (<25%) from the dataset
+        if (res.isNoise) {
+            continue;
         }
-    } else {
-        mappedColors = payload.color;
+
+        fx.push(xCoords[i]);
+        fy.push(yCoords[i]);
+        fz.push(zCoords[i]);
+
+        // Convert palette hex to rgb() string — NO rgba, NO alpha channel anywhere
+        const hex = PALETTE_FLAT[res.colorIndex];
+        const rr = parseInt(hex.slice(1, 3), 16);
+        const gg = parseInt(hex.slice(3, 5), 16);
+        const bb = parseInt(hex.slice(5, 7), 16);
+        fColors.push(`rgb(${rr}, ${gg}, ${bb})`);
+
+        fPurity.push(p);
+        fOpacity.push(op);
+
+        const baseSize = 6 + op * 18.0;
+        fSizes.push(baseSize);
+
+        if (currentHover && currentHover[i]) {
+            fHover.push(currentHover[i]);
+        }
     }
 
+    // Save filtered dataset for applyStroke
+    window._lastFilteredData = {
+        purity: fPurity,
+        opacity: fOpacity,
+        baseSizes: fSizes
+    };
+
     const scatterTrace = {
-        x: xCoords,
-        y: yCoords,
-        z: zCoords,
+        x: fx,
+        y: fy,
+        z: fz,
         mode: 'markers',
         marker: {
-            // Size based on density (currentOpacity maps from 0.2 to 1.0)
-            size: currentOpacity ? currentPurity.map((_, i) => 6 + currentOpacity[i] * 18) : 12.0,
-            color: mappedColors,
-            opacity: 1, // Full opacity is required to enforce proper WebGL depth sorting (Z-buffer)
+            size: fSizes,
+            color: fColors,
+            opacity: 1,
             line: {
-                width: 0 // No white border to prevent white glare
+                width: 0
             },
             showscale: false
         },
-        hovertext: currentHover,
+        hovertext: fHover,
         hoverinfo: 'text',
         type: 'scatter3d',
         name: 'Данные'
@@ -615,7 +685,6 @@ function renderPlot(payload) {
 
     Plotly.newPlot('plot-container', plotTraces, layout, { responsive: true, displayModeBar: false });
 
-    const plotDiv = document.getElementById('plot-container');
     // Re-apply stroke if it was active
     applyStroke(window._isStrokeActive || false);
 }
@@ -645,22 +714,18 @@ function setStrokeMode(mode) {
 
 function applyStroke(enable) {
     window._isStrokeActive = enable;
-    if (!currentPayload) return;
+    if (!window._lastFilteredData) return;
 
-    let dimStr = activeDimensionality.toString();
-    let g = currentPayload.grids ? currentPayload.grids[dimStr] : null;
-    let currentPurity = g ? g.purity : currentPayload.grid_purity;
-    let currentOpacity = g ? g.opacity : currentPayload.grid_opacity;
+    const { purity, opacity, baseSizes } = window._lastFilteredData;
+    const n = purity.length;
+    if (n === 0) return;
 
-    if (!currentPurity) return;
-
-    const n = currentPurity.length;
     let lineColors = new Array(n).fill('rgb(0,0,0)');
     let lineWidths = new Array(n).fill(0);
     let markerSizes = new Array(n);
-    
+
     for (let i = 0; i < n; i++) {
-        markerSizes[i] = currentOpacity ? (6 + currentOpacity[i] * 18) : 12;
+        markerSizes[i] = baseSizes[i];
     }
 
     if (enable) {
@@ -682,11 +747,10 @@ function applyStroke(enable) {
         }
 
         for (let i = 0; i < n; i++) {
-            if (checkMatch(currentPurity[i])) {
+            if (checkMatch(purity[i])) {
                 lineColors[i] = color;
                 lineWidths[i] = width;
-                let baseSize = currentOpacity ? (6 + currentOpacity[i] * 18) : 12;
-                markerSizes[i] = baseSize + 6; // Slightly larger for highlighted points
+                markerSizes[i] = baseSizes[i] + 4; // Highlighted size
             }
         }
     }

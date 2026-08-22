@@ -16,7 +16,7 @@
     <!-- Plotly.js -->
     <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
 
-    <link rel="stylesheet" href="/static/css/styles.css?v=3">
+    <link rel="stylesheet" href="/static/css/styles.css?v=6">
 </head>
 
 <body>
@@ -36,7 +36,7 @@
     <main>
         <!-- Master Panel: Insights Catalog -->
         <aside class="catalog-sidebar">
-            
+
             <!-- Main Accordion Header for Search -->
             <div class="main-acc-header" id="headerSearch" onclick="toggleMainAcc('search')">
                 <div class="main-acc-title">🔍 Поиск по фильтрам</div>
@@ -67,9 +67,11 @@
             </div>
             <!-- Main Accordion Content for Catalog -->
             <div class="main-acc-content open" id="contentCatalog">
-                <div class="catalog-subtitle" style="padding: 0 1.5rem 0.5rem 1.5rem;">Auto-Discovery (Пропозиционализация)</div>
+                <div class="catalog-subtitle" style="padding: 0 1.5rem 0.5rem 1.5rem;">Auto-Discovery
+                    (Пропозиционализация)</div>
                 <div id="catalogAccordion" class="catalog-accordion">
-                    <div style="color: var(--text-dim); font-size: 0.85rem; padding: 1rem;">Загрузка структуры датасета...</div>
+                    <div style="color: var(--text-dim); font-size: 0.85rem; padding: 1rem;">Загрузка структуры
+                        датасета...</div>
                 </div>
             </div>
         </aside>
@@ -83,25 +85,32 @@
 
             <div class="viewport-toolbar">
                 <div style="display: flex; gap: 1.25rem; align-items: center; width: 100%; flex-wrap: wrap;">
-                    <div style="font-weight: 600; font-size: 0.9rem; color: #f8fafc; border-right: 1px solid var(--border-color); padding-right: 1.25rem;">📊 Метрики VSF</div>
+                    <div
+                        style="font-weight: 600; font-size: 0.9rem; color: #f8fafc; border-right: 1px solid var(--border-color); padding-right: 1.25rem;">
+                        📊 Метрики VSF</div>
                     <div style="display: flex; gap: 1.25rem; flex: 1; flex-wrap: wrap;">
-                        <div style="display: flex; align-items: baseline; gap: 6px;" title="Normalized Mutual Information (NMI) — реальная предсказательная сила центров относительно цели (0% = хаос, 100% = точное разделение)">
+                        <div style="display: flex; align-items: baseline; gap: 6px;"
+                            title="Normalized Mutual Information (NMI) — реальная предсказательная сила центров относительно цели (0% = хаос, 100% = точное разделение)">
                             <span style="font-size: 0.75rem; color: var(--text-dim);">NMI (Сила связи):</span>
                             <strong id="val-nmi" style="color: var(--accent-cyan); font-size: 1rem;">-</strong>
                         </div>
-                        <div style="display: flex; align-items: baseline; gap: 6px;" title="Target Loss (100% - NMI) — потеря информации о цели. Чем выше, тем сильнее смешаны классы в центрах">
+                        <div style="display: flex; align-items: baseline; gap: 6px;"
+                            title="Target Loss (100% - NMI) — потеря информации о цели. Чем выше, тем сильнее смешаны классы в центрах">
                             <span style="font-size: 0.75rem; color: var(--text-dim);">Target Loss:</span>
                             <strong id="val-loss" style="color: var(--amber); font-size: 1rem;">-</strong>
                         </div>
-                        <div style="display: flex; align-items: baseline; gap: 6px;" title="Visual Information Ratio (VIR) — какую долю информации датасета отображает данный график">
+                        <div style="display: flex; align-items: baseline; gap: 6px;"
+                            title="Visual Information Ratio (VIR) — какую долю информации датасета отображает данный график">
                             <span style="font-size: 0.75rem; color: var(--text-dim);">VIR (Полнота осей):</span>
                             <strong id="val-vir" style="color: var(--green); font-size: 1rem;">-</strong>
                         </div>
-                        <div style="display: flex; align-items: baseline; gap: 6px;" title="Оптимальное количество визуальных осей (размерность d*)">
+                        <div style="display: flex; align-items: baseline; gap: 6px;"
+                            title="Оптимальное количество визуальных осей (размерность d*)">
                             <span style="font-size: 0.75rem; color: var(--text-dim);">Оптимально осей (d*):</span>
                             <strong id="val-dstar" style="color: var(--accent-purple); font-size: 1rem;">-</strong>
                         </div>
-                        <div style="display: flex; align-items: baseline; gap: 6px;" title="Статистическая значимость связи (пермутационный тест)">
+                        <div style="display: flex; align-items: baseline; gap: 6px;"
+                            title="Статистическая значимость связи (пермутационный тест)">
                             <span style="font-size: 0.75rem; color: var(--text-dim);">p-value:</span>
                             <strong id="val-pval" style="color: var(--text-muted); font-size: 1rem;">-</strong>
                         </div>
@@ -117,13 +126,15 @@
 
         <!-- Visual Settings Sidebar -->
         <aside class="settings-sidebar">
-            <div style="font-size: 1.1rem; font-weight: 600; color: #f8fafc; padding-bottom: 0.5rem; border-bottom: 1px solid var(--border-color);">
+            <div
+                style="font-size: 1.1rem; font-weight: 600; color: #f8fafc; padding-bottom: 0.5rem; border-bottom: 1px solid var(--border-color);">
                 Настройки отображения
             </div>
 
             <!-- Display Mode -->
             <div>
-                <div style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 8px;">Отображение пространства</div>
+                <div style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 8px;">Отображение пространства
+                </div>
                 <div class="view-toggle-group">
                     <button class="toggle-btn active" id="btn-grid" style="width: 100%;">📐 Дискретные центры</button>
                 </div>
@@ -132,80 +143,103 @@
             <!-- Stroke Settings -->
             <div>
                 <div style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 8px;">✨ Обводка (Фокус)</div>
-                <div style="display: flex; flex-direction: column; gap: 10px; font-size: 0.85rem; background: rgba(15, 23, 42, 0.4); padding: 12px; border-radius: 12px; border: 1px solid var(--border-color);">
+                <div
+                    style="display: flex; flex-direction: column; gap: 10px; font-size: 0.85rem; background: rgba(15, 23, 42, 0.4); padding: 12px; border-radius: 12px; border: 1px solid var(--border-color);">
                     <div style="display: flex; gap: 10px; align-items: center;">
                         <label style="color: var(--text-muted); width: 60px;">Цвет:</label>
-                        <input type="color" id="strokeColor" value="#ffffff" style="background: transparent; border: 1px solid rgba(255,255,255,0.2); border-radius: 4px; padding: 0; width: 40px; height: 24px; cursor: pointer;">
+                        <input type="color" id="strokeColor" value="#ffffff"
+                            style="background: transparent; border: 1px solid rgba(255,255,255,0.2); border-radius: 4px; padding: 0; width: 40px; height: 24px; cursor: pointer;">
                         <label style="color: var(--text-muted); margin-left: 10px;">Толщина:</label>
-                        <input type="number" id="strokeWidth" min="0" max="10" step="0.5" value="2" style="background: rgba(15, 23, 42, 0.8); color: white; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 2px 6px; width: 50px;">
+                        <input type="number" id="strokeWidth" min="0" max="10" step="0.5" value="2"
+                            style="background: rgba(15, 23, 42, 0.8); color: white; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 2px 6px; width: 50px;">
                     </div>
 
                     <div style="display: flex; gap: 8px; margin-top: 4px;">
-                        <button id="btnStrokeModeRange" class="filter-btn run-btn" style="flex:1; padding: 4px; font-size: 0.75rem;" onclick="setStrokeMode('range')">Диапазон</button>
-                        <button id="btnStrokeModeExact" class="filter-btn add-btn" style="flex:1; padding: 4px; font-size: 0.75rem;" onclick="setStrokeMode('exact')">Точное зн.</button>
+                        <button id="btnStrokeModeRange" class="filter-btn run-btn"
+                            style="flex:1; padding: 4px; font-size: 0.75rem;"
+                            onclick="setStrokeMode('range')">Диапазон</button>
+                        <button id="btnStrokeModeExact" class="filter-btn add-btn"
+                            style="flex:1; padding: 4px; font-size: 0.75rem;" onclick="setStrokeMode('exact')">Точное
+                            зн.</button>
                     </div>
 
-                    <div id="strokeRangeControls" style="display: flex; gap: 10px; align-items: center; margin-top: 4px;">
+                    <div id="strokeRangeControls"
+                        style="display: flex; gap: 10px; align-items: center; margin-top: 4px;">
                         <label style="color: var(--text-muted);">От:</label>
-                        <input type="number" id="strokeMin" min="0" max="100" value="90" style="background: rgba(15, 23, 42, 0.8); color: white; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 2px 6px; width: 50px;">
+                        <input type="number" id="strokeMin" min="0" max="100" value="90"
+                            style="background: rgba(15, 23, 42, 0.8); color: white; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 2px 6px; width: 50px;">
                         <span style="color: var(--text-muted);">%</span>
-                        
+
                         <label style="color: var(--text-muted); margin-left: 10px;">До:</label>
-                        <input type="number" id="strokeMax" min="0" max="100" value="100" style="background: rgba(15, 23, 42, 0.8); color: white; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 2px 6px; width: 50px;">
+                        <input type="number" id="strokeMax" min="0" max="100" value="100"
+                            style="background: rgba(15, 23, 42, 0.8); color: white; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 2px 6px; width: 50px;">
                         <span style="color: var(--text-muted);">%</span>
                     </div>
 
-                    <div id="strokeExactControls" style="display: none; align-items: center; gap: 10px; margin-top: 4px;">
+                    <div id="strokeExactControls"
+                        style="display: none; align-items: center; gap: 10px; margin-top: 4px;">
                         <label style="color: var(--text-muted);">Значение:</label>
-                        <select id="strokeExactVal" style="background: rgba(15, 23, 42, 0.8); color: white; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 2px 6px; flex: 1;">
+                        <select id="strokeExactVal"
+                            style="background: rgba(15, 23, 42, 0.8); color: white; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 2px 6px; flex: 1;">
                             <option value="">-- Выберите --</option>
                         </select>
                     </div>
 
                     <div style="display: flex; gap: 8px; margin-top: 8px;">
-                        <button class="filter-btn add-btn" style="flex:1; padding: 6px;" onclick="applyStroke(false)">Выкл (Сброс)</button>
-                        <button class="filter-btn run-btn" style="flex:1; padding: 6px;" onclick="applyStroke(true)">Применить</button>
+                        <button class="filter-btn add-btn" style="flex:1; padding: 6px;"
+                            onclick="applyStroke(false)">Выкл (Сброс)</button>
+                        <button class="filter-btn run-btn" style="flex:1; padding: 6px;"
+                            onclick="applyStroke(true)">Применить</button>
                     </div>
                 </div>
             </div>
 
             <!-- Third Dimension (Blue Channel) -->
             <div>
-                <div style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 8px;">🌟 Третье измерение (Синий цвет)</div>
-                <div style="display: flex; flex-direction: column; gap: 10px; font-size: 0.85rem; background: rgba(15, 23, 42, 0.4); padding: 12px; border-radius: 12px; border: 1px solid var(--border-color);">
-                    
+                <div style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 8px;">🌟 Третье измерение
+                    (Синий цвет)</div>
+                <div
+                    style="display: flex; flex-direction: column; gap: 10px; font-size: 0.85rem; background: rgba(15, 23, 42, 0.4); padding: 12px; border-radius: 12px; border: 1px solid var(--border-color);">
+
                     <div style="display: flex; flex-direction: column; gap: 4px;">
                         <label style="color: var(--text-muted);">Признак (Колонка):</label>
-                        <select id="blueFeatureCol" style="background: rgba(15, 23, 42, 0.8); color: white; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 4px 6px;" onchange="onBlueColChange()">
+                        <select id="blueFeatureCol"
+                            style="background: rgba(15, 23, 42, 0.8); color: white; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 4px 6px;"
+                            onchange="onBlueColChange()">
                             <option value="">-- Выключено --</option>
                         </select>
                     </div>
 
                     <div style="display: flex; flex-direction: column; gap: 4px;">
                         <label style="color: var(--text-muted);">Категория (Искомое значение):</label>
-                        <select id="blueFeatureVal" style="background: rgba(15, 23, 42, 0.8); color: white; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 4px 6px;">
+                        <select id="blueFeatureVal"
+                            style="background: rgba(15, 23, 42, 0.8); color: white; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 4px 6px;">
                             <option value="">-- Выберите --</option>
                         </select>
                     </div>
 
                     <div style="display: flex; flex-direction: column; gap: 4px; margin-top: 4px;">
                         <label style="color: var(--text-muted);">Пороги (через запятую, %):</label>
-                        <input type="text" id="blueThresholds" value="0, 25, 50, 75, 100" style="background: rgba(15, 23, 42, 0.8); color: white; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 4px 6px; width: 100%;" onchange="updateBlueThresholds()">
-                        <span style="font-size: 0.7rem; color: var(--text-dim);">Удаляйте или добавляйте новые границы</span>
+                        <input type="text" id="blueThresholds" value="0, 25, 50, 75, 100"
+                            style="background: rgba(15, 23, 42, 0.8); color: white; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 4px 6px; width: 100%;"
+                            onchange="updateBlueThresholds()">
+                        <span style="font-size: 0.7rem; color: var(--text-dim);">Удаляйте или добавляйте новые
+                            границы</span>
                     </div>
 
                     <div id="blueLegendSection" style="display: none; margin-top: 10px;">
                         <div style="font-size: 0.75rem; color: var(--text-dim); margin-bottom: 6px; font-weight: 500;">
-                            🗺️ 2D-Палитра (<span id="blueLegendName" style="color: var(--accent-cyan);">Признак</span>):
+                            🗺️ 2D-Палитра (<span id="blueLegendName"
+                                style="color: var(--accent-cyan);">Признак</span>):
                         </div>
-                        
+
                         <div class="discrete-matrix-wrapper">
                             <div class="matrix-y-axis">
                                 <span>100%</span>
                                 <div class="matrix-axis-title-y">Синий канал ↑</div>
                                 <span>0%</span>
                             </div>
-                            
+
                             <div class="discrete-matrix-content">
                                 <div id="discreteMatrixGrid" class="discrete-matrix-grid"></div>
                                 <div class="matrix-x-axis">
@@ -217,27 +251,33 @@
                         <div id="matrixTooltip" class="matrix-tooltip"></div>
                     </div>
 
-                    <button class="filter-btn run-btn" style="margin-top: 8px; padding: 6px;" onclick="applyBlueFeature()">Применить</button>
+                    <button class="filter-btn run-btn" style="margin-top: 8px; padding: 6px;"
+                        onclick="applyBlueFeature()">Применить</button>
                 </div>
             </div>
 
             <!-- Noise Reduction -->
             <div>
-                <div style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 8px;">🧹 Шумоподавление (Выбросы)</div>
-                <div style="display: flex; flex-direction: column; gap: 10px; font-size: 0.85rem; background: rgba(15, 23, 42, 0.4); padding: 12px; border-radius: 12px; border: 1px solid var(--border-color);">
+                <div style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 8px;">🧹 Шумоподавление
+                    (Выбросы)</div>
+                <div
+                    style="display: flex; flex-direction: column; gap: 10px; font-size: 0.85rem; background: rgba(15, 23, 42, 0.4); padding: 12px; border-radius: 12px; border: 1px solid var(--border-color);">
                     <div style="display: flex; justify-content: space-between; align-items: center;">
                         <label style="color: var(--text-muted);">Порог (мин. объектов):</label>
-                        <input type="number" id="noiseThreshold" min="0" max="1000" value="5" style="background: rgba(15, 23, 42, 0.8); color: white; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 2px 6px; width: 60px;">
+                        <input type="number" id="noiseThreshold" min="0" max="1000" value="5"
+                            style="background: rgba(15, 23, 42, 0.8); color: white; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 2px 6px; width: 60px;">
                     </div>
-                    
+
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 4px;">
                         <label style="color: var(--text-muted);">Прозрачность шума:</label>
-                        <input type="range" id="noiseOpacity" min="0" max="1" step="0.1" value="0.2" style="width: 100px;">
+                        <input type="range" id="noiseOpacity" min="0" max="1" step="0.1" value="0.2"
+                            style="width: 100px;">
                     </div>
 
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 4px;">
                         <label style="color: var(--text-muted);">Форма выбросов:</label>
-                        <select id="noiseShape" style="background: rgba(15, 23, 42, 0.8); color: white; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 2px 6px;">
+                        <select id="noiseShape"
+                            style="background: rgba(15, 23, 42, 0.8); color: white; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 2px 6px;">
                             <option value="circle-open">⭕ Пустотелое кольцо</option>
                             <option value="x">❌ Крестик</option>
                         </select>
@@ -247,7 +287,7 @@
         </aside>
     </main>
 
-    <script src="/static/js/app.js?v=3"></script>
+    <script src="/static/js/app.js?v=9"></script>
 </body>
 
 </html>
