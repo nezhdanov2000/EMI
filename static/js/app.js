@@ -3,6 +3,8 @@ let activeDimensionality = null;
 let activeCritItem = null;
 let allColumnsData = [];
 let activeSliceIndex = null;  // Current 4D slice index (null = show all / no 4D)
+let currentRenderedDim = null;
+let isAnimating = false;
 
 // Predefined color palettes for clear class separation
 const CLASS_COLORS = [
@@ -222,14 +224,18 @@ function applyBlueFeature() {
 }
 
 function updateDashboard(payload, targetHistoryContainerId) {
+    currentPayload = payload;
     const m = payload.metrics;
+
     if (activeDimensionality === null) {
-        activeDimensionality = Math.min(m.d_star, 3) || 1;
+        activeDimensionality = (m && m.d_star) ? m.d_star : 3;
     }
 
-    // Handle 4D slice controller
+    // Handle 4D slice controller setup
     if (payload.slice_axis) {
-        activeSliceIndex = 0;  // Default to first slice
+        if (activeSliceIndex === null) {
+            activeSliceIndex = 0;  // Default to first slice
+        }
         renderSliceTabs(payload);
     } else {
         activeSliceIndex = null;
@@ -237,39 +243,14 @@ function updateDashboard(payload, targetHistoryContainerId) {
         if (sliceCtrl) sliceCtrl.style.display = 'none';
     }
 
-    document.getElementById('val-dstar').innerText = `${m.d_star}D`;
-    document.getElementById('val-vir').innerText = `${(m.vir * 100).toFixed(1)}%`;
-    const nmiVal = (m.nmi !== undefined) ? m.nmi : (1.0 - m.l_target);
-    const nmiEl = document.getElementById('val-nmi');
-    if (nmiEl) nmiEl.innerText = `${(nmiVal * 100).toFixed(1)}%`;
     document.getElementById('val-pval').innerText = 'p < 0.001';
-    document.getElementById('val-loss').innerText = `${(m.l_target * 100).toFixed(1)}%`;
-    document.getElementById('totalSamplesVal').innerText = (payload.total_samples || payload.x.length).toLocaleString();
-
-    const pill = document.getElementById('scenarioPill');
-    if (pill) {
-        pill.className = 'scenario-pill ' + m.scenario;
-        document.getElementById('scenarioText').innerText = m.scenario;
-    }
+    document.getElementById('totalSamplesVal').innerText = (payload.total_samples || (payload.x ? payload.x.length : 0)).toLocaleString();
 
     const xaiBanner = document.getElementById('xaiBanner');
     if (xaiBanner) xaiBanner.innerHTML = `💡 <b>XAI Инсайт:</b> ${m.xai_message}`;
 
-    // Selected Axes List
-    const axesContainer = document.getElementById('axesListContainer');
-    if (axesContainer) {
-        axesContainer.innerHTML = '';
-        const labels = ['X-Ось', 'Y-Ось', 'Z-Ось', 'Цвет', 'Размер', 'Время'];
-        payload.selected_features.forEach((feat, idx) => {
-            const item = document.createElement('div');
-            item.className = 'axis-pill';
-            item.innerHTML = `
-                        <span style="font-weight: 500;">${feat}</span>
-                        <span class="axis-badge">${labels[idx] || 'Канал ' + (idx + 1)}</span>
-                    `;
-            axesContainer.appendChild(item);
-        });
-    }
+    // Render Dimension Switcher toggle buttons
+    renderDimensionButtons(payload);
 
     // Update Color Legend
     const legendTargetName = document.getElementById('legendTargetName');
@@ -303,8 +284,7 @@ function updateDashboard(payload, targetHistoryContainerId) {
     const exactSelect = document.getElementById('strokeExactVal');
     if (exactSelect) {
         exactSelect.innerHTML = '<option value="">-- Выберите --</option>';
-        // Extract unique purities from the current dimensionality grid
-        let dimStr = activeDimensionality.toString();
+        let dimStr = (activeDimensionality || 3).toString();
         let g = payload.grids ? payload.grids[dimStr] : null;
         let purities = g ? g.purity : payload.grid_purity;
         if (purities) {
@@ -324,6 +304,7 @@ function updateDashboard(payload, targetHistoryContainerId) {
             m.history.forEach((step, idx) => {
                 const item = document.createElement('div');
                 item.className = 'history-item' + (step.step === activeDimensionality ? ' active' : '');
+                item.dataset.step = step.step;
 
                 const virPct = (step.vir * 100).toFixed(1);
                 const nmiStepVal = (step.nmi !== undefined) ? step.nmi : (step.step === m.d_star ? (1.0 - m.l_target) : 0);
@@ -361,8 +342,6 @@ function updateDashboard(payload, targetHistoryContainerId) {
                         `;
                 item.onclick = (e) => {
                     e.stopPropagation();
-                    Array.from(historyContainer.children).forEach(c => c.classList.remove('active'));
-                    item.classList.add('active');
                     setDimensionality(step.step);
                 };
                 historyContainer.appendChild(item);
@@ -370,16 +349,142 @@ function updateDashboard(payload, targetHistoryContainerId) {
         }
     }
 
-    renderPlot(payload);
+    setDimensionality(activeDimensionality);
+}
+
+function renderDimensionButtons(payload) {
+    const container = document.getElementById('dimButtonsGroup');
+    if (!container) return;
+    container.innerHTML = '';
+
+    const availableDims = [];
+    if (payload.metrics && payload.metrics.history && payload.metrics.history.length > 0) {
+        payload.metrics.history.forEach(h => {
+            if (!availableDims.includes(h.step)) availableDims.push(h.step);
+        });
+    } else {
+        const maxD = (payload.metrics && payload.metrics.d_star) ? payload.metrics.d_star : 3;
+        for (let d = 1; d <= Math.max(maxD, 1); d++) availableDims.push(d);
+    }
+
+    availableDims.sort((a, b) => a - b).forEach(d => {
+        const btn = document.createElement('button');
+        btn.className = 'toggle-btn dim-btn' + (d === activeDimensionality ? ' active' : '');
+        btn.dataset.dim = d;
+        btn.innerText = `${d}D`;
+        btn.title = `Переключить размерность в ${d}D`;
+        btn.onclick = () => setDimensionality(d);
+        container.appendChild(btn);
+    });
+}
+
+function updateHUDForDimension(d) {
+    if (!currentPayload || !currentPayload.metrics) return;
+    const m = currentPayload.metrics;
+
+    let stepData = null;
+    if (m.history && m.history.length > 0) {
+        stepData = m.history.find(h => h.step === d);
+    }
+
+    let nmiVal = stepData && stepData.nmi !== undefined ? stepData.nmi : (d === m.d_star ? (1.0 - m.l_target) : 0.0);
+    let virVal = stepData && stepData.vir !== undefined ? stepData.vir : (d === m.d_star ? m.vir : 1.0);
+    let lossVal = Math.max(0.0, 1.0 - nmiVal);
+
+    const nmiEl = document.getElementById('val-nmi');
+    if (nmiEl) nmiEl.innerText = `${(nmiVal * 100).toFixed(1)}%`;
+
+    const lossEl = document.getElementById('val-loss');
+    if (lossEl) lossEl.innerText = `${(lossVal * 100).toFixed(1)}%`;
+
+    const virEl = document.getElementById('val-vir');
+    if (virEl) virEl.innerText = `${(virVal * 100).toFixed(1)}%`;
+
+    const dstarEl = document.getElementById('val-dstar');
+    if (dstarEl) {
+        if (d === m.d_star) {
+            dstarEl.innerText = `${d}D`;
+        } else {
+            dstarEl.innerText = `${d}D (оптим: ${m.d_star}D)`;
+        }
+    }
+
+    const pill = document.getElementById('scenarioPill');
+    const scenarioText = document.getElementById('scenarioText');
+    if (pill && scenarioText) {
+        let scenarioClass = d <= 3 ? 'SCENARIO_A' : 'SCENARIO_B';
+        let scenarioLabel = d <= 3 ? 'Сценарий А: Минимализм' : 'Сценарий Б: Полная загрузка';
+        if (d === m.d_star && m.scenario) {
+            scenarioClass = m.scenario;
+            scenarioLabel = m.scenario;
+        }
+        pill.className = 'scenario-pill ' + scenarioClass;
+        scenarioText.innerText = scenarioLabel;
+    }
+
+    updateAxesList(d);
+}
+
+function updateAxesList(d) {
+    const axesContainer = document.getElementById('axesListContainer');
+    if (!axesContainer || !currentPayload || !currentPayload.selected_features) return;
+    axesContainer.innerHTML = '';
+    const labels = ['X-Ось (1D)', 'Y-Ось (2D)', 'Z-Ось (3D)', '4D Срез (Табы)', 'Канал 5', 'Канал 6', 'Канал 7'];
+    const maxFeatures = Math.min(d, currentPayload.selected_features.length);
+    for (let idx = 0; idx < maxFeatures; idx++) {
+        const feat = currentPayload.selected_features[idx];
+        const item = document.createElement('div');
+        item.className = 'axis-pill';
+        item.innerHTML = `
+            <span style="font-weight: 500;">${feat}</span>
+            <span class="axis-badge">${labels[idx] || 'Канал ' + (idx + 1)}</span>
+        `;
+        axesContainer.appendChild(item);
+    }
 }
 
 function setDimensionality(d) {
-    if (d > 3) d = 3; // Limit visual switching to 3D maximum
-    if (activeDimensionality === d) return;
+    if (d === currentRenderedDim && d === activeDimensionality) return;
+    if (isAnimating) return;
+
+    const fromDim = currentRenderedDim;
     activeDimensionality = d;
 
+    document.querySelectorAll('#dimButtonsGroup .dim-btn').forEach(btn => {
+        btn.classList.toggle('active', parseInt(btn.dataset.dim) === d);
+    });
+
+    document.querySelectorAll('.history-item').forEach(item => {
+        const stepNum = parseInt(item.dataset.step);
+        if (stepNum === d) {
+            item.classList.add('active');
+        } else {
+            const stepEl = item.querySelector('.history-step');
+            if (stepEl && stepEl.innerText.startsWith(`${d}D`)) {
+                item.classList.add('active');
+            } else {
+                item.classList.remove('active');
+            }
+        }
+    });
+
+    updateHUDForDimension(d);
+
+    const sliceCtrl = document.getElementById('slice-controller');
+    if (sliceCtrl) {
+        if (d >= 4 && currentPayload && currentPayload.slice_axis) {
+            sliceCtrl.style.display = 'flex';
+        } else {
+            sliceCtrl.style.display = 'none';
+        }
+    }
+
     if (currentPayload) {
-        renderPlot(currentPayload);
+        if (fromDim === null) {
+            renderPlot(currentPayload);
+        } else {
+            transitionDimensionality(fromDim, d);
+        }
     }
 }
 
@@ -390,12 +495,12 @@ function renderSliceTabs(payload) {
     
     if (!sliceCtrl || !payload.slice_axis) return;
     
-    sliceCtrl.style.display = 'flex';
     sliceName.textContent = payload.slice_axis.name;
     
     let tabsHtml = '';
     // "All" tab
-    tabsHtml += `<button class="slice-tab" onclick="selectSlice(null)" data-slice="all">Все<span class="slice-count">(${payload.total_samples})</span></button>`;
+    const allActiveClass = (activeSliceIndex === null) ? ' active' : '';
+    tabsHtml += `<button class="slice-tab${allActiveClass}" onclick="selectSlice(null)" data-slice="all">Все<span class="slice-count">(${payload.total_samples})</span></button>`;
     
     // Per-category tabs
     payload.slice_axis.ticks.forEach((label, idx) => {
@@ -410,7 +515,6 @@ function renderSliceTabs(payload) {
 function selectSlice(idx) {
     activeSliceIndex = idx;
     
-    // Update tab active states
     const tabs = document.querySelectorAll('#slice-tabs .slice-tab');
     tabs.forEach(tab => {
         const tabSlice = tab.getAttribute('data-slice');
@@ -422,26 +526,38 @@ function selectSlice(idx) {
             tab.classList.remove('active');
         }
     });
+
+    if (activeDimensionality !== 4) {
+        activeDimensionality = 4;
+        document.querySelectorAll('#dimButtonsGroup .dim-btn').forEach(btn => {
+            btn.classList.toggle('active', parseInt(btn.dataset.dim) === 4);
+        });
+        updateHUDForDimension(4);
+    }
     
-    // Re-render plot with new slice
     if (currentPayload) {
-        renderPlot(currentPayload);
+        if (currentRenderedDim === null) {
+            renderPlot(currentPayload);
+        } else {
+            renderPlot(currentPayload);
+        }
     }
 }
-
-function renderPlot(payload) {
-    let dimStr = activeDimensionality.toString();
+function buildPlotData(payload, dim, sliceIndex) {
+    let dimStr = dim.toString();
     
-    // Determine which grid to use: 4D slice or standard dimension
     let gridKey = dimStr;
-    if (payload.slice_axis && activeSliceIndex !== null) {
-        gridKey = `4_${activeSliceIndex}`;
+    if (dim >= 4 && payload.slice_axis) {
+        if (sliceIndex !== null) {
+            gridKey = `4_${sliceIndex}`;
+        } else {
+            gridKey = `4_all`;
+        }
     }
-    let g = payload.grids ? payload.grids[gridKey] : null;
-    
-    // Fallback to standard 3D grid if slice grid not found
-    if (!g && payload.grids) {
-        g = payload.grids[dimStr];
+
+    let g = null;
+    if (payload.grids) {
+        g = payload.grids[gridKey] || payload.grids[dimStr] || payload.grids["3"];
     }
 
     let xCoords = g ? g.x : payload.grid_x;
@@ -451,19 +567,8 @@ function renderPlot(payload) {
     let currentPurity = g ? g.purity : payload.grid_purity;
     let currentOpacity = g ? g.opacity : payload.grid_opacity;
     let currentBlue = g ? g.blue : payload.grid_blue_concentration;
-
-    // Parse thresholds
-    let blueThresholds = [0, 0.25, 0.5, 0.75, 1.0];
-    const thresInput = document.getElementById('blueThresholds');
-    if (thresInput) {
-        let vals = thresInput.value.split(',').map(v => parseFloat(v.trim()) / 100).filter(v => !isNaN(v));
-        if (vals.length > 0) {
-            blueThresholds = vals.sort((a, b) => a - b);
-        }
-    }
     let currentHover = g ? g.hover_text : payload.grid_hover_text;
 
-    // Generate Cell Boundary Dividers (Grid lines placed strictly BETWEEN categories at -0.5, 0.5, 1.5...)
     const xLen = payload.axis_ticks ? payload.axis_ticks.x.vals.length : 4;
     const yLen = payload.axis_ticks ? payload.axis_ticks.y.vals.length : 4;
     const zLen = payload.axis_ticks ? payload.axis_ticks.z.vals.length : 4;
@@ -474,7 +579,7 @@ function renderPlot(payload) {
 
     const glX = [], glY = [], glZ = [];
 
-    // 1. Floor grid lines at Z = zMin (between cells)
+    // ALWAYS draw the full 3D room for consistent spatial metaphor
     for (let x = xMin; x <= xMax + 0.001; x += 1.0) {
         glX.push(x, x, null);
         glY.push(yMin, yMax, null);
@@ -485,8 +590,6 @@ function renderPlot(payload) {
         glY.push(y, y, null);
         glZ.push(zMin, zMin, null);
     }
-
-    // 2. Back Wall grid lines at X = xMin (between cells)
     for (let y = yMin; y <= yMax + 0.001; y += 1.0) {
         glX.push(xMin, xMin, null);
         glY.push(y, y, null);
@@ -497,8 +600,6 @@ function renderPlot(payload) {
         glY.push(yMin, yMax, null);
         glZ.push(z, z, null);
     }
-
-    // 3. Back Wall grid lines at Y = yMax (between cells)
     for (let x = xMin; x <= xMax + 0.001; x += 1.0) {
         glX.push(x, x, null);
         glY.push(yMax, yMax, null);
@@ -511,41 +612,22 @@ function renderPlot(payload) {
     }
 
     const cellBoundaryTrace = {
-        x: glX,
-        y: glY,
-        z: glZ,
+        x: glX, y: glY, z: glZ,
         mode: 'lines',
-        line: {
-            color: 'rgba(255, 255, 255, 0.10)',
-            width: 1.0
-        },
-        hoverinfo: 'none',
-        type: 'scatter3d',
-        name: 'Сетка ячеек'
+        line: { color: 'rgba(255, 255, 255, 0.12)', width: 1.0 },
+        hoverinfo: 'none', type: 'scatter3d', name: 'Сетка ячеек'
     };
 
     const hasBlue = (currentBlueFeature !== null && currentBlueFeature.col);
-
-    let fx = [];
-    let fy = [];
-    let fz = [];
-    let fColors = [];
-    let fSizes = [];
-    let fHover = [];
-    let fPurity = [];
-    let fOpacity = [];
+    let fx = [], fy = [], fz = [], fColors = [], fSizes = [], fHover = [], fPurity = [], fOpacity = [];
 
     const totalPts = xCoords ? xCoords.length : 0;
-
     for (let i = 0; i < totalPts; i++) {
         const p = (currentPurity && currentPurity[i] !== undefined) ? currentPurity[i] : 0.5;
         const op = (currentOpacity && currentOpacity[i] !== undefined) ? currentOpacity[i] : 0.5;
         const b_val = (hasBlue && currentBlue && currentBlue[i] !== undefined) ? currentBlue[i] : null;
 
-        // If secondary feature selected, use it as a visibility filter (exclude if < 25%)
-        if (hasBlue && b_val !== null && b_val < 0.25) {
-            continue;
-        }
+        if (hasBlue && b_val !== null && b_val < 0.25) continue;
 
         const colorIndex = getColorIndexForPurity(p);
 
@@ -553,7 +635,6 @@ function renderPlot(payload) {
         fy.push(yCoords[i]);
         fz.push(zCoords[i]);
 
-        // Convert palette hex to rgb() string for Plotly
         const hex = PROB_COLORS[colorIndex];
         const rr = parseInt(hex.slice(1, 3), 16);
         const gg = parseInt(hex.slice(3, 5), 16);
@@ -566,91 +647,73 @@ function renderPlot(payload) {
         const baseSize = 6 + op * 18.0;
         fSizes.push(baseSize);
 
-        if (currentHover && currentHover[i]) {
-            fHover.push(currentHover[i]);
-        }
+        if (currentHover && currentHover[i]) fHover.push(currentHover[i]);
     }
 
-    // Save filtered dataset for applyStroke
-    window._lastFilteredData = {
-        purity: fPurity,
-        opacity: fOpacity,
-        baseSizes: fSizes
-    };
-
     const scatterTrace = {
-        x: fx,
-        y: fy,
-        z: fz,
+        x: fx, y: fy, z: fz,
         mode: 'markers',
-        marker: {
-            size: fSizes,
-            color: fColors,
-            opacity: 1,
-            line: {
-                width: 0
-            },
-            showscale: false
-        },
-        hovertext: fHover,
-        hoverinfo: 'text',
-        type: 'scatter3d',
-        name: 'Данные'
+        marker: { size: fSizes, color: fColors, opacity: 1, line: { width: 0 }, showscale: false },
+        hovertext: fHover, hoverinfo: 'text', type: 'scatter3d', name: 'Данные'
     };
 
-    const plotTraces = [cellBoundaryTrace, scatterTrace];
-
-    // Toggle 2D Bivariate Legend
-    const bivLegend = document.getElementById('bivariateLegend');
-    if (bivLegend) {
-        bivLegend.classList.add('active');
+    let cameraConfig = undefined;
+    if (currentRenderedDim === null) {
+        cameraConfig = { eye: { x: 1.6, y: 1.6, z: 1.3 } };
     }
 
     const layout = {
-        paper_bgcolor: '#070a13',
-        plot_bgcolor: '#070a13',
-        showlegend: false,
+        paper_bgcolor: '#070a13', plot_bgcolor: '#070a13', showlegend: false,
         scene: {
             xaxis: {
                 title: { text: payload.axis_names.x, font: { color: '#c084fc', size: 13 } },
                 tickvals: payload.axis_ticks ? payload.axis_ticks.x.vals : undefined,
                 ticktext: payload.axis_ticks ? payload.axis_ticks.x.text : undefined,
-                range: [xMin, xMax],
-                tickfont: { color: '#e2e8f0', size: 11 },
-                backgroundcolor: '#090d1a',
-                showgrid: false, // Disables the lines that cut through labels
-                zeroline: false,
-                showspikes: false
+                range: [xMin, xMax], tickfont: { color: '#e2e8f0', size: 11 },
+                backgroundcolor: '#090d1a', showgrid: false, zeroline: false, showspikes: false
             },
             yaxis: {
                 title: { text: payload.axis_names.y, font: { color: '#c084fc', size: 13 } },
                 tickvals: payload.axis_ticks ? payload.axis_ticks.y.vals : undefined,
                 ticktext: payload.axis_ticks ? payload.axis_ticks.y.text : undefined,
-                range: [yMin, yMax],
-                tickfont: { color: '#e2e8f0', size: 11 },
-                backgroundcolor: '#090d1a',
-                showgrid: false, // Disables the lines that cut through labels
-                zeroline: false,
-                showspikes: false
+                range: [yMin, yMax], showticklabels: true,
+                tickfont: { color: '#e2e8f0', size: 11 }, backgroundcolor: '#090d1a', showgrid: false, zeroline: false, showspikes: false
             },
             zaxis: {
                 title: { text: payload.axis_names.z, font: { color: '#c084fc', size: 13 } },
                 tickvals: payload.axis_ticks ? payload.axis_ticks.z.vals : undefined,
                 ticktext: payload.axis_ticks ? payload.axis_ticks.z.text : undefined,
-                range: [zMin, zMax],
-                tickfont: { color: '#e2e8f0', size: 11 },
-                backgroundcolor: '#090d1a',
-                showgrid: false, // Disables the lines that cut through labels
-                zeroline: false,
-                showspikes: false
-            },
-            camera: { eye: { x: 1.6, y: 1.6, z: 1.3 } }
+                range: [zMin, zMax], showticklabels: true,
+                tickfont: { color: '#e2e8f0', size: 11 }, backgroundcolor: '#090d1a', showgrid: false, zeroline: false, showspikes: false
+            }
         },
-        margin: { l: 0, r: 0, b: 0, t: 0 },
-        font: { family: 'Inter', color: '#94a3b8' }
+        margin: { l: 0, r: 0, b: 0, t: 0 }, font: { family: 'Inter', color: '#94a3b8' },
+        uirevision: 'true'
     };
 
-    Plotly.newPlot('plot-container', plotTraces, layout, { responsive: true, displayModeBar: false });
+    if (cameraConfig) {
+        layout.scene.camera = cameraConfig;
+    }
+    
+    return { traces: [cellBoundaryTrace, scatterTrace], layout: layout, fPurity, fOpacity, fSizes };
+}
+
+function renderPlot(payload) {
+    const dim = activeDimensionality || 3;
+    const data = buildPlotData(payload, dim, activeSliceIndex);
+    
+    window._lastFilteredData = {
+        purity: data.fPurity,
+        opacity: data.fOpacity,
+        baseSizes: data.fSizes
+    };
+
+    const bivLegend = document.getElementById('bivariateLegend');
+    if (bivLegend) bivLegend.classList.add('active');
+
+    Plotly.newPlot('plot-container', data.traces, data.layout, { responsive: true, displayModeBar: false });
+    
+    currentRenderedDim = dim;
 
     // Default camera distance is ~2.608 (sqrt(1.6^2 + 1.6^2 + 1.3^2))
     window._currentCameraScale = 1.0;
@@ -756,6 +819,164 @@ function applyStroke(enable) {
         'marker.line.width': [lineWidths],
         'marker.size': [markerSizes]
     }, 1);
+}
+
+function flattenCoordinates(x, y, z, targetDim) {
+    let nx = [...x];
+    let ny = [...y];
+    let nz = [...z];
+    if (targetDim <= 2) {
+        for (let i = 0; i < nz.length; i++) nz[i] = -0.5;
+    }
+    if (targetDim <= 1) {
+        for (let i = 0; i < ny.length; i++) ny[i] = -0.5;
+    }
+    return { x: nx, y: ny, z: nz };
+}
+
+function parseRGBString(c) {
+    const m = c.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
+    if(m) return [parseInt(m[1]), parseInt(m[2]), parseInt(m[3])];
+    return [0,0,0];
+}
+
+function animateScatter3d(startX, startY, startZ, startSizes, startColors, endX, endY, endZ, endSizes, endColors, duration, onComplete) {
+    const startTime = performance.now();
+    const plotDiv = document.getElementById('plot-container');
+    
+    function easeInOutCubic(t) {
+        return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+    }
+    
+    const startRGB = startColors.map(parseRGBString);
+    const endRGB = endColors.map(parseRGBString);
+    const len = startX.length;
+    
+    function update(time) {
+        let elapsed = time - startTime;
+        let progress = Math.min(elapsed / duration, 1.0);
+        let eased = easeInOutCubic(progress);
+        
+        let curX = [], curY = [], curZ = [], curSizes = [], curColors = [];
+        for (let i = 0; i < len; i++) {
+            curX.push(startX[i] + (endX[i] - startX[i]) * eased);
+            curY.push(startY[i] + (endY[i] - startY[i]) * eased);
+            curZ.push(startZ[i] + (endZ[i] - startZ[i]) * eased);
+            curSizes.push(startSizes[i] + (endSizes[i] - startSizes[i]) * eased);
+            
+            const r = Math.round(startRGB[i][0] + (endRGB[i][0] - startRGB[i][0]) * eased);
+            const g = Math.round(startRGB[i][1] + (endRGB[i][1] - startRGB[i][1]) * eased);
+            const b = Math.round(startRGB[i][2] + (endRGB[i][2] - startRGB[i][2]) * eased);
+            curColors.push(`rgb(${r}, ${g}, ${b})`);
+        }
+        
+        Plotly.restyle(plotDiv, {
+            'x': [curX], 'y': [curY], 'z': [curZ],
+            'marker.size': [curSizes], 'marker.color': [curColors]
+        }, 1);
+        
+        if (progress < 1.0) {
+            requestAnimationFrame(update);
+        } else {
+            if (onComplete) onComplete();
+        }
+    }
+    requestAnimationFrame(update);
+}
+
+function transitionDimensionality(fromDim, toDim) {
+    if (fromDim === toDim) return;
+    isAnimating = true;
+    
+    const wasStrokeActive = window._isStrokeActive;
+    if (wasStrokeActive) applyStroke(false);
+    
+    const duration = 600; // ms
+    
+    if (fromDim < toDim) {
+        // SPLIT
+        const targetData = buildPlotData(currentPayload, toDim, activeSliceIndex);
+        const traceToAnimate = targetData.traces[1];
+        const flatStart = flattenCoordinates(traceToAnimate.x, traceToAnimate.y, traceToAnimate.z, fromDim);
+        
+        const origX = traceToAnimate.x;
+        const origY = traceToAnimate.y;
+        const origZ = traceToAnimate.z;
+        const origSizes = traceToAnimate.marker.size;
+        const origColors = traceToAnimate.marker.color;
+        const origHover = traceToAnimate.hovertext;
+        
+        window._lastFilteredData = {
+            purity: targetData.fPurity,
+            opacity: targetData.fOpacity,
+            baseSizes: targetData.fSizes
+        };
+        
+        // Immediately set points to flatStart to simulate 2D
+        Plotly.restyle('plot-container', {
+            'x': [flatStart.x],
+            'y': [flatStart.y],
+            'z': [flatStart.z],
+            'marker.size': [origSizes],
+            'marker.color': [origColors],
+            'hovertext': [origHover]
+        }, 1).then(() => {
+            currentRenderedDim = toDim;
+            // Next frame start animating out to true 3D
+            requestAnimationFrame(() => {
+                animateScatter3d(
+                    flatStart.x, flatStart.y, flatStart.z, origSizes, origColors,
+                    origX, origY, origZ, origSizes, origColors,
+                    duration, () => {
+                        isAnimating = false;
+                        if (wasStrokeActive) applyStroke(true);
+                    }
+                );
+            });
+        });
+    } else {
+        // COLLAPSE
+        const startData = buildPlotData(currentPayload, fromDim, activeSliceIndex);
+        const traceToAnimate = startData.traces[1];
+        
+        const flatEnd = flattenCoordinates(traceToAnimate.x, traceToAnimate.y, traceToAnimate.z, toDim);
+        const targetData = buildPlotData(currentPayload, toDim, activeSliceIndex);
+        
+        const origX = traceToAnimate.x;
+        const origY = traceToAnimate.y;
+        const origZ = traceToAnimate.z;
+        const origSizes = traceToAnimate.marker.size;
+        const origColors = traceToAnimate.marker.color;
+        
+        const targetSizes = targetData.traces[1].marker.size;
+        const targetColors = targetData.traces[1].marker.color;
+        const targetHover = targetData.traces[1].hovertext;
+        
+        animateScatter3d(
+            origX, origY, origZ, origSizes, origColors,
+            flatEnd.x, flatEnd.y, flatEnd.z, origSizes, origColors,
+            duration, () => {
+                window._lastFilteredData = {
+                    purity: targetData.fPurity,
+                    opacity: targetData.fOpacity,
+                    baseSizes: targetData.fSizes
+                };
+                // Instant swap to aggregated lower dimension data without touching layout
+                Plotly.restyle('plot-container', {
+                    'x': [targetData.traces[1].x],
+                    'y': [targetData.traces[1].y],
+                    'z': [targetData.traces[1].z],
+                    'marker.size': [targetSizes],
+                    'marker.color': [targetColors],
+                    'hovertext': [targetHover]
+                }, 1).then(() => {
+                    currentRenderedDim = toDim;
+                    isAnimating = false;
+                    if (wasStrokeActive) applyStroke(true);
+                });
+            }
+        );
+    }
 }
 
 function toggleMainAcc(id) {

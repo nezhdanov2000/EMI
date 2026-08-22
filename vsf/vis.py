@@ -306,6 +306,7 @@ def prepare_visualization_payload(
             mask = (w_num == sv_idx)
             grids[f"4_{sv_idx}"] = build_grid(3, slice_mask=mask)
             slice_counts.append(int(np.sum(mask)))
+        grids["4_all"] = build_grid(3)
         slice_axis_info = {
             "name": humanize_col(w_name),
             "ticks": w_ticks,

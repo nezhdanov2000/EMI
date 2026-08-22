@@ -16,7 +16,8 @@
     <!-- Plotly.js -->
     <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
 
-    <link rel="stylesheet" href="/static/css/styles.css?v=9">
+    <link rel="stylesheet" href="/static/css/styles.css?v=11">
+    <script src="/static/js/app.js?v=24" defer></script>
 </head>
 
 <body>
@@ -114,6 +115,10 @@
                             <span style="font-size: 0.75rem; color: var(--text-dim);">p-value:</span>
                             <strong id="val-pval" style="color: var(--text-muted); font-size: 1rem;">-</strong>
                         </div>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 8px; border-left: 1px solid var(--border-color); padding-left: 1rem;">
+                        <span style="font-size: 0.75rem; color: var(--text-dim); font-weight: 500;">Размерность:</span>
+                        <div id="dimButtonsGroup" class="view-toggle-group" style="padding: 2px;"></div>
                     </div>
                     <div style="font-size: 0.85rem; color: var(--text-dim);">
                         Объектов в выборке: <strong id="totalSamplesVal" style="color: #fff;">8,124</strong>
@@ -298,7 +303,6 @@
         </aside>
     </main>
 
-    <script src="/static/js/app.js?v=16"></script>
 </body>
 
 </html>

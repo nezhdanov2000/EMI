@@ -200,6 +200,19 @@ main {
     box-shadow: 0 2px 8px rgba(99, 102, 241, 0.4);
 }
 
+.dim-btn {
+    padding: 3px 10px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    font-family: 'Outfit', sans-serif;
+}
+
+.dim-btn.active {
+    background: var(--accent-purple);
+    color: #fff;
+    box-shadow: 0 2px 10px rgba(168, 85, 247, 0.5);
+}
+
 /* Color Legend Bar */
 .color-legend-bar {
     padding: 0.6rem 1.5rem;
