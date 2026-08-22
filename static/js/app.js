@@ -115,9 +115,7 @@ async function runAnalysis(targetCol, criterion = null, targetHistoryContainerId
         if (criterion !== null) {
             reqBody.criterion = criterion;
         }
-        if (currentBlueFeature !== null) {
-            reqBody.blue_feature = currentBlueFeature;
-        }
+
         const response = await fetch('/api/analyze', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -145,7 +143,6 @@ function showLoader(show) {
 }
 
 
-let currentBlueFeature = null;
 
 function populateBlueFeatureDropdowns(cols) {
     const colSelect = document.getElementById('blueFeatureCol');
@@ -159,31 +156,13 @@ function populateBlueFeatureDropdowns(cols) {
     });
 }
 
-function onBlueColChange() {
-    const colSelect = document.getElementById('blueFeatureCol');
-    const valSelect = document.getElementById('blueFeatureVal');
-    valSelect.innerHTML = '<option value="">-- Выберите --</option>';
-
-    if (colSelect.value === '') return;
-
-    const colData = allColumnsData.find(c => c.id === colSelect.value);
-    if (colData && colData.criteria) {
-        colData.criteria.forEach(crit => {
-            const option = document.createElement('option');
-            option.value = crit.id;
-            option.innerText = crit.label;
-            valSelect.appendChild(option);
-        });
-    }
-}
-
 // 5-bin Probability Scale
 const PROB_COLORS = [
-    '#53ea4c', // Green (0-15%)
-    '#ffeb3b', // Yellow (15-30%)
+    '#f44336', // Red (0-15%) - Non-target
+    '#ff9800', // Orange (15-30%)
     '#57463a', // Dark Brown (30-70%) - Murky Zone
-    '#ff9800', // Orange (70-85%)
-    '#f44336'  // Red (85-100%)
+    '#ffeb3b', // Yellow (70-85%)
+    '#53ea4c'  // Green (85-100%) - Target
 ];
 const PALETTE_COUNT = PROB_COLORS.length;
 
@@ -205,22 +184,6 @@ function getColorIndexForPurity(purity) {
     if (purity < 0.70) return 2;
     if (purity < 0.85) return 3;
     return 4;
-}
-
-function applyBlueFeature() {
-    const colSelect = document.getElementById('blueFeatureCol');
-    const valSelect = document.getElementById('blueFeatureVal');
-
-    if (colSelect.value && valSelect.value) {
-        currentBlueFeature = { col: colSelect.value, val: valSelect.value };
-    } else {
-        currentBlueFeature = null;
-    }
-
-    // Rerun analysis with the new blue feature if we have a current target
-    if (currentPayload && currentPayload.target_labels) {
-        runAnalysis('class', null);
-    }
 }
 
 function updateDashboard(payload, targetHistoryContainerId) {
@@ -567,7 +530,6 @@ function buildPlotData(payload, dim, sliceIndex) {
 
     let currentPurity = g ? g.purity : payload.grid_purity;
     let currentSizes = g ? g.sizes : payload.grid_sizes;
-    let currentBlue = g ? g.blue : payload.grid_blue_concentration;
     let currentHover = g ? g.hover_text : payload.grid_hover_text;
 
     const xLen = payload.axis_ticks ? payload.axis_ticks.x.vals.length : 4;
@@ -619,16 +581,12 @@ function buildPlotData(payload, dim, sliceIndex) {
         hoverinfo: 'none', type: 'scatter3d', name: 'Сетка ячеек'
     };
 
-    const hasBlue = (currentBlueFeature !== null && currentBlueFeature.col);
     let fx = [], fy = [], fz = [], fColors = [], fSizes = [], fHover = [], fPurity = [], fOpacity = [];
 
     const totalPts = xCoords ? xCoords.length : 0;
     for (let i = 0; i < totalPts; i++) {
         const p = (currentPurity && currentPurity[i] !== undefined) ? currentPurity[i] : 0.5;
         const n_c = (currentSizes && currentSizes[i] !== undefined) ? currentSizes[i] : 1;
-        const b_val = (hasBlue && currentBlue && currentBlue[i] !== undefined) ? currentBlue[i] : null;
-
-        if (hasBlue && b_val !== null && b_val < 0.25) continue;
 
         const colorIndex = getColorIndexForPurity(p);
 
@@ -645,8 +603,10 @@ function buildPlotData(payload, dim, sliceIndex) {
         fPurity.push(p);
 
         // Area Scaling (Q1 Standard): Diameter ~ sqrt(N)
+        // Set maximum diameter so the 1D cluster perfectly touches cell bounds.
+        // We empirically use 55 as the magic constant for Plotly 3D scatter
         const maxN = payload.global_max_n || 1;
-        const baseSize = 3 + 13 * Math.sqrt(n_c / maxN);
+        const baseSize = 55 * Math.sqrt(n_c / maxN);
         fSizes.push(baseSize);
 
         if (currentHover && currentHover[i]) fHover.push(currentHover[i]);
@@ -1158,9 +1118,7 @@ async function runCompositeAnalysis() {
     showLoader(true);
     try {
         const reqBody = { composite_target: compositeTarget };
-        if (currentBlueFeature !== null) {
-            reqBody.blue_feature = currentBlueFeature;
-        }
+
         const response = await fetch('/api/analyze', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },

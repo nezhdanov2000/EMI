@@ -45,6 +45,12 @@ class VSFRequestHandler(http.server.SimpleHTTPRequestHandler):
         else:
             self.send_error(404, "Endpoint not found")
 
+    def end_headers(self):
+        self.send_header('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0')
+        self.send_header('Pragma', 'no-cache')
+        self.send_header('Expires', '0')
+        super().end_headers()
+
     def _send_json_response(self, status_code: int, payload: Dict[str, Any]) -> None:
         """Helper to send JSON responses."""
         self.send_response(status_code)
@@ -104,7 +110,7 @@ class VSFRequestHandler(http.server.SimpleHTTPRequestHandler):
             )
             res = engine.fit(X, Z, feature_names=feature_names)
             payload = vsf.prepare_visualization_payload(
-                res, X, Z, feature_names=feature_names, target_name="class"
+                res, X, Z, feature_names=feature_names, target_name="class", sort_Z=Z
             )
 
             self._send_json_response(200, payload)
@@ -124,13 +130,7 @@ class VSFRequestHandler(http.server.SimpleHTTPRequestHandler):
             criterion = req.get("criterion", None)
             df = pd.read_csv(DATASET_PATH)
 
-            blue_feature = req.get("blue_feature", None)
-            blue_mask = None
-            if blue_feature:
-                b_col = blue_feature.get("col")
-                b_val = str(blue_feature.get("val"))
-                if b_col in df.columns:
-                    blue_mask = (df[b_col].astype(str) == b_val).astype(int).values
+
 
             drop_cols = []
             if composite_target:
@@ -147,11 +147,14 @@ class VSFRequestHandler(http.server.SimpleHTTPRequestHandler):
                         drop_cols.append(col)
                 
                 Z = mask.astype(int).values
+                sort_Z = Z
                 display_target_name = " AND ".join(display_parts) if display_parts else "Сложный фильтр"
                 X_df = df.drop(columns=drop_cols)
             else:
                 if target_col not in df.columns:
                     target_col = "class"
+
+                sort_Z = df[target_col].values
 
                 if criterion is not None:
                     Z = (df[target_col].astype(str) == str(criterion)).astype(int).values
@@ -192,8 +195,7 @@ class VSFRequestHandler(http.server.SimpleHTTPRequestHandler):
                 _last_res = (res, X, Z, feature_names, display_target_name)
 
             payload = vsf.prepare_visualization_payload(
-                res, X, Z, feature_names=feature_names, target_name=display_target_name,
-                blue_mask=blue_mask
+                res, X, Z, feature_names=feature_names, target_name=display_target_name, sort_Z=sort_Z
             )
 
             self._send_json_response(200, payload)

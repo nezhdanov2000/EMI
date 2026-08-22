@@ -88,21 +88,22 @@ def humanize_col(col_name: str) -> str:
 def target_conditioned_sort(x_vals: np.ndarray, z_vals: np.ndarray, col_name: str = ""):
     """
     Sorts categories of x_vals based on their association with the target z_vals.
+    Uses deterministic tie-breaking (by frequency and lexical order) to prevent spatial warping.
     Returns:
         x_num: Integer coordinates for x_vals
         x_sorted_labels: List of human-readable category string labels in sorted order (for axis ticks)
     """
     _, z_idx = np.unique(z_vals, return_inverse=True)
-    x_unique = np.unique(x_vals)
+    x_unique, x_counts = np.unique(x_vals, return_counts=True)
     
-    scores = []
-    for c in x_unique:
+    cat_stats = []
+    for c, cnt in zip(x_unique, x_counts):
         mask = (x_vals == c)
-        score = np.mean(z_idx[mask]) if np.any(mask) else 0
-        scores.append(score)
+        score = float(np.mean(z_idx[mask])) if np.any(mask) else 0.0
+        cat_stats.append((score, -int(cnt), str(c), c))
         
-    sorted_indices = np.argsort(scores)
-    x_sorted = x_unique[sorted_indices]
+    cat_stats.sort(key=lambda item: (item[0], item[1], item[2]))
+    x_sorted = [item[3] for item in cat_stats]
     
     x_to_num = {val: i for i, val in enumerate(x_sorted)}
     x_num = np.array([x_to_num[val] for val in x_vals])
@@ -119,7 +120,7 @@ def prepare_visualization_payload(
     feature_names: Optional[List[str]] = None,
     max_display_samples: int = 10000,
     target_name: str = "class",
-    blue_mask: Optional[np.ndarray] = None,
+    sort_Z: Optional[np.ndarray] = None,
 ) -> Dict:
     """
     Prepares a structured visualization payload with human readable Russian axis titles,
@@ -136,12 +137,16 @@ def prepare_visualization_payload(
         indices = np.random.default_rng(42).choice(n_samples, size=max_display_samples, replace=False)
         X_sub = X_arr[indices]
         Z_sub = Z_arr[indices]
-        blue_mask_sub = blue_mask[indices] if blue_mask is not None else None
     else:
         indices = np.arange(n_samples)
         X_sub = X_arr
         Z_sub = Z_arr
-        blue_mask_sub = blue_mask
+
+    if sort_Z is not None:
+        sort_Z_arr = np.asarray(sort_Z).ravel()
+        sort_Z_sub = sort_Z_arr[indices] if len(sort_Z_arr) == n_samples else sort_Z_arr
+    else:
+        sort_Z_sub = Z_sub
 
     selected_idx = result.selected_features
     d_star = result.d_star
@@ -171,12 +176,12 @@ def prepare_visualization_payload(
     w_human = [humanize_val(w_name, v) for v in w_vals] if has_4d else None
     z_target_human = [humanize_val(target_name, v) for v in Z_sub]
 
-    # Target-Conditioned Categorical Ordering
-    x_num, x_ticks = target_conditioned_sort(x_vals, Z_sub, col_name=x_name)
-    y_num, y_ticks = target_conditioned_sort(y_vals, Z_sub, col_name=y_name)
-    z_num, z_ticks = target_conditioned_sort(z_vals, Z_sub, col_name=z_name)
+    # Target-Conditioned Categorical Ordering using canonical sort_Z_sub
+    x_num, x_ticks = target_conditioned_sort(x_vals, sort_Z_sub, col_name=x_name)
+    y_num, y_ticks = target_conditioned_sort(y_vals, sort_Z_sub, col_name=y_name)
+    z_num, z_ticks = target_conditioned_sort(z_vals, sort_Z_sub, col_name=z_name)
     if has_4d:
-        w_num, w_ticks = target_conditioned_sort(w_vals, Z_sub, col_name=w_name)
+        w_num, w_ticks = target_conditioned_sort(w_vals, sort_Z_sub, col_name=w_name)
     else:
         w_num, w_ticks = None, None
     
@@ -245,7 +250,7 @@ def prepare_visualization_payload(
             _cz = cz if dim >= 3 else -0.5
             g_groups[(cx, _cy, _cz)].append(idx_in_sub)
             
-        gx, gy, gz, gop, gpur, gsz, ghov, gblue = [], [], [], [], [], [], [], []
+        gx, gy, gz, gop, gpur, gsz, ghov = [], [], [], [], [], [], []
         m_N = max([len(lst) for lst in g_groups.values()]) if g_groups else 1
         
         for (cx, cy, cz), c_idx in g_groups.items():
@@ -260,11 +265,7 @@ def prepare_visualization_payload(
             gop.append(float(norm_d))
             gpur.append(float(pur))
             gsz.append(N_c)
-            if blue_mask_sub is not None:
-                b_val = float(np.mean([blue_mask_sub[i] for i in c_idx]))
-                gblue.append(b_val)
-            else:
-                gblue.append(0.0)
+
             
             hx = x_human[c_idx[0]]
             hy = y_human[c_idx[0]] if dim >= 2 else "Свернуто"
@@ -286,18 +287,14 @@ def prepare_visualization_payload(
             )
             if hw is not None:
                 hov += f"<br>🎞️ <b>{humanize_col(w_name)}:</b> {hw}"
-            if blue_mask_sub is not None:
-                hov += f"<br>🌟 <b>Свечение (Синий):</b> {gblue[-1]*100:.1f}%"
-                
             ghov.append(hov)
-        return {"x": gx, "y": gy, "z": gz, "opacity": gop, "purity": gpur, "blue": gblue, "sizes": gsz, "hover_text": ghov}
+        return {"x": gx, "y": gy, "z": gz, "opacity": gop, "purity": gpur, "sizes": gsz, "hover_text": ghov}
 
-    # Calculate global max points per cell for consistent scaling
-    g_groups_3d = {}
-    for idx_in_sub, (cx, cy, cz) in enumerate(zip(x_num, y_num, z_num)):
-        key = (cx, cy, cz)
-        g_groups_3d[key] = g_groups_3d.get(key, 0) + 1
-    global_max_n = max(g_groups_3d.values()) if g_groups_3d else 1
+    # Calculate global max points per cell based on 1D view for consistent scaling
+    g_groups_1d = {}
+    for cx in x_num:
+        g_groups_1d[cx] = g_groups_1d.get(cx, 0) + 1
+    global_max_n = max(g_groups_1d.values()) if g_groups_1d else 1
 
     grids = {
         "1": build_grid(1),
@@ -335,7 +332,6 @@ def prepare_visualization_payload(
         "grid_z": grids["3"]["z"],
         "grid_opacity": grids["3"]["opacity"],
         "grid_purity": grids["3"]["purity"],
-        "grid_blue_concentration": grids["3"]["blue"],
         "grid_hover_text": grids["3"]["hover_text"],
         "color": color_num.tolist(),
         "target_labels": z_target_human,

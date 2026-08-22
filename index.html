@@ -16,8 +16,8 @@
     <!-- Plotly.js -->
     <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
 
-    <link rel="stylesheet" href="/static/css/styles.css?v=11">
-    <script src="/static/js/app.js?v=28" defer></script>
+    <link rel="stylesheet" href="/static/css/styles.css?v=4219">
+    <script src="/static/js/app.js?v=4219" defer></script>
 </head>
 
 <body>
@@ -210,67 +210,7 @@
                 </div>
             </div>
 
-            <!-- Third Dimension (Blue Channel) -->
-            <div>
-                <div style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 8px;">🌟 Третье измерение
-                    (Синий цвет)</div>
-                <div
-                    style="display: flex; flex-direction: column; gap: 10px; font-size: 0.85rem; background: rgba(15, 23, 42, 0.4); padding: 12px; border-radius: 12px; border: 1px solid var(--border-color);">
 
-                    <div style="display: flex; flex-direction: column; gap: 4px;">
-                        <label style="color: var(--text-muted);">Признак (Колонка):</label>
-                        <select id="blueFeatureCol"
-                            style="background: rgba(15, 23, 42, 0.8); color: white; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 4px 6px;"
-                            onchange="onBlueColChange()">
-                            <option value="">-- Выключено --</option>
-                        </select>
-                    </div>
-
-                    <div style="display: flex; flex-direction: column; gap: 4px;">
-                        <label style="color: var(--text-muted);">Категория (Искомое значение):</label>
-                        <select id="blueFeatureVal"
-                            style="background: rgba(15, 23, 42, 0.8); color: white; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 4px 6px;">
-                            <option value="">-- Выберите --</option>
-                        </select>
-                    </div>
-
-                    <div style="display: flex; flex-direction: column; gap: 4px; margin-top: 4px;">
-                        <label style="color: var(--text-muted);">Пороги (через запятую, %):</label>
-                        <input type="text" id="blueThresholds" value="0, 25, 50, 75, 100"
-                            style="background: rgba(15, 23, 42, 0.8); color: white; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 4px 6px; width: 100%;"
-                            onchange="updateBlueThresholds()">
-                        <span style="font-size: 0.7rem; color: var(--text-dim);">Удаляйте или добавляйте новые
-                            границы</span>
-                    </div>
-
-                    <div id="blueLegendSection" style="display: none; margin-top: 10px;">
-                        <div style="font-size: 0.75rem; color: var(--text-dim); margin-bottom: 6px; font-weight: 500;">
-                            🗺️ 2D-Палитра (<span id="blueLegendName"
-                                style="color: var(--accent-cyan);">Признак</span>):
-                        </div>
-
-                        <div class="discrete-matrix-wrapper">
-                            <div class="matrix-y-axis">
-                                <span>100%</span>
-                                <div class="matrix-axis-title-y">Синий канал ↑</div>
-                                <span>0%</span>
-                            </div>
-
-                            <div class="discrete-matrix-content">
-                                <div id="discreteMatrixGrid" class="discrete-matrix-grid"></div>
-                                <div class="matrix-x-axis">
-                                    <span style="color: #4ade80;">← Съед.</span>
-                                    <span style="color: #f87171;">Ядов. →</span>
-                                </div>
-                            </div>
-                        </div>
-                        <div id="matrixTooltip" class="matrix-tooltip"></div>
-                    </div>
-
-                    <button class="filter-btn run-btn" style="margin-top: 8px; padding: 6px;"
-                        onclick="applyBlueFeature()">Применить</button>
-                </div>
-            </div>
 
             <!-- Noise Reduction -->
             <div>
