@@ -685,8 +685,34 @@ function renderPlot(payload) {
 
     Plotly.newPlot('plot-container', plotTraces, layout, { responsive: true, displayModeBar: false });
 
+    // Default camera distance is ~2.608 (sqrt(1.6^2 + 1.6^2 + 1.3^2))
+    window._currentCameraScale = 1.0;
+    
     // Re-apply stroke if it was active
     applyStroke(window._isStrokeActive || false);
+
+    const plotDiv = document.getElementById('plot-container');
+    plotDiv.on('plotly_relayout', function(eventData) {
+        let eye = null;
+        if (eventData['scene.camera'] && eventData['scene.camera'].eye) {
+            eye = eventData['scene.camera'].eye;
+        } else if (eventData['scene.camera.eye']) {
+            eye = eventData['scene.camera.eye'];
+        }
+
+        if (eye) {
+            const distance = Math.sqrt(eye.x * eye.x + eye.y * eye.y + eye.z * eye.z);
+            let scale = 2.61 / distance;
+            scale = Math.max(0.1, Math.min(scale, 10.0)); // Restrict scaling limits
+            
+            // Only restyle if the scale changed by at least 2% to avoid lag during drag
+            const currentScale = window._currentCameraScale || 1.0;
+            if (Math.abs(scale - currentScale) > 0.02) {
+                window._currentCameraScale = scale;
+                applyStroke(window._isStrokeActive || false);
+            }
+        }
+    });
 }
 
 let currentStrokeMode = 'range';
@@ -723,9 +749,11 @@ function applyStroke(enable) {
     let lineColors = new Array(n).fill('rgb(0,0,0)');
     let lineWidths = new Array(n).fill(0);
     let markerSizes = new Array(n);
+    
+    const scale = window._currentCameraScale || 1.0;
 
     for (let i = 0; i < n; i++) {
-        markerSizes[i] = baseSizes[i];
+        markerSizes[i] = baseSizes[i] * scale;
     }
 
     if (enable) {
@@ -750,7 +778,7 @@ function applyStroke(enable) {
             if (checkMatch(purity[i])) {
                 lineColors[i] = color;
                 lineWidths[i] = width;
-                markerSizes[i] = baseSizes[i] + 4; // Highlighted size
+                markerSizes[i] = (baseSizes[i] + 4) * scale; // Highlighted size
             }
         }
     }
