@@ -243,6 +243,23 @@
         </aside>
     </main>
 
-</body>
+    <!-- XAI Floating Panel -->
+    <div id="xaiPanel" class="xai-panel">
+        <div class="xai-panel-header">
+            <div class="xai-panel-title">
+                <span>🔬 Конъюнктивный Explorer</span>
+            </div>
+            <div class="xai-panel-close" onclick="closeXaiPanel()">×</div>
+        </div>
+        <div class="xai-panel-body">
+            <div id="xaiPanelInfo" class="xai-panel-info">
+                <!-- Center info injected here -->
+            </div>
+            <div id="xaiFilterList" style="display: flex; flex-direction: column; gap: 8px;">
+                <!-- Filter candidates injected here -->
+            </div>
+        </div>
+    </div>
 
+</body>
 </html>

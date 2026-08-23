@@ -32,6 +32,7 @@ from .vis import (
     generate_interactive_html,
     prepare_visualization_payload,
 )
+from .mining import mine_dirty_center
 
 __version__ = "1.0.0"
 

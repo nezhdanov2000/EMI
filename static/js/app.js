@@ -531,6 +531,7 @@ function buildPlotData(payload, dim, sliceIndex) {
     let currentPurity = g ? g.purity : payload.grid_purity;
     let currentSizes = g ? g.sizes : payload.grid_sizes;
     let currentHover = g ? g.hover_text : payload.grid_hover_text;
+    let currentCustomdata = g ? g.customdata : payload.grid_customdata;
 
     const xLen = payload.axis_ticks ? payload.axis_ticks.x.vals.length : 4;
     const yLen = payload.axis_ticks ? payload.axis_ticks.y.vals.length : 4;
@@ -578,10 +579,10 @@ function buildPlotData(payload, dim, sliceIndex) {
         x: glX, y: glY, z: glZ,
         mode: 'lines',
         line: { color: 'rgba(255, 255, 255, 0.12)', width: 1.0 },
-        hoverinfo: 'none', type: 'scatter3d', name: 'Сетка ячеек'
+        hoverinfo: 'skip', type: 'scatter3d', name: 'Сетка ячеек'
     };
 
-    let fx = [], fy = [], fz = [], fColors = [], fSizes = [], fHover = [], fPurity = [], fOpacity = [];
+    let fx = [], fy = [], fz = [], fColors = [], fSizes = [], fHover = [], fPurity = [], fOpacity = [], fCustomdata = [];
 
     const totalPts = xCoords ? xCoords.length : 0;
     for (let i = 0; i < totalPts; i++) {
@@ -609,14 +610,15 @@ function buildPlotData(payload, dim, sliceIndex) {
         const baseSize = 55 * Math.sqrt(n_c / maxN);
         fSizes.push(baseSize);
 
-        if (currentHover && currentHover[i]) fHover.push(currentHover[i]);
+        fHover.push((currentHover && currentHover[i]) ? currentHover[i] : '');
+        fCustomdata.push((currentCustomdata && currentCustomdata[i]) ? currentCustomdata[i] : null);
     }
 
     const scatterTrace = {
         x: fx, y: fy, z: fz,
         mode: 'markers',
         marker: { size: fSizes, color: fColors, opacity: 1, line: { width: 0 }, showscale: false },
-        hovertext: fHover, hoverinfo: 'text', type: 'scatter3d', name: 'Данные'
+        hovertext: fHover, hoverinfo: 'text', customdata: fCustomdata, type: 'scatter3d', name: 'Данные'
     };
 
     let cameraConfig = undefined;
@@ -704,6 +706,63 @@ function renderPlot(payload) {
                 window._currentCameraScale = scale;
                 applyStroke(window._isStrokeActive || false);
             }
+        }
+    });
+
+    plotDiv.on('plotly_click', async function (data) {
+        try {
+            if (!data.points || data.points.length === 0) return;
+            
+            // In Plotly, the scatter trace is at curveNumber 1 or named 'Данные'
+            let pt = data.points.find(p => p.curveNumber === 1);
+            if (!pt) {
+                pt = data.points.find(p => {
+                    const trace = plotDiv.data && plotDiv.data[p.curveNumber];
+                    return trace && trace.name === 'Данные';
+                });
+            }
+            if (!pt) pt = data.points[0];
+            
+            const trace = (plotDiv.data && plotDiv.data[pt.curveNumber]) ? plotDiv.data[pt.curveNumber] : null;
+            const cdata = pt.customdata || (trace && trace.customdata ? trace.customdata[pt.pointNumber] : null);
+            
+            if (!cdata || !cdata.coords) {
+                console.warn("Click on non-data or missing customdata:", pt);
+                return;
+            }
+            
+            // Only trigger for dirty centers (e.g. 0.3 <= purity <= 0.7)
+            if (cdata.pur < 0.3 || cdata.pur > 0.7) {
+                console.log("Center purity is", cdata.pur, "- skipping XAI panel");
+                return;
+            }
+
+            const targetSelect = document.getElementById('targetSelect');
+            const target = targetSelect ? targetSelect.value : 'class';
+            const i_z_x_f = (currentPayload && currentPayload.metrics) ? (currentPayload.metrics.nmi || 1.0) : 1.0;
+            
+            showLoader(true);
+            try {
+                const res = await fetch('/api/mine_center', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        target: target,
+                        center_coords: cdata.coords,
+                        i_z_x_f: i_z_x_f
+                    })
+                });
+                if (res.ok) {
+                    const results = await res.json();
+                    renderXaiPanel(cdata, results.results);
+                }
+            } catch (e) {
+                console.error("Error mining center:", e);
+            } finally {
+                showLoader(false);
+            }
+        } catch (eOuter) {
+            console.error("Crash in click handler: ", eOuter);
         }
     });
 }
@@ -966,7 +1025,8 @@ function transitionDimensionality(fromDim, toDim, oldSliceIndex = null) {
         
         Plotly.restyle('plot-container', {
             'x': [anim.startX], 'y': [anim.startY], 'z': [anim.startZ],
-            'marker.size': [anim.startSizes], 'marker.color': [anim.startColors], 'hovertext': [anim.startHover]
+            'marker.size': [anim.startSizes], 'marker.color': [anim.startColors], 'hovertext': [anim.startHover],
+            'customdata': [targetData.traces[1].customdata]
         }, 1).then(() => {
             currentRenderedDim = toDim;
             requestAnimationFrame(() => {
@@ -978,7 +1038,8 @@ function transitionDimensionality(fromDim, toDim, oldSliceIndex = null) {
                         if (wasStrokeActive) applyStroke(true);
                         Plotly.restyle('plot-container', {
                             'x': [targetData.traces[1].x], 'y': [targetData.traces[1].y], 'z': [targetData.traces[1].z],
-                            'marker.size': [targetData.traces[1].marker.size], 'marker.color': [targetData.traces[1].marker.color], 'hovertext': [targetData.traces[1].hovertext]
+                            'marker.size': [targetData.traces[1].marker.size], 'marker.color': [targetData.traces[1].marker.color], 'hovertext': [targetData.traces[1].hovertext],
+                            'customdata': [targetData.traces[1].customdata]
                         }, 1);
                     }
                 );
@@ -997,7 +1058,8 @@ function transitionDimensionality(fromDim, toDim, oldSliceIndex = null) {
         
         Plotly.restyle('plot-container', {
             'x': [flatStart.x], 'y': [flatStart.y], 'z': [flatStart.z],
-            'marker.size': [origSizes], 'marker.color': [origColors], 'hovertext': [origHover]
+            'marker.size': [origSizes], 'marker.color': [origColors], 'hovertext': [origHover],
+            'customdata': [targetData.traces[1].customdata]
         }, 1).then(() => {
             currentRenderedDim = toDim;
             requestAnimationFrame(() => {
@@ -1007,6 +1069,9 @@ function transitionDimensionality(fromDim, toDim, oldSliceIndex = null) {
                     duration, () => {
                         isAnimating = false;
                         if (wasStrokeActive) applyStroke(true);
+                        Plotly.restyle('plot-container', {
+                            'customdata': [targetData.traces[1].customdata]
+                        }, 1);
                     }
                 );
             });
@@ -1032,7 +1097,8 @@ function transitionDimensionality(fromDim, toDim, oldSliceIndex = null) {
                 window._lastFilteredData = { purity: targetData.fPurity, opacity: targetData.fOpacity, baseSizes: targetData.fSizes };
                 Plotly.restyle('plot-container', {
                     'x': [targetData.traces[1].x], 'y': [targetData.traces[1].y], 'z': [targetData.traces[1].z],
-                    'marker.size': [targetSizes], 'marker.color': [targetColors], 'hovertext': [targetHover]
+                    'marker.size': [targetSizes], 'marker.color': [targetColors], 'hovertext': [targetHover],
+                    'customdata': [targetData.traces[1].customdata]
                 }, 1).then(() => {
                     currentRenderedDim = toDim;
                     isAnimating = false;
@@ -1145,3 +1211,98 @@ async function runCompositeAnalysis() {
 }
 
 window.addEventListener('DOMContentLoaded', init);
+
+// --- XAI Panel Logic ---
+
+let _currentXaiFilterIdx = -1;
+let _xaiResultsCache = null;
+
+function renderXaiPanel(cdata, results) {
+    const panel = document.getElementById('xaiPanel');
+    const info = document.getElementById('xaiPanelInfo');
+    const list = document.getElementById('xaiFilterList');
+    
+    _xaiResultsCache = results;
+    _currentXaiFilterIdx = -1;
+    
+    let coordsText = Object.entries(cdata.coords).map(([k,v]) => `${k}=${v}`).join(', ');
+    
+    info.innerHTML = `
+        <div>📍 Грязный центр: (${coordsText})</div>
+        <div>📦 Объектов: ${cdata.N} &nbsp;|&nbsp; 🎯 Чистота: ${(cdata.pur*100).toFixed(1)}%</div>
+    `;
+    
+    list.innerHTML = '';
+    if (!results || results.length === 0) {
+        list.innerHTML = '<div style="color:var(--text-dim); padding: 10px;">Не найдено значимых расщеплений.</div>';
+    } else {
+        results.forEach((r, idx) => {
+            const condsText = r.conditions.map(c => `${c.col}=${c.val}`).join(' ∧ ');
+            const nmi = r.nmi_local.toFixed(2);
+            const vir = (r.delta_vir * 100).toFixed(1);
+            
+            const html = `
+                <div class="xai-filter-item">
+                    <div class="xai-filter-header">
+                        <div class="xai-filter-conds">${r.reliability} ${condsText}</div>
+                    </div>
+                    <div class="xai-filter-stats">
+                        <span>→ Чистота: ${(r.purity_pos*100).toFixed(1)}% (n=${r.n_pos})</span>
+                        <span>NMI: ${nmi}</span>
+                        <span>ΔVIR: +${vir}%</span>
+                    </div>
+                    <div class="xai-filter-actions">
+                        <button class="xai-btn" onclick="highlightXaiFilter(${idx})">👁 Подсветить</button>
+                        <button class="xai-btn primary" onclick="applyXaiFilter(${idx})">🔄 Добавить в AVR</button>
+                    </div>
+                </div>
+            `;
+            list.innerHTML += html;
+        });
+    }
+    
+    panel.style.display = 'flex';
+}
+
+function closeXaiPanel() {
+    document.getElementById('xaiPanel').style.display = 'none';
+    // Clear highlight if any
+    _currentXaiFilterIdx = -1;
+    // We could write a function to reset the stroke, for now just call applyStroke
+    applyStroke(window._isStrokeActive || false);
+}
+
+function highlightXaiFilter(idx) {
+    // Advanced: visually highlight the subset inside the sphere.
+    // For now, let's just log it or apply a simple visual cue.
+    console.log("Highlighting filter", idx);
+    alert("Подсветка внутри грязной сферы будет реализована в следующем обновлении UI Plotly (требуется перестроение scatter3d с разделением точек).");
+}
+
+async function applyXaiFilter(idx) {
+    if (!_xaiResultsCache || !_xaiResultsCache[idx]) return;
+    const conds = _xaiResultsCache[idx].conditions;
+    
+    // Add them to the composite target UI and re-run
+    conds.forEach(c => {
+        // Find an empty row or add one
+        let container = document.getElementById('filterRowsContainer');
+        let emptyRow = Array.from(container.querySelectorAll('.filter-row')).find(row => {
+            const selects = row.querySelectorAll('select');
+            return !selects[0].value;
+        });
+        if (!emptyRow) {
+            addFilterRow();
+            const rows = container.querySelectorAll('.filter-row');
+            emptyRow = rows[rows.length - 1];
+        }
+        
+        const selects = emptyRow.querySelectorAll('select');
+        selects[0].value = c.col;
+        updateValueDropdown(selects[0]);
+        selects[1].value = c.val;
+    });
+    
+    closeXaiPanel();
+    await applyCompositeTarget();
+}

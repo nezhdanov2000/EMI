@@ -250,7 +250,7 @@ def prepare_visualization_payload(
             _cz = cz if dim >= 3 else -0.5
             g_groups[(cx, _cy, _cz)].append(idx_in_sub)
             
-        gx, gy, gz, gop, gpur, gsz, ghov = [], [], [], [], [], [], []
+        gx, gy, gz, gop, gpur, gsz, ghov, gdata = [], [], [], [], [], [], [], []
         m_N = max([len(lst) for lst in g_groups.values()]) if g_groups else 1
         
         for (cx, cy, cz), c_idx in g_groups.items():
@@ -288,7 +288,24 @@ def prepare_visualization_payload(
             if hw is not None:
                 hov += f"<br>🎞️ <b>{humanize_col(w_name)}:</b> {hw}"
             ghov.append(hov)
-        return {"x": gx, "y": gy, "z": gz, "opacity": gop, "purity": gpur, "sizes": gsz, "hover_text": ghov}
+            
+            # Use raw values for API queries so filtering works, cast to standard types for JSON
+            def _cast(val):
+                if hasattr(val, 'item'): return val.item()
+                return val
+            
+            rx = _cast(x_vals[c_idx[0]])
+            ry = _cast(y_vals[c_idx[0]]) if dim >= 2 else None
+            rz = _cast(z_vals[c_idx[0]]) if dim >= 3 else None
+            rw = _cast(w_vals[c_idx[0]]) if (has_4d and w_vals is not None and slice_mask is not None) else None
+            
+            cdata = {"N": N_c, "pur": float(pur), "coords": {x_name: rx}}
+            if dim >= 2: cdata["coords"][y_name] = ry
+            if dim >= 3: cdata["coords"][z_name] = rz
+            if rw is not None: cdata["coords"][w_name] = rw
+            gdata.append(cdata)
+            
+        return {"x": gx, "y": gy, "z": gz, "opacity": gop, "purity": gpur, "sizes": gsz, "hover_text": ghov, "customdata": gdata}
 
     # Calculate global max points per cell based on 1D view for consistent scaling
     g_groups_1d = {}
@@ -333,6 +350,7 @@ def prepare_visualization_payload(
         "grid_opacity": grids["3"]["opacity"],
         "grid_purity": grids["3"]["purity"],
         "grid_hover_text": grids["3"]["hover_text"],
+        "grid_customdata": grids["3"].get("customdata", []),
         "color": color_num.tolist(),
         "target_labels": z_target_human,
         "unique_target_classes": unique_target_labels,
@@ -541,6 +559,7 @@ def generate_interactive_html(payload: Dict, title: str = "VSF 3D Visualizer") -
             }},
             text: payload.hover_text,
             hoverinfo: 'text',
+            customdata: payload.customdata,
             type: 'scatter3d'
         }};
         

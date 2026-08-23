@@ -42,6 +42,8 @@ class VSFRequestHandler(http.server.SimpleHTTPRequestHandler):
         """Handle POST requests."""
         if self.path == "/api/analyze":
             self._handle_analyze_api()
+        elif self.path == "/api/mine_center":
+            self._handle_mine_center_api()
         else:
             self.send_error(404, "Endpoint not found")
 
@@ -203,6 +205,46 @@ class VSFRequestHandler(http.server.SimpleHTTPRequestHandler):
         except Exception as e:
             self._send_json_response(500, {"error": str(e)})
 
+
+    def _handle_mine_center_api(self) -> None:
+        """API endpoint to mine conjunctive filters for a dirty center."""
+        try:
+            content_length = int(self.headers.get("Content-Length", 0))
+            post_data = self.rfile.read(content_length)
+            req = json.loads(post_data.decode("utf-8"))
+
+            target_col = req.get("target", "class")
+            criterion = req.get("criterion", None)
+            center_coords = req.get("center_coords", {})  # e.g. {"cap-shape": "x", ...}
+            i_z_x_f = req.get("i_z_x_f", 1.0)
+            
+            df = pd.read_csv(DATASET_PATH)
+            
+            # Setup Z target
+            if criterion is not None:
+                Z = (df[target_col].astype(str) == str(criterion)).astype(int).values
+            else:
+                Z = df[target_col].values
+                # Ensure binary or integers
+                if df[target_col].dtype.kind in ('U', 'S', 'O', 'b'):
+                    _, Z = np.unique(Z, return_inverse=True)
+            
+            # Setup mask
+            mask = np.ones(len(df), dtype=bool)
+            drop_cols = [target_col]
+            for col, val in center_coords.items():
+                if col in df.columns:
+                    mask &= (df[col].astype(str) == str(val))
+                    drop_cols.append(col)
+                    
+            X_df = df.drop(columns=drop_cols)
+            
+            # Use mining module
+            results = vsf.mine_dirty_center(X_df, Z, mask, i_z_x_f)
+            
+            self._send_json_response(200, {"results": results})
+        except Exception as e:
+            self._send_json_response(500, {"error": str(e)})
 
 def main() -> None:
     """Entry point for the VSF Local Web Server."""
