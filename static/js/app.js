@@ -31,8 +31,15 @@ async function init() {
             // Add default first filter row
             addFilterRow();
             populateBlueFeatureDropdowns(colData.columns);
-            renderDiscreteColorMatrix();
         }
+
+        // Fetch top insights catalog (NMI >= 75%)
+        const topRes = await fetch('/api/top_columns');
+        if (topRes.ok) {
+            const topData = await topRes.json();
+            populateTopCatalog(topData.columns);
+        }
+
         await runAnalysis('class', null);
     } catch (err) {
         console.error("Initialization error:", err);
@@ -107,6 +114,85 @@ function populateCatalog(cols, defaultTarget) {
         if (col.id === defaultTarget) {
             charItem.classList.add('open');
         }
+    });
+}
+
+function populateTopCatalog(cols) {
+    const accordion = document.getElementById('topCatalogAccordion');
+    if (!accordion) return;
+    accordion.innerHTML = '';
+
+    if (!cols || cols.length === 0) {
+        accordion.innerHTML = '<div style="color: var(--text-dim); font-size: 0.85rem; padding: 1rem;">Нет инсайтов с NMI ≥ 75%</div>';
+        return;
+    }
+
+    cols.forEach(col => {
+        const charItem = document.createElement('div');
+        charItem.className = 'char-item';
+
+        const charHeader = document.createElement('div');
+        charHeader.className = 'char-header';
+        const colMaxNmiPct = (col.max_nmi * 100).toFixed(1);
+        charHeader.innerHTML = `
+            <span class="char-title">${col.label}</span>
+            <div style="display:flex; align-items:center; gap:8px;">
+                <span class="top-nmi-badge">${colMaxNmiPct}%</span>
+                <span class="char-icon">▶</span>
+            </div>
+        `;
+
+        const charContent = document.createElement('div');
+        charContent.className = 'char-content';
+
+        charHeader.onclick = () => {
+            charItem.classList.toggle('open');
+        };
+
+        col.criteria.forEach(crit => {
+            const critItem = document.createElement('div');
+            critItem.className = 'crit-item';
+
+            const critHeader = document.createElement('div');
+            critHeader.className = 'crit-header';
+            const critNmiPct = (crit.max_nmi * 100).toFixed(1);
+            critHeader.innerHTML = `
+                <span>${crit.label}</span>
+                <span class="top-crit-nmi">${critNmiPct}%</span>
+            `;
+
+            const critContent = document.createElement('div');
+            critContent.className = 'crit-content';
+            const historyListId = `top-history-${col.id}-${crit.id.replace(/[^a-zA-Z0-9]/g, '_')}`;
+            critContent.id = historyListId;
+
+            critHeader.onclick = async (e) => {
+                e.stopPropagation();
+                if (activeCritItem && activeCritItem !== critItem) {
+                    activeCritItem.classList.remove('active');
+                    activeCritItem.classList.remove('open');
+                }
+
+                const isActive = critItem.classList.contains('active');
+                if (!isActive) {
+                    critItem.classList.add('active');
+                    activeCritItem = critItem;
+                    critContent.innerHTML = '<div style="color:var(--text-dim);font-size:0.8rem;padding:4px;">Анализ Парето-фронта...</div>';
+                    critItem.classList.add('open');
+                    await runAnalysis(col.id, crit.id, historyListId);
+                } else {
+                    critItem.classList.toggle('open');
+                }
+            };
+
+            critItem.appendChild(critHeader);
+            critItem.appendChild(critContent);
+            charContent.appendChild(critItem);
+        });
+
+        charItem.appendChild(charHeader);
+        charItem.appendChild(charContent);
+        accordion.appendChild(charItem);
     });
 }
 
@@ -1123,8 +1209,18 @@ function transitionDimensionality(fromDim, toDim, oldSliceIndex = null) {
 }
 
 function toggleMainAcc(id) {
-    const header = document.getElementById(id === 'catalog' ? 'headerCatalog' : 'headerSearch');
-    const content = document.getElementById(id === 'catalog' ? 'contentCatalog' : 'contentSearch');
+    let headerId = 'headerCatalog';
+    let contentId = 'contentCatalog';
+    if (id === 'search') {
+        headerId = 'headerSearch';
+        contentId = 'contentSearch';
+    } else if (id === 'top') {
+        headerId = 'headerTop';
+        contentId = 'contentTop';
+    }
+    const header = document.getElementById(headerId);
+    const content = document.getElementById(contentId);
+    if (!header || !content) return;
     
     if (header.classList.contains('open')) {
         header.classList.remove('open');

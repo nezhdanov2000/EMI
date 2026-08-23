@@ -14,6 +14,7 @@ from typing import Any, Dict
 # Global cache to speed up visual-only updates (e.g. blue_feature changes)
 _last_params = None
 _last_res = None
+_top_columns_cache = None
 
 import numpy as np
 import pandas as pd
@@ -35,6 +36,8 @@ class VSFRequestHandler(http.server.SimpleHTTPRequestHandler):
             self._handle_mushroom_api()
         elif self.path == "/api/columns":
             self._handle_columns_api()
+        elif self.path == "/api/top_columns":
+            self._handle_top_columns_api()
         else:
             super().do_GET()
 
@@ -91,6 +94,91 @@ class VSFRequestHandler(http.server.SimpleHTTPRequestHandler):
                 "total_rows": len(df)
             })
             
+        except Exception as e:
+            self._send_json_response(500, {"error": str(e)})
+
+    def _handle_top_columns_api(self) -> None:
+        """API endpoint to get the list of columns & criteria with NMI >= 75%."""
+        try:
+            if not os.path.exists(DATASET_PATH):
+                self.send_error(404, "Mushroom dataset not found")
+                return
+
+            global _top_columns_cache
+            if _top_columns_cache is not None:
+                self._send_json_response(200, _top_columns_cache)
+                return
+
+            df = pd.read_csv(DATASET_PATH)
+            X_arr = df.values
+            n_samples, n_features = X_arr.shape
+            X_discrete, _, _ = vsf.pmd.discretize_dataset(X_arr)
+            feature_names = list(df.columns)
+
+            min_nmi = 0.75
+            top_cols_map = {}
+
+            for c_idx, col_name in enumerate(feature_names):
+                unique_vals = np.unique(X_arr[:, c_idx])
+                for val in unique_vals:
+                    val_str = str(val)
+                    Z = (X_arr[:, c_idx] == val).astype(int)
+                    cand_indices = [j for j in range(n_features) if j != c_idx]
+                    
+                    S = []
+                    max_nmi_seen = 0.0
+                    
+                    for step in range(1, 5):
+                        best_feat = None
+                        best_mi = -1.0
+                        best_nmi = 0.0
+                        
+                        for j in cand_indices:
+                            if j in S:
+                                continue
+                            S_cand = S + [j]
+                            mi_cand = vsf.math.mutual_information(Z, X_discrete[:, S_cand])
+                            if mi_cand > best_mi:
+                                best_mi = mi_cand
+                                best_feat = j
+                                best_nmi = vsf.math.normalized_mutual_information(Z, X_discrete[:, S_cand])
+                                
+                        if best_feat is not None:
+                            S.append(best_feat)
+                            if best_nmi > max_nmi_seen:
+                                max_nmi_seen = best_nmi
+                                
+                    if max_nmi_seen >= min_nmi:
+                        if col_name not in top_cols_map:
+                            ru_title = vsf.vis.MUSHROOM_TRANSLATIONS["columns"].get(col_name, col_name)
+                            display_label = f"{ru_title} ({col_name})" if ru_title != col_name else col_name
+                            top_cols_map[col_name] = {
+                                "id": col_name,
+                                "label": display_label,
+                                "criteria": [],
+                                "max_nmi": 0.0
+                            }
+                        
+                        human_val = vsf.vis.humanize_val(col_name, val_str)
+                        top_cols_map[col_name]["criteria"].append({
+                            "id": val_str,
+                            "label": human_val,
+                            "max_nmi": float(max_nmi_seen)
+                        })
+                        if max_nmi_seen > top_cols_map[col_name]["max_nmi"]:
+                            top_cols_map[col_name]["max_nmi"] = float(max_nmi_seen)
+
+            top_cols_list = list(top_cols_map.values())
+            for col in top_cols_list:
+                col["criteria"].sort(key=lambda x: x["max_nmi"], reverse=True)
+            top_cols_list.sort(key=lambda x: x["max_nmi"], reverse=True)
+
+            _top_columns_cache = {
+                "columns": top_cols_list,
+                "total_count": sum(len(c["criteria"]) for c in top_cols_list)
+            }
+            self._send_json_response(200, _top_columns_cache)
+
         except Exception as e:
             self._send_json_response(500, {"error": str(e)})
 

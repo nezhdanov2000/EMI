@@ -16,8 +16,8 @@
     <!-- Plotly.js -->
     <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
 
-    <link rel="stylesheet" href="/static/css/styles.css?v=4219">
-    <script src="/static/js/app.js?v=4219" defer></script>
+    <link rel="stylesheet" href="/static/css/styles.css?v=4235">
+    <script src="/static/js/app.js?v=4235" defer></script>
 </head>
 
 <body>
@@ -73,6 +73,19 @@
                 <div id="catalogAccordion" class="catalog-accordion">
                     <div style="color: var(--text-dim); font-size: 0.85rem; padding: 1rem;">Загрузка структуры
                         датасета...</div>
+                </div>
+            </div>
+
+            <!-- Main Accordion Header for Top Insights -->
+            <div class="main-acc-header" id="headerTop" onclick="toggleMainAcc('top')">
+                <div class="main-acc-title">🏆 Топ Инсайтов (NMI ≥ 75%)</div>
+                <div class="main-acc-icon">▶</div>
+            </div>
+            <!-- Main Accordion Content for Top Insights -->
+            <div class="main-acc-content" id="contentTop">
+                <div class="catalog-subtitle" style="padding: 0 1.5rem 0.5rem 1.5rem;">Детерминированные законы (NMI ≥ 75%)</div>
+                <div id="topCatalogAccordion" class="catalog-accordion">
+                    <div style="color: var(--text-dim); font-size: 0.85rem; padding: 1rem;">Загрузка топа инсайтов...</div>
                 </div>
             </div>
         </aside>
