@@ -1558,7 +1558,7 @@ function renderXaiPanel(cdata, results) {
                         <span class="xai-stat-badge metric">ΔVIR: <b>+${vir}%</b></span>
                     </div>
                     <div class="xai-filter-actions">
-                        <button class="xai-btn" id="btn-highlight-${idx}" onclick="highlightXaiFilter(${idx})">👁 Анимация расщепления</button>
+                        <button class="xai-btn" id="btn-highlight-${idx}" onclick="highlightXaiFilter(${idx})">⚡ Разделить</button>
                     </div>
                 </div>
             `;
@@ -1592,7 +1592,7 @@ function highlightXaiFilter(idx) {
         const btn = document.getElementById(`btn-highlight-${idx}`);
         if (btn) {
             btn.classList.remove('active');
-            btn.innerHTML = '👁 Анимация расщепления';
+            btn.innerHTML = '⚡ Разделить';
         }
         MitosisEngine.resetToUnified();
         return;
@@ -1605,10 +1605,10 @@ function highlightXaiFilter(idx) {
         if (btn) {
             if (i === idx) {
                 btn.classList.add('active');
-                btn.innerHTML = '✖ Исходная сфера';
+                btn.innerHTML = '✖ Схлопнуть';
             } else {
                 btn.classList.remove('active');
-                btn.innerHTML = '👁 Анимация расщепления';
+                btn.innerHTML = '⚡ Разделить';
             }
         }
     });
