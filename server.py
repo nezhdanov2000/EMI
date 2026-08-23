@@ -181,7 +181,7 @@ class VSFRequestHandler(http.server.SimpleHTTPRequestHandler):
 
             if _last_params == cache_key and _last_res is not None:
                 res, cached_X, cached_Z, cached_features, cached_target_name = _last_res
-                # Use cached items to prevent redundant 1-second delay
+                # Use cached items to prevent redundant delay
                 X = cached_X
                 Z = cached_Z
                 feature_names = cached_features
@@ -207,7 +207,7 @@ class VSFRequestHandler(http.server.SimpleHTTPRequestHandler):
 
 
     def _handle_mine_center_api(self) -> None:
-        """API endpoint to mine conjunctive filters for a dirty center."""
+        """API endpoint to mine conjunctive filters for a dirty center with full target context."""
         try:
             content_length = int(self.headers.get("Content-Length", 0))
             post_data = self.rfile.read(content_length)
@@ -215,28 +215,40 @@ class VSFRequestHandler(http.server.SimpleHTTPRequestHandler):
 
             target_col = req.get("target", "class")
             criterion = req.get("criterion", None)
+            composite_target = req.get("composite_target", None)
             center_coords = req.get("center_coords", {})  # e.g. {"cap-shape": "x", ...}
-            i_z_x_f = req.get("i_z_x_f", 1.0)
+            i_z_x_f = float(req.get("i_z_x_f", 1.0))
             
             df = pd.read_csv(DATASET_PATH)
             
             # Setup Z target
-            if criterion is not None:
+            drop_cols = []
+            if composite_target:
+                mask_z = np.ones(len(df), dtype=bool)
+                for cond in composite_target:
+                    col = cond.get("col")
+                    val = str(cond.get("val"))
+                    if col in df.columns:
+                        mask_z &= (df[col].astype(str) == val)
+                        drop_cols.append(col)
+                Z = mask_z.astype(int).values
+            elif criterion is not None:
                 Z = (df[target_col].astype(str) == str(criterion)).astype(int).values
+                drop_cols.append(target_col)
             else:
                 Z = df[target_col].values
-                # Ensure binary or integers
                 if df[target_col].dtype.kind in ('U', 'S', 'O', 'b'):
                     _, Z = np.unique(Z, return_inverse=True)
+                drop_cols.append(target_col)
             
-            # Setup mask
+            # Setup mask for the specific cluster center
             mask = np.ones(len(df), dtype=bool)
-            drop_cols = [target_col]
             for col, val in center_coords.items():
                 if col in df.columns:
                     mask &= (df[col].astype(str) == str(val))
-                    drop_cols.append(col)
-                    
+                    if col not in drop_cols:
+                        drop_cols.append(col)
+                        
             X_df = df.drop(columns=drop_cols)
             
             # Use mining module

@@ -5,6 +5,8 @@ let allColumnsData = [];
 let activeSliceIndex = null;  // Current 4D slice index (null = show all / no 4D)
 let currentRenderedDim = null;
 let isAnimating = false;
+let currentAnalysisContext = { target: 'class', criterion: null, composite_target: null };
+let _currentClickedCenterPt = null;
 
 // Predefined color palettes for clear class separation
 const CLASS_COLORS = [
@@ -109,6 +111,7 @@ function populateCatalog(cols, defaultTarget) {
 }
 
 async function runAnalysis(targetCol, criterion = null, targetHistoryContainerId = null) {
+    currentAnalysisContext = { target: targetCol, criterion: criterion, composite_target: null };
     showLoader(true);
     try {
         const reqBody = { target: targetCol };
@@ -737,20 +740,29 @@ function renderPlot(payload) {
                 return;
             }
 
-            const targetSelect = document.getElementById('targetSelect');
-            const target = targetSelect ? targetSelect.value : 'class';
+            _currentClickedCenterPt = {
+                x: pt.x,
+                y: pt.y,
+                z: pt.z,
+                cdata: cdata
+            };
+
             const i_z_x_f = (currentPayload && currentPayload.metrics) ? (currentPayload.metrics.nmi || 1.0) : 1.0;
             
             showLoader(true);
             try {
+                const reqBody = {
+                    target: currentAnalysisContext.target,
+                    criterion: currentAnalysisContext.criterion,
+                    composite_target: currentAnalysisContext.composite_target,
+                    center_coords: cdata.coords,
+                    i_z_x_f: i_z_x_f
+                };
+
                 const res = await fetch('/api/mine_center', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        target: target,
-                        center_coords: cdata.coords,
-                        i_z_x_f: i_z_x_f
-                    })
+                    body: JSON.stringify(reqBody)
                 });
                 if (res.ok) {
                     const results = await res.json();
@@ -1181,6 +1193,8 @@ async function runCompositeAnalysis() {
         return;
     }
 
+    currentAnalysisContext = { target: null, criterion: null, composite_target: compositeTarget };
+
     showLoader(true);
     try {
         const reqBody = { composite_target: compositeTarget };
@@ -1212,7 +1226,282 @@ async function runCompositeAnalysis() {
 
 window.addEventListener('DOMContentLoaded', init);
 
-// --- XAI Panel Logic ---
+// --- XAI Panel Logic & Mitosis Canvas Engine ---
+
+const MitosisEngine = {
+    canvas: null,
+    ctx: null,
+    animId: null,
+    t: 0,
+    targetT: 0,
+    startT: 0,
+    startTime: 0,
+    duration: 650,
+    centerData: null,
+    activeRule: null,
+
+    init(canvasId) {
+        this.canvas = document.getElementById(canvasId);
+        if (!this.canvas) return;
+        this.ctx = this.canvas.getContext('2d');
+        const dpr = window.devicePixelRatio || 1;
+        const rect = this.canvas.getBoundingClientRect();
+        this.canvas.width = (rect.width || 440) * dpr;
+        this.canvas.height = 150 * dpr;
+        this.ctx.scale(dpr, dpr);
+    },
+
+    setCenter(cdata) {
+        this.centerData = cdata;
+        this.activeRule = null;
+        this.t = 0;
+        this.targetT = 0;
+        this.startT = 0;
+        if (this.animId) cancelAnimationFrame(this.animId);
+        this.draw(0);
+    },
+
+    animateToRule(rule) {
+        this.activeRule = rule;
+        this.startT = this.t;
+        this.targetT = 1.0;
+        this.startTime = performance.now();
+        if (this.animId) cancelAnimationFrame(this.animId);
+        this.loop();
+    },
+
+    resetToUnified() {
+        this.activeRule = null;
+        this.startT = this.t;
+        this.targetT = 0.0;
+        this.startTime = performance.now();
+        if (this.animId) cancelAnimationFrame(this.animId);
+        this.loop();
+    },
+
+    easeInOutCubic(x) {
+        return x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2;
+    },
+
+    loop() {
+        const now = performance.now();
+        const elapsed = now - this.startTime;
+        const progress = Math.min(1.0, elapsed / this.duration);
+        const ease = this.easeInOutCubic(progress);
+        
+        this.t = this.startT + (this.targetT - this.startT) * ease;
+        this.draw(this.t);
+
+        if (progress < 1.0) {
+            this.animId = requestAnimationFrame(() => this.loop());
+        }
+    },
+
+    draw(t) {
+        if (!this.ctx || !this.centerData) return;
+        const ctx = this.ctx;
+        const dpr = window.devicePixelRatio || 1;
+        const w = this.canvas.width / dpr;
+        const h = this.canvas.height / dpr;
+        
+        ctx.clearRect(0, 0, w, h);
+        
+        const centerX = w / 2;
+        const centerY = h / 2 - 8;
+        
+        // Base sphere parameters
+        const baseN = this.centerData.N;
+        const basePur = this.centerData.pur;
+        const baseColorIndex = getColorIndexForPurity(basePur);
+        const baseColor = PROB_COLORS[baseColorIndex];
+        const baseRadius = 36;
+
+        if (t <= 0.01 || !this.activeRule) {
+            // Single unified dirty sphere
+            this.draw3DSphere(ctx, centerX, centerY, baseRadius, baseColor, `${(basePur*100).toFixed(1)}%`, `Исходный кластер (N = ${baseN} шт.)`);
+            return;
+        }
+
+        const r = this.activeRule;
+        const fracPos = Math.max(0.15, r.n_pos / baseN);
+        const fracNeg = Math.max(0.15, r.n_neg / baseN);
+        
+        // Target radii proportional to sqrt(N)
+        const radPos = Math.max(18, Math.min(38, baseRadius * Math.sqrt(fracPos) * 1.3));
+        const radNeg = Math.max(18, Math.min(38, baseRadius * Math.sqrt(fracNeg) * 1.3));
+        
+        const colPos = PROB_COLORS[getColorIndexForPurity(r.purity_pos)];
+        const colNeg = PROB_COLORS[getColorIndexForPurity(r.purity_neg)];
+
+        // Separation distance
+        const maxOffset = 110;
+        const currentOffset = maxOffset * t;
+        
+        const xPos = centerX - currentOffset;
+        const xNeg = centerX + currentOffset;
+        
+        // Mitosis Bridge (Metaball Waist) during division
+        if (t > 0.02 && t < 0.65) {
+            const bridgeProgress = t / 0.65;
+            const waistWidth = Math.max(0, (1 - bridgeProgress) * baseRadius * 1.2);
+            if (waistWidth > 2) {
+                ctx.save();
+                ctx.beginPath();
+                ctx.moveTo(xPos, centerY - radPos * (1 - bridgeProgress * 0.4));
+                ctx.quadraticCurveTo(centerX, centerY - waistWidth * 0.4, xNeg, centerY - radNeg * (1 - bridgeProgress * 0.4));
+                ctx.lineTo(xNeg, centerY + radNeg * (1 - bridgeProgress * 0.4));
+                ctx.quadraticCurveTo(centerX, centerY + waistWidth * 0.4, xPos, centerY + radPos * (1 - bridgeProgress * 0.4));
+                ctx.closePath();
+                
+                const bridgeGrad = ctx.createLinearGradient(xPos, centerY, xNeg, centerY);
+                bridgeGrad.addColorStop(0, colPos);
+                bridgeGrad.addColorStop(0.5, baseColor);
+                bridgeGrad.addColorStop(1, colNeg);
+                ctx.fillStyle = bridgeGrad;
+                ctx.globalAlpha = 1 - bridgeProgress;
+                ctx.fill();
+                ctx.restore();
+            }
+        }
+        
+        // Child Sphere 1: Positive subgroup
+        const curColorPos = this.interpolateColor(baseColor, colPos, t);
+        const curRadPos = baseRadius + (radPos - baseRadius) * t;
+        const labelPosTop = t > 0.5 ? `${(r.purity_pos * 100).toFixed(1)}%` : '';
+        const labelPosSub = t > 0.5 ? `Подгруппа (n = ${r.n_pos})` : '';
+        this.draw3DSphere(ctx, xPos, centerY, curRadPos, curColorPos, labelPosTop, labelPosSub, t > 0.5 ? '#22c55e' : null);
+
+        // Child Sphere 2: Remainder
+        const curColorNeg = this.interpolateColor(baseColor, colNeg, t);
+        const curRadNeg = baseRadius + (radNeg - baseRadius) * t;
+        const labelNegTop = t > 0.5 ? `${(r.purity_neg * 100).toFixed(1)}%` : '';
+        const labelNegSub = t > 0.5 ? `Остаток (n = ${r.n_neg})` : '';
+        this.draw3DSphere(ctx, xNeg, centerY, curRadNeg, curColorNeg, labelNegTop, labelNegSub, t > 0.5 ? '#ef4444' : null);
+        
+        // Center Metrics Badge between separated spheres
+        if (t > 0.6) {
+            const badgeAlpha = Math.min(1.0, (t - 0.6) / 0.4);
+            ctx.save();
+            ctx.globalAlpha = badgeAlpha;
+            
+            ctx.fillStyle = 'rgba(15, 23, 42, 0.9)';
+            ctx.strokeStyle = 'rgba(99, 102, 241, 0.4)';
+            ctx.lineWidth = 1;
+            
+            const bw = 84, bh = 32, bx = centerX - bw / 2, by = centerY - bh / 2;
+            this.roundRect(ctx, bx, by, bw, bh, 6);
+            ctx.fill();
+            ctx.stroke();
+            
+            ctx.fillStyle = '#a5b4fc';
+            ctx.font = '600 10px Inter, sans-serif';
+            ctx.textAlign = 'center';
+            ctx.fillText(`NMI: ${r.nmi_local.toFixed(2)}`, centerX, by + 13);
+            ctx.fillStyle = '#4ade80';
+            ctx.fillText(`ΔVIR: +${(r.delta_vir*100).toFixed(1)}%`, centerX, by + 25);
+            ctx.restore();
+        }
+    },
+
+    draw3DSphere(ctx, x, y, radius, hexColor, labelTop, labelBottom, glowColor = null) {
+        ctx.save();
+        
+        // Soft drop shadow
+        ctx.beginPath();
+        ctx.ellipse(x, y + radius + 6, radius * 0.75, 4, 0, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.4)';
+        ctx.filter = 'blur(4px)';
+        ctx.fill();
+        ctx.filter = 'none';
+
+        // Outer glow
+        if (glowColor) {
+            ctx.beginPath();
+            ctx.arc(x, y, radius + 2, 0, Math.PI * 2);
+            ctx.strokeStyle = glowColor;
+            ctx.lineWidth = 2;
+            ctx.shadowColor = glowColor;
+            ctx.shadowBlur = 8;
+            ctx.stroke();
+            ctx.shadowBlur = 0;
+        }
+
+        // Radial gradient for 3D sphere volume
+        ctx.beginPath();
+        ctx.arc(x, y, radius, 0, Math.PI * 2);
+        
+        const grad = ctx.createRadialGradient(
+            x - radius * 0.32, y - radius * 0.32, radius * 0.08,
+            x, y, radius
+        );
+        
+        const rgb = this.hexToRgb(hexColor);
+        grad.addColorStop(0, '#ffffff');
+        grad.addColorStop(0.2, `rgba(${Math.min(255, rgb.r + 45)}, ${Math.min(255, rgb.g + 45)}, ${Math.min(255, rgb.b + 45)}, 1)`);
+        grad.addColorStop(0.7, hexColor);
+        grad.addColorStop(1, `rgba(${Math.max(0, rgb.r - 55)}, ${Math.max(0, rgb.g - 55)}, ${Math.max(0, rgb.b - 55)}, 1)`);
+        
+        ctx.fillStyle = grad;
+        ctx.fill();
+
+        // Labels
+        if (labelTop) {
+            ctx.font = '700 11px Inter, sans-serif';
+            ctx.textAlign = 'center';
+            ctx.fillStyle = '#ffffff';
+            ctx.shadowColor = 'rgba(0,0,0,0.85)';
+            ctx.shadowBlur = 4;
+            ctx.fillText(labelTop, x, y + 4);
+            ctx.shadowBlur = 0;
+        }
+        
+        if (labelBottom) {
+            ctx.font = '500 10px Inter, sans-serif';
+            ctx.textAlign = 'center';
+            ctx.fillStyle = '#cbd5e1';
+            ctx.fillText(labelBottom, x, y + radius + 16);
+        }
+
+        ctx.restore();
+    },
+
+    hexToRgb(hex) {
+        if (!hex || typeof hex !== 'string') return { r: 150, g: 120, b: 80 };
+        if (hex.startsWith('rgb')) {
+            const m = hex.match(/\d+/g);
+            if (m && m.length >= 3) return { r: parseInt(m[0]), g: parseInt(m[1]), b: parseInt(m[2]) };
+        }
+        const clean = hex.replace('#', '');
+        return {
+            r: parseInt(clean.substring(0, 2), 16) || 150,
+            g: parseInt(clean.substring(2, 4), 16) || 120,
+            b: parseInt(clean.substring(4, 6), 16) || 80
+        };
+    },
+
+    interpolateColor(hex1, hex2, factor) {
+        const rgb1 = this.hexToRgb(hex1);
+        const rgb2 = this.hexToRgb(hex2);
+        const r = Math.round(rgb1.r + (rgb2.r - rgb1.r) * factor);
+        const g = Math.round(rgb1.g + (rgb2.g - rgb1.g) * factor);
+        const b = Math.round(rgb1.b + (rgb2.b - rgb1.b) * factor);
+        return `rgb(${r}, ${g}, ${b})`;
+    },
+
+    roundRect(ctx, x, y, width, height, radius) {
+        ctx.beginPath();
+        ctx.moveTo(x + radius, y);
+        ctx.lineTo(x + width - radius, y);
+        ctx.quadraticCurveTo(x + width, y, x + width, y + radius);
+        ctx.lineTo(x + width, y + height - radius);
+        ctx.quadraticCurveTo(x + width, y + height, x + width - radius, y + height);
+        ctx.lineTo(x + radius, y + height);
+        ctx.quadraticCurveTo(x, y + height, x, y + height - radius);
+        ctx.lineTo(x, y + radius);
+        ctx.quadraticCurveTo(x, y, x + radius, y);
+        ctx.closePath();
+    }
+};
 
 let _currentXaiFilterIdx = -1;
 let _xaiResultsCache = null;
@@ -1225,35 +1514,51 @@ function renderXaiPanel(cdata, results) {
     _xaiResultsCache = results;
     _currentXaiFilterIdx = -1;
     
-    let coordsText = Object.entries(cdata.coords).map(([k,v]) => `${k}=${v}`).join(', ');
+    // Format human-friendly coordinates
+    let coordsText = Object.entries(cdata.coords).map(([k, v]) => {
+        const colObj = allColumnsData ? allColumnsData.find(c => c.id === k) : null;
+        const colLabel = colObj ? colObj.label : k;
+        let valLabel = v;
+        if (colObj && colObj.criteria) {
+            const critObj = colObj.criteria.find(cr => cr.id === v);
+            if (critObj) valLabel = critObj.label;
+        }
+        return `<b>${colLabel}:</b> ${valLabel}`;
+    }).join(' &nbsp;|&nbsp; ');
     
     info.innerHTML = `
-        <div>📍 Грязный центр: (${coordsText})</div>
-        <div>📦 Объектов: ${cdata.N} &nbsp;|&nbsp; 🎯 Чистота: ${(cdata.pur*100).toFixed(1)}%</div>
+        <div style="font-weight:600; color:#f1f5f9; margin-bottom:4px;">📍 Дискретный Центр:</div>
+        <div style="color:#cbd5e1; margin-bottom:8px; font-size:0.85rem;">${coordsText}</div>
+        <div style="display:flex; gap:16px; font-size:0.82rem; color:var(--text-muted); background:rgba(255,255,255,0.04); padding:6px 10px; border-radius:6px;">
+            <span>📦 Объектов: <b style="color:#f8fafc;">${cdata.N} шт.</b></span>
+            <span>🎯 Исходная чистота: <b style="color:#f8fafc;">${(cdata.pur*100).toFixed(1)}%</b></span>
+        </div>
     `;
     
     list.innerHTML = '';
     if (!results || results.length === 0) {
-        list.innerHTML = '<div style="color:var(--text-dim); padding: 10px;">Не найдено значимых расщеплений.</div>';
+        list.innerHTML = '<div style="color:var(--text-dim); padding: 16px; text-align:center; font-size:0.85rem;">Не найдено статистически надежных вариантов расщепления для этого центра.</div>';
     } else {
         results.forEach((r, idx) => {
-            const condsText = r.conditions.map(c => `${c.col}=${c.val}`).join(' ∧ ');
-            const nmi = r.nmi_local.toFixed(2);
+            const condsText = r.human_text || r.conditions.map(c => `${c.human_col || c.col} = ${c.human_val || c.val}`).join(' ∧ ');
+            const nmi = r.nmi_local.toFixed(3);
             const vir = (r.delta_vir * 100).toFixed(1);
+            const pPos = (r.purity_pos * 100).toFixed(1);
+            const pNeg = (r.purity_neg * 100).toFixed(1);
             
             const html = `
-                <div class="xai-filter-item">
+                <div class="xai-filter-item" id="xai-filter-card-${idx}">
                     <div class="xai-filter-header">
                         <div class="xai-filter-conds">${r.reliability} ${condsText}</div>
                     </div>
                     <div class="xai-filter-stats">
-                        <span>→ Чистота: ${(r.purity_pos*100).toFixed(1)}% (n=${r.n_pos})</span>
-                        <span>NMI: ${nmi}</span>
-                        <span>ΔVIR: +${vir}%</span>
+                        <span class="xai-stat-badge pos">✨ Подгруппа: <b>${pPos}%</b> (n=${r.n_pos})</span>
+                        <span class="xai-stat-badge neg">Остаток: <b>${pNeg}%</b> (n=${r.n_neg})</span>
+                        <span class="xai-stat-badge metric">NMI: <b>${nmi}</b></span>
+                        <span class="xai-stat-badge metric">ΔVIR: <b>+${vir}%</b></span>
                     </div>
                     <div class="xai-filter-actions">
-                        <button class="xai-btn" onclick="highlightXaiFilter(${idx})">👁 Подсветить</button>
-                        <button class="xai-btn primary" onclick="applyXaiFilter(${idx})">🔄 Добавить в AVR</button>
+                        <button class="xai-btn" id="btn-highlight-${idx}" onclick="highlightXaiFilter(${idx})">👁 Анимация расщепления</button>
                     </div>
                 </div>
             `;
@@ -1262,47 +1567,52 @@ function renderXaiPanel(cdata, results) {
     }
     
     panel.style.display = 'flex';
+    
+    // Initialize Mitosis Canvas Engine
+    MitosisEngine.init('xaiMitosisCanvas');
+    MitosisEngine.setCenter(cdata);
 }
 
 function closeXaiPanel() {
     document.getElementById('xaiPanel').style.display = 'none';
-    // Clear highlight if any
     _currentXaiFilterIdx = -1;
-    // We could write a function to reset the stroke, for now just call applyStroke
-    applyStroke(window._isStrokeActive || false);
+    if (MitosisEngine.animId) cancelAnimationFrame(MitosisEngine.animId);
 }
 
 function highlightXaiFilter(idx) {
-    // Advanced: visually highlight the subset inside the sphere.
-    // For now, let's just log it or apply a simple visual cue.
-    console.log("Highlighting filter", idx);
-    alert("Подсветка внутри грязной сферы будет реализована в следующем обновлении UI Plotly (требуется перестроение scatter3d с разделением точек).");
-}
-
-async function applyXaiFilter(idx) {
     if (!_xaiResultsCache || !_xaiResultsCache[idx]) return;
-    const conds = _xaiResultsCache[idx].conditions;
     
-    // Add them to the composite target UI and re-run
-    conds.forEach(c => {
-        // Find an empty row or add one
-        let container = document.getElementById('filterRowsContainer');
-        let emptyRow = Array.from(container.querySelectorAll('.filter-row')).find(row => {
-            const selects = row.querySelectorAll('select');
-            return !selects[0].value;
-        });
-        if (!emptyRow) {
-            addFilterRow();
-            const rows = container.querySelectorAll('.filter-row');
-            emptyRow = rows[rows.length - 1];
+    const cards = document.querySelectorAll('.xai-filter-item');
+    const r = _xaiResultsCache[idx];
+    
+    if (_currentXaiFilterIdx === idx) {
+        // Toggle off - return to unified sphere
+        _currentXaiFilterIdx = -1;
+        cards.forEach(c => c.classList.remove('active-highlight'));
+        const btn = document.getElementById(`btn-highlight-${idx}`);
+        if (btn) {
+            btn.classList.remove('active');
+            btn.innerHTML = '👁 Анимация расщепления';
         }
-        
-        const selects = emptyRow.querySelectorAll('select');
-        selects[0].value = c.col;
-        updateValueDropdown(selects[0]);
-        selects[1].value = c.val;
-    });
+        MitosisEngine.resetToUnified();
+        return;
+    }
     
-    closeXaiPanel();
-    await applyCompositeTarget();
+    _currentXaiFilterIdx = idx;
+    cards.forEach((c, i) => {
+        c.classList.toggle('active-highlight', i === idx);
+        const btn = document.getElementById(`btn-highlight-${i}`);
+        if (btn) {
+            if (i === idx) {
+                btn.classList.add('active');
+                btn.innerHTML = '✖ Исходная сфера';
+            } else {
+                btn.classList.remove('active');
+                btn.innerHTML = '👁 Анимация расщепления';
+            }
+        }
+    });
+
+    // Run Mitosis Animation in the dedicated canvas
+    MitosisEngine.animateToRule(r);
 }
