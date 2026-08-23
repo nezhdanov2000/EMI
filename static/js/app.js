@@ -193,6 +193,7 @@ function updateDashboard(payload, targetHistoryContainerId) {
     currentPayload = payload;
     const m = payload.metrics;
 
+    currentRenderedDim = null; // Force full plot re-render with new axis titles
     if (activeDimensionality === null) {
         activeDimensionality = (m && m.d_star) ? m.d_star : 3;
     }
