@@ -94,7 +94,7 @@ function populateCatalog(cols, defaultTarget) {
                 if (!isActive) {
                     critItem.classList.add('active');
                     activeCritItem = critItem;
-                    critContent.innerHTML = '<div style="color:var(--text-dim);font-size:0.8rem;padding:4px;">Анализ Парето-фронта...</div>';
+                    critContent.innerHTML = '<div style="color:var(--text-dim);font-size:0.8rem;padding:4px;">Analyzing Pareto-front...</div>';
                     critItem.classList.add('open');
                     await runAnalysis(col.id, crit.id, historyListId);
                 } else {
@@ -123,7 +123,7 @@ function populateTopCatalog(cols) {
     accordion.innerHTML = '';
 
     if (!cols || cols.length === 0) {
-        accordion.innerHTML = '<div style="color: var(--text-dim); font-size: 0.85rem; padding: 1rem;">Нет инсайтов с NMI ≥ 75%</div>';
+        accordion.innerHTML = '<div style="color: var(--text-dim); font-size: 0.85rem; padding: 1rem;">No insights found with NMI ≥ 75%</div>';
         return;
     }
 
@@ -177,7 +177,7 @@ function populateTopCatalog(cols) {
                 if (!isActive) {
                     critItem.classList.add('active');
                     activeCritItem = critItem;
-                    critContent.innerHTML = '<div style="color:var(--text-dim);font-size:0.8rem;padding:4px;">Анализ Парето-фронта...</div>';
+                    critContent.innerHTML = '<div style="color:var(--text-dim);font-size:0.8rem;padding:4px;">Analyzing Pareto-front...</div>';
                     critItem.classList.add('open');
                     await runAnalysis(col.id, crit.id, historyListId);
                 } else {
@@ -300,14 +300,14 @@ function updateDashboard(payload, targetHistoryContainerId) {
     document.getElementById('totalSamplesVal').innerText = (payload.total_samples || (payload.x ? payload.x.length : 0)).toLocaleString();
 
     const xaiBanner = document.getElementById('xaiBanner');
-    if (xaiBanner) xaiBanner.innerHTML = `💡 <b>XAI Инсайт:</b> ${m.xai_message}`;
+    if (xaiBanner) xaiBanner.innerHTML = `💡 <b>XAI Insight:</b> ${m.xai_message}`;
 
     // Render Dimension Switcher toggle buttons
     renderDimensionButtons(payload);
 
     // Update Color Legend
     const legendTargetName = document.getElementById('legendTargetName');
-    if (legendTargetName) legendTargetName.innerText = payload.target_name || 'Целевая переменная';
+    if (legendTargetName) legendTargetName.innerText = payload.target_name || 'Target Variable';
 
     const legendItems = document.getElementById('legendItems');
     const uniqueClasses = payload.unique_target_classes || [];
@@ -336,7 +336,7 @@ function updateDashboard(payload, targetHistoryContainerId) {
     // Populate Exact Values for Stroke settings
     const exactSelect = document.getElementById('strokeExactVal');
     if (exactSelect) {
-        exactSelect.innerHTML = '<option value="">-- Выберите --</option>';
+        exactSelect.innerHTML = '<option value="">-- Select --</option>';
         let dimStr = (activeDimensionality || 3).toString();
         let g = payload.grids ? payload.grids[dimStr] : null;
         let purities = g ? g.purity : payload.grid_purity;
@@ -367,7 +367,7 @@ function updateDashboard(payload, targetHistoryContainerId) {
                 let altsHtml = '';
                 if (step.alternatives && step.alternatives.length > 0) {
                     altsHtml = '<div style="margin-top: 8px; padding-top: 6px; border-top: 1px solid rgba(255,255,255,0.05); font-size: 0.75rem; color: var(--text-dim);">';
-                    altsHtml += '<div style="margin-bottom: 3px; font-weight: 600;">Альтернативы:</div>';
+                    altsHtml += '<div style="margin-bottom: 3px; font-weight: 600;">Alternatives:</div>';
                     step.alternatives.forEach(a => {
                         const altVir = (a.vir * 100).toFixed(1);
                         const altNmi = a.nmi !== undefined ? `NMI: ${(a.nmi * 100).toFixed(1)}%` : `VIR: ${altVir}%`;
@@ -381,12 +381,12 @@ function updateDashboard(payload, targetHistoryContainerId) {
                             <div style="width: 100%;">
                                 <div style="display: flex; justify-content: space-between; align-items: center;">
                                     <div>
-                                        <div class="history-step">${step.step}D-Система</div>
+                                        <div class="history-step">${step.step}D System</div>
                                         <div class="history-feature">${step.feature}</div>
                                     </div>
                                     <div class="history-stats">
-                                        <div class="history-nmi" title="Normalized Mutual Information (NMI): реальная предсказательная сила центров относительно цели">NMI: ${nmiPct}%</div>
-                                        <div class="history-vir" title="Visual Information Ratio (VIR): полнота осей относительно всего датасета">VIR: ${virPct}%</div>
+                                        <div class="history-nmi" title="Normalized Mutual Information (NMI): predictive power of centers relative to target">NMI: ${nmiPct}%</div>
+                                        <div class="history-vir" title="Visual Information Ratio (VIR): axis coverage relative to dataset">VIR: ${virPct}%</div>
                                         <div class="history-delta">${deltaPct}</div>
                                     </div>
                                 </div>
@@ -425,7 +425,7 @@ function renderDimensionButtons(payload) {
         btn.className = 'toggle-btn dim-btn' + (d === activeDimensionality ? ' active' : '');
         btn.dataset.dim = d;
         btn.innerText = `${d}D`;
-        btn.title = `Переключить размерность в ${d}D`;
+        btn.title = `Switch dimensionality to ${d}D`;
         btn.onclick = () => setDimensionality(d);
         container.appendChild(btn);
     });
@@ -458,7 +458,7 @@ function updateHUDForDimension(d) {
         if (d === m.d_star) {
             dstarEl.innerText = `${d}D`;
         } else {
-            dstarEl.innerText = `${d}D (оптим: ${m.d_star}D)`;
+            dstarEl.innerText = `${d}D (optimal: ${m.d_star}D)`;
         }
     }
 
@@ -466,7 +466,7 @@ function updateHUDForDimension(d) {
     const scenarioText = document.getElementById('scenarioText');
     if (pill && scenarioText) {
         let scenarioClass = d <= 3 ? 'SCENARIO_A' : 'SCENARIO_B';
-        let scenarioLabel = d <= 3 ? 'Сценарий А: Минимализм' : 'Сценарий Б: Полная загрузка';
+        let scenarioLabel = d <= 3 ? 'Scenario A: Minimalist' : 'Scenario B: Full Load';
         if (d === m.d_star && m.scenario) {
             scenarioClass = m.scenario;
             scenarioLabel = m.scenario;
@@ -482,7 +482,7 @@ function updateAxesList(d) {
     const axesContainer = document.getElementById('axesListContainer');
     if (!axesContainer || !currentPayload || !currentPayload.selected_features) return;
     axesContainer.innerHTML = '';
-    const labels = ['X-Ось (1D)', 'Y-Ось (2D)', 'Z-Ось (3D)', '4D Срез (Табы)', 'Канал 5', 'Канал 6', 'Канал 7'];
+    const labels = ['X-Axis (1D)', 'Y-Axis (2D)', 'Z-Axis (3D)', '4D Slice (Tabs)', 'Channel 5', 'Channel 6', 'Channel 7'];
     const maxFeatures = Math.min(d, currentPayload.selected_features.length);
     for (let idx = 0; idx < maxFeatures; idx++) {
         const feat = currentPayload.selected_features[idx];
@@ -490,7 +490,7 @@ function updateAxesList(d) {
         item.className = 'axis-pill';
         item.innerHTML = `
             <span style="font-weight: 500;">${feat}</span>
-            <span class="axis-badge">${labels[idx] || 'Канал ' + (idx + 1)}</span>
+            <span class="axis-badge">${labels[idx] || 'Channel ' + (idx + 1)}</span>
         `;
         axesContainer.appendChild(item);
     }
@@ -553,7 +553,7 @@ function renderSliceTabs(payload) {
     let tabsHtml = '';
     // "All" tab
     const allActiveClass = (activeSliceIndex === null) ? ' active' : '';
-    tabsHtml += `<button class="slice-tab${allActiveClass}" onclick="selectSlice(null)" data-slice="all">Все<span class="slice-count">(${payload.total_samples})</span></button>`;
+    tabsHtml += `<button class="slice-tab${allActiveClass}" onclick="selectSlice(null)" data-slice="all">All<span class="slice-count">(${payload.total_samples})</span></button>`;
     
     // Per-category tabs
     payload.slice_axis.ticks.forEach((label, idx) => {
@@ -669,7 +669,7 @@ function buildPlotData(payload, dim, sliceIndex) {
         x: glX, y: glY, z: glZ,
         mode: 'lines',
         line: { color: 'rgba(255, 255, 255, 0.12)', width: 1.0 },
-        hoverinfo: 'skip', type: 'scatter3d', name: 'Сетка ячеек'
+        hoverinfo: 'skip', type: 'scatter3d', name: 'Cell Grid'
     };
 
     let fx = [], fy = [], fz = [], fColors = [], fSizes = [], fHover = [], fPurity = [], fOpacity = [], fCustomdata = [];
@@ -708,7 +708,7 @@ function buildPlotData(payload, dim, sliceIndex) {
         x: fx, y: fy, z: fz,
         mode: 'markers',
         marker: { size: fSizes, color: fColors, opacity: 1, line: { width: 0 }, showscale: false },
-        hovertext: fHover, hoverinfo: 'text', customdata: fCustomdata, type: 'scatter3d', name: 'Данные'
+        hovertext: fHover, hoverinfo: 'text', customdata: fCustomdata, type: 'scatter3d', name: 'Data'
     };
 
     let cameraConfig = undefined;
@@ -803,12 +803,12 @@ function renderPlot(payload) {
         try {
             if (!data.points || data.points.length === 0) return;
             
-            // In Plotly, the scatter trace is at curveNumber 1 or named 'Данные'
+            // In Plotly, the scatter trace is at curveNumber 1 or named 'Data'
             let pt = data.points.find(p => p.curveNumber === 1);
             if (!pt) {
                 pt = data.points.find(p => {
                     const trace = plotDiv.data && plotDiv.data[p.curveNumber];
-                    return trace && trace.name === 'Данные';
+                    return trace && trace.name === 'Data';
                 });
             }
             if (!pt) pt = data.points[0];
@@ -1238,7 +1238,7 @@ function addFilterRow() {
 
     const colSelect = document.createElement('select');
     colSelect.className = 'filter-select';
-    let colOptions = '<option value="">-- Характеристика --</option>';
+    let colOptions = '<option value="">-- Feature --</option>';
     allColumnsData.forEach(c => {
         colOptions += `<option value="${c.id}">${c.label}</option>`;
     });
@@ -1246,12 +1246,12 @@ function addFilterRow() {
 
     const valSelect = document.createElement('select');
     valSelect.className = 'filter-select';
-    valSelect.innerHTML = '<option value="">-- Значение --</option>';
+    valSelect.innerHTML = '<option value="">-- Value --</option>';
 
     colSelect.onchange = () => {
         const colId = colSelect.value;
         const col = allColumnsData.find(c => c.id === colId);
-        valSelect.innerHTML = '<option value="">-- Значение --</option>';
+        valSelect.innerHTML = '<option value="">-- Value --</option>';
         if (col) {
             col.criteria.forEach(crit => {
                 valSelect.innerHTML += `<option value="${crit.id}">${crit.label}</option>`;
@@ -1262,7 +1262,7 @@ function addFilterRow() {
     const removeBtn = document.createElement('button');
     removeBtn.className = 'filter-remove';
     removeBtn.innerHTML = '×';
-    removeBtn.title = 'Удалить';
+    removeBtn.title = 'Remove';
     removeBtn.onclick = () => row.remove();
 
     row.appendChild(colSelect);
@@ -1286,7 +1286,7 @@ async function runCompositeAnalysis() {
     });
 
     if (compositeTarget.length === 0) {
-        alert("Пожалуйста, добавьте хотя бы одно полное условие (Характеристика + Значение).");
+        alert("Please add at least one complete condition (Feature + Value).");
         return;
     }
 
@@ -1415,7 +1415,7 @@ const MitosisEngine = {
 
         if (t <= 0.01 || !this.activeRule) {
             // Single unified dirty sphere
-            this.draw3DSphere(ctx, centerX, centerY, baseRadius, baseColor, `${(basePur*100).toFixed(1)}%`, `Исходный кластер (N = ${baseN} шт.)`);
+            this.draw3DSphere(ctx, centerX, centerY, baseRadius, baseColor, `${(basePur*100).toFixed(1)}%`, `Initial Cluster (N = ${baseN} pcs.)`);
             return;
         }
 
@@ -1465,14 +1465,14 @@ const MitosisEngine = {
         const curColorPos = this.interpolateColor(baseColor, colPos, t);
         const curRadPos = baseRadius + (radPos - baseRadius) * t;
         const labelPosTop = t > 0.5 ? `${(r.purity_pos * 100).toFixed(1)}%` : '';
-        const labelPosSub = t > 0.5 ? `Подгруппа (n = ${r.n_pos})` : '';
+        const labelPosSub = t > 0.5 ? `Subgroup (n = ${r.n_pos})` : '';
         this.draw3DSphere(ctx, xPos, centerY, curRadPos, curColorPos, labelPosTop, labelPosSub, t > 0.5 ? '#22c55e' : null);
 
         // Child Sphere 2: Remainder
         const curColorNeg = this.interpolateColor(baseColor, colNeg, t);
         const curRadNeg = baseRadius + (radNeg - baseRadius) * t;
         const labelNegTop = t > 0.5 ? `${(r.purity_neg * 100).toFixed(1)}%` : '';
-        const labelNegSub = t > 0.5 ? `Остаток (n = ${r.n_neg})` : '';
+        const labelNegSub = t > 0.5 ? `Remainder (n = ${r.n_neg})` : '';
         this.draw3DSphere(ctx, xNeg, centerY, curRadNeg, curColorNeg, labelNegTop, labelNegSub, t > 0.5 ? '#ef4444' : null);
         
         // Center Metrics Badge between separated spheres
@@ -1624,17 +1624,17 @@ function renderXaiPanel(cdata, results) {
     }).join(' &nbsp;|&nbsp; ');
     
     info.innerHTML = `
-        <div style="font-weight:600; color:#f1f5f9; margin-bottom:4px;">📍 Дискретный Центр:</div>
+        <div style="font-weight:600; color:#f1f5f9; margin-bottom:4px;">📍 Discrete Center:</div>
         <div style="color:#cbd5e1; margin-bottom:8px; font-size:0.85rem;">${coordsText}</div>
         <div style="display:flex; gap:16px; font-size:0.82rem; color:var(--text-muted); background:rgba(255,255,255,0.04); padding:6px 10px; border-radius:6px;">
-            <span>📦 Объектов: <b style="color:#f8fafc;">${cdata.N} шт.</b></span>
-            <span>🎯 Исходная чистота: <b style="color:#f8fafc;">${(cdata.pur*100).toFixed(1)}%</b></span>
+            <span>📦 Objects: <b style="color:#f8fafc;">${cdata.N} pcs.</b></span>
+            <span>🎯 Initial Purity: <b style="color:#f8fafc;">${(cdata.pur*100).toFixed(1)}%</b></span>
         </div>
     `;
     
     list.innerHTML = '';
     if (!results || results.length === 0) {
-        list.innerHTML = '<div style="color:var(--text-dim); padding: 16px; text-align:center; font-size:0.85rem;">Не найдено статистически надежных вариантов расщепления для этого центра.</div>';
+        list.innerHTML = '<div style="color:var(--text-dim); padding: 16px; text-align:center; font-size:0.85rem;">No statistically reliable split candidates found for this center.</div>';
     } else {
         results.forEach((r, idx) => {
             const condsText = r.human_text || r.conditions.map(c => `${c.human_col || c.col} = ${c.human_val || c.val}`).join(' ∧ ');
@@ -1649,13 +1649,13 @@ function renderXaiPanel(cdata, results) {
                         <div class="xai-filter-conds">${r.reliability} ${condsText}</div>
                     </div>
                     <div class="xai-filter-stats">
-                        <span class="xai-stat-badge pos">✨ Подгруппа: <b>${pPos}%</b> (n=${r.n_pos})</span>
-                        <span class="xai-stat-badge neg">Остаток: <b>${pNeg}%</b> (n=${r.n_neg})</span>
+                        <span class="xai-stat-badge pos">✨ Subgroup: <b>${pPos}%</b> (n=${r.n_pos})</span>
+                        <span class="xai-stat-badge neg">Remainder: <b>${pNeg}%</b> (n=${r.n_neg})</span>
                         <span class="xai-stat-badge metric">NMI: <b>${nmi}</b></span>
                         <span class="xai-stat-badge metric">ΔVIR: <b>+${vir}%</b></span>
                     </div>
                     <div class="xai-filter-actions">
-                        <button class="xai-btn" id="btn-highlight-${idx}" onclick="highlightXaiFilter(${idx})">⚡ Разделить</button>
+                        <button class="xai-btn" id="btn-highlight-${idx}" onclick="highlightXaiFilter(${idx})">⚡ Split</button>
                     </div>
                 </div>
             `;
@@ -1689,7 +1689,7 @@ function highlightXaiFilter(idx) {
         const btn = document.getElementById(`btn-highlight-${idx}`);
         if (btn) {
             btn.classList.remove('active');
-            btn.innerHTML = '⚡ Разделить';
+            btn.innerHTML = '⚡ Split';
         }
         MitosisEngine.resetToUnified();
         return;
@@ -1702,10 +1702,10 @@ function highlightXaiFilter(idx) {
         if (btn) {
             if (i === idx) {
                 btn.classList.add('active');
-                btn.innerHTML = '✖ Схлопнуть';
+                btn.innerHTML = '✖ Collapse';
             } else {
                 btn.classList.remove('active');
-                btn.innerHTML = '⚡ Разделить';
+                btn.innerHTML = '⚡ Split';
             }
         }
     });

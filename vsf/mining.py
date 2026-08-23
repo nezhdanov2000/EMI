@@ -179,7 +179,7 @@ def mine_dirty_center(
         if key not in unique_candidates or cand["nmi_local"] > unique_candidates[key]["nmi_local"]:
             unique_candidates[key] = cand
             
-    # Жесткий фильтр мусора: NMI должен быть не меньше 0.05, иначе правило не несет аналитической ценности
+    # Strict noise filter: NMI must be >= 0.05
     final_list = [c for c in unique_candidates.values() if c["nmi_local"] >= 0.05]
     final_list.sort(key=lambda x: (x["nmi_local"], x["delta_vir"]), reverse=True)
     
@@ -192,11 +192,11 @@ def mine_dirty_center(
         for cond in item["conditions"]:
             col = cond["col"]
             val = str(cond["val"])
-            ru_col = MUSHROOM_TRANSLATIONS.get("columns", {}).get(col, col)
-            ru_val = humanize_val(col, val)
-            cond["human_col"] = ru_col
-            cond["human_val"] = ru_val
-            human_parts.append(f"{ru_col} = {ru_val}")
+            en_col = MUSHROOM_TRANSLATIONS.get("columns", {}).get(col, col)
+            en_val = humanize_val(col, val)
+            cond["human_col"] = en_col
+            cond["human_val"] = en_val
+            human_parts.append(f"{en_col} = {en_val}")
         item["human_text"] = " ∧ ".join(human_parts)
         
     return final_list[:5]

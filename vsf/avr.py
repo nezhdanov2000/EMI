@@ -117,8 +117,8 @@ class AVREngine:
         # Phase 1 Guard: If no features pass noise filter -> Scenario D (Chaos)
         if len(significant_features) == 0:
             xai_msg = (
-                f"В данных не обнаружена статистически значимая структура "
-                f"(p > {self.alpha} для всех признаков). Визуализация отменена."
+                f"No statistically significant structure detected in data "
+                f"(p > {self.alpha} for all features). Visualization aborted."
             )
             return AVRResult(
                 d_star=0,
@@ -270,53 +270,56 @@ class AVREngine:
         # -------------------------------------------------------------
         # PHASE 3: Scenario Routing & Loss Calculation
         # -------------------------------------------------------------
-        X_S_star = X_discrete[:, S]
+        X_S_star = X_discrete[:, S] if S else np.zeros((n_samples, 0))
         
-        i_S_star = mutual_information(Z_discrete, X_S_star)
+        i_S_star = mutual_information(Z_discrete, X_S_star) if S else 0.0
         
         # Calculate VIR = I(Z; X_S*) / I(Z; X_F)
         if i_F_all > 1e-12:
             vir = float(i_S_star / i_F_all)
         else:
             vir = 1.0
-        vir = min(1.0, max(0.0, vir))
+            
+        # Target Loss = 1 - NMI(Z; X_S*)
+        nmi_S_star = normalized_mutual_information(Z_discrete, X_S_star) if S else 0.0
+        l_target = float(1.0 - nmi_S_star)
         
-        nmi_S_star = normalized_mutual_information(Z_discrete, X_S_star)
-        nmi_F_all = normalized_mutual_information(Z_discrete, X_F_all)
+        # Feature Loss = 1 - I(Z; X_S*) / I(Z; X_F) = 1 - VIR
+        l_feat = float(1.0 - vir)
         
-        l_target = float(max(0.0, 1.0 - nmi_S_star))
-        l_feat = float(max(0.0, 1.0 - vir))
-        
+        # Full NMI of entire dataset
+        nmi_full = float(normalized_mutual_information(Z_discrete, X_discrete))
+
         # Routing Triggers:
         if d_star <= 3:
             scenario = Scenario.SCENARIO_A
             if l_target > 0.70:
                 xai_msg = (
-                    f"СЦЕНАРИЙ А (Минимализм): Выбрано d* = {d_star} осей. "
-                    f"Проекция охватывает {vir*100:.1f}% информации датасета (VIR). "
-                    f"Однако связь с целью слабая (NMI = {nmi_S_star*100:.1f}%, Target Loss = {l_target*100:.1f}%), центры смешаны."
+                    f"SCENARIO A (Minimalist): Selected d* = {d_star} axes. "
+                    f"Projection captures {vir*100:.1f}% of dataset information (VIR). "
+                    f"However, target association is weak (NMI = {nmi_S_star*100:.1f}%, Target Loss = {l_target*100:.1f}%), centers are mixed."
                 )
             else:
                 xai_msg = (
-                    f"СЦЕНАРИЙ А (Минимализм): Выбрано d* = {d_star} осей. "
-                    f"Структура цели объясняется {d_star} признаками (VIR = {vir*100:.1f}%, NMI = {nmi_S_star*100:.1f}%)."
+                    f"SCENARIO A (Minimalist): Selected d* = {d_star} axes. "
+                    f"Target structure is well-explained by {d_star} features (VIR = {vir*100:.1f}%, NMI = {nmi_S_star*100:.1f}%)."
                 )
         elif 4 <= d_star <= 7 and vir >= self.vir_threshold:
             scenario = Scenario.SCENARIO_B
             xai_msg = (
-                f"СЦЕНАРИЙ Б (Полная загрузка): Выбрано d* = {d_star} осей. "
-                f"VIR = {vir*100:.1f}% (>= {self.vir_threshold*100:.0f}%), NMI = {nmi_S_star*100:.1f}%. Многомерная структура отображена."
+                f"SCENARIO B (Full Load): Selected d* = {d_star} axes. "
+                f"VIR = {vir*100:.1f}% (>= {self.vir_threshold*100:.0f}%), NMI = {nmi_S_star*100:.1f}%. High-dimensional structure rendered."
             )
         elif d_star == 7 and vir < self.vir_threshold:
             scenario = Scenario.SCENARIO_C
             xai_msg = (
-                f"СЦЕНАРИЙ В (Warning: >7D): Feature Projection Loss = {l_feat*100:.1f}%. "
-                f"Текущая визуализация не полна. {n_features - 7} значимых признаков не отображены."
+                f"SCENARIO C (Warning: >7D): Feature Projection Loss = {l_feat*100:.1f}%. "
+                f"Current visualization is incomplete. {n_features - 7} significant features omitted."
             )
         else:
             # Fallback for boundary combinations
             scenario = Scenario.SCENARIO_B if vir >= self.vir_threshold else Scenario.SCENARIO_C
-            xai_msg = f"Маршрутизация выполнена: d* = {d_star}, VIR = {vir*100:.1f}%."
+            xai_msg = f"Routing completed: d* = {d_star}, VIR = {vir*100:.1f}%."
 
         return AVRResult(
             d_star=d_star,
@@ -326,7 +329,7 @@ class AVREngine:
             vir=vir,
             l_target=l_target,
             l_feat=l_feat,
-            nmi_full=float(nmi_F_all),
+            nmi_full=float(nmi_full),
             xai_message=xai_msg,
             submodularity_ratio=submod_ratio,
             selection_history=selection_history

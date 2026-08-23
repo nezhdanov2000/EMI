@@ -238,7 +238,7 @@ class VSFRequestHandler(http.server.SimpleHTTPRequestHandler):
                 
                 Z = mask.astype(int).values
                 sort_Z = Z
-                display_target_name = " AND ".join(display_parts) if display_parts else "Сложный фильтр"
+                display_target_name = " AND ".join(display_parts) if display_parts else "Composite Filter"
                 X_df = df.drop(columns=drop_cols)
             else:
                 if target_col not in df.columns:
