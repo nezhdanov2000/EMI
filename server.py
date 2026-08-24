@@ -47,6 +47,10 @@ class VSFRequestHandler(http.server.SimpleHTTPRequestHandler):
             self._handle_analyze_api()
         elif self.path == "/api/mine_center":
             self._handle_mine_center_api()
+        elif self.path == "/api/graph_inference":
+            self._handle_graph_inference_api()
+        elif self.path == "/api/mine_graph_links":
+            self._handle_mine_graph_links_api()
         else:
             self.send_error(404, "Endpoint not found")
 
@@ -343,6 +347,55 @@ class VSFRequestHandler(http.server.SimpleHTTPRequestHandler):
             results = vsf.mine_dirty_center(X_df, Z, mask, i_z_x_f)
             
             self._send_json_response(200, {"results": results})
+        except Exception as e:
+            self._send_json_response(500, {"error": str(e)})
+
+    def _handle_graph_inference_api(self) -> None:
+        """API endpoint for graph inference reasoning."""
+        try:
+            content_length = int(self.headers.get("Content-Length", 0))
+            post_data = self.rfile.read(content_length)
+            req = json.loads(post_data.decode("utf-8"))
+
+            inputs = req.get("inputs", {})
+            target = req.get("target", "class")
+            target_criterion = req.get("target_criterion", None)
+            nmi_threshold = float(req.get("nmi_threshold", 0.1))
+            
+            df = pd.read_csv(DATASET_PATH)
+            
+            from vsf.graph_inference import run_graph_inference
+            result = run_graph_inference(
+                df=df, 
+                inputs=inputs, 
+                target=target, 
+                target_criterion=target_criterion, 
+                nmi_threshold=nmi_threshold
+            )
+            
+            self._send_json_response(200, result)
+            
+        except Exception as e:
+            self._send_json_response(500, {"error": str(e)})
+
+    def _handle_mine_graph_links_api(self) -> None:
+        """API endpoint to mine top global logical reasoning chains."""
+        try:
+            content_length = int(self.headers.get("Content-Length", 0))
+            post_data = self.rfile.read(content_length)
+            req = json.loads(post_data.decode("utf-8"))
+
+            target = req.get("target", "class")
+            min_nmi = float(req.get("min_nmi", 0.20))
+            max_depth = int(req.get("max_depth", 3))
+            
+            df = pd.read_csv(DATASET_PATH)
+            
+            from vsf.graph_miner import mine_strong_links
+            result = mine_strong_links(df, target=target, min_nmi=min_nmi, max_depth=max_depth)
+            
+            self._send_json_response(200, result)
+            
         except Exception as e:
             self._send_json_response(500, {"error": str(e)})
 
