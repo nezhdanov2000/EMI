@@ -19,13 +19,13 @@ const layersOverlay = document.getElementById('layersOverlay');
 
 // Phase descriptions
 const PHASES = {
-    0: { name: 'Ожидание', delay: 0 },
-    1: { name: 'Фаза 1: База знаний (Центр)', delay: 1000 },
-    2: { name: 'Фаза 2: Поляризация (Входы и Цель)', delay: 1200 },
-    3: { name: 'Фаза 3: Первая волна вывода (Слой 1)', delay: 1200 },
-    4: { name: 'Фаза 4: Глубокие зависимости (Слой 2)', delay: 1200 },
-    5: { name: 'Фаза 5: Трассировка лучших путей', delay: 1200 },
-    6: { name: 'Фаза 6: Итоговый вердикт', delay: 0 }
+    0: { name: 'Idle', delay: 0 },
+    1: { name: 'Phase 1: Knowledge Base (Center)', delay: 1000 },
+    2: { name: 'Phase 2: Polarization (Inputs & Target)', delay: 1200 },
+    3: { name: 'Phase 3: First Inference Wave (Layer 1)', delay: 1200 },
+    4: { name: 'Phase 4: Deep Dependencies (Layer 2)', delay: 1200 },
+    5: { name: 'Phase 5: Best Path Tracing', delay: 1200 },
+    6: { name: 'Phase 6: Final Verdict', delay: 0 }
 };
 
 async function init() {
@@ -42,7 +42,7 @@ async function fetchColumns() {
         const inputColSelect = document.getElementById('newInputCol');
         const targetSelect = document.getElementById('targetSelect');
         
-        inputColSelect.innerHTML = '<option value="">Выберите признак...</option>';
+        inputColSelect.innerHTML = '<option value="">Select feature...</option>';
         targetSelect.innerHTML = '';
         
         allColumns.forEach(col => {
@@ -91,7 +91,7 @@ function setupEventListeners() {
     const slider = document.getElementById('nmiThreshold');
     
     colSelect.addEventListener('change', () => {
-        valSelect.innerHTML = '<option value="">Значение...</option>';
+        valSelect.innerHTML = '<option value="">Value...</option>';
         if (colSelect.value) {
             valSelect.disabled = false;
             const colDef = allColumns.find(c => c.id === colSelect.value);
@@ -168,7 +168,7 @@ function renderActiveInputs() {
 
 async function runInference() {
     if (Object.keys(activeInputs).length === 0) {
-        alert("Пожалуйста, добавьте хотя бы одно входное наблюдение (например: Запах = гнилостный)!");
+        alert("Please add at least one input observation (e.g. Odor = foul)!");
         return;
     }
     
@@ -269,10 +269,10 @@ function createNodeCards() {
         
         // Display texts
         const titleText = n.label.split('(')[0].trim();
-        let roleText = 'Фича';
-        if (n.is_input) roleText = 'Вход';
-        else if (n.is_target) roleText = 'Цель';
-        else if (n.layer > 0) roleText = `Слой ${n.layer}`;
+        let roleText = 'Feature';
+        if (n.is_input) roleText = 'Input';
+        else if (n.is_target) roleText = 'Target';
+        else if (n.layer > 0) roleText = `Layer ${n.layer}`;
         
         let predValText = n.top_prediction ? n.top_prediction.label : '-';
         let predProbText = n.top_prediction ? `${(n.top_prediction.posterior * 100).toFixed(0)}%` : '';
@@ -496,7 +496,7 @@ function renderFinalSummary() {
     verdictBanner.className = isEdible ? 'verdict-banner edible' : 'verdict-banner';
     
     document.getElementById('verdictValue').textContent = `${graphData.target_criterion_label} (${graphData.target_criterion})`;
-    document.getElementById('verdictProb').textContent = `${(graphData.target_probability * 100).toFixed(1)}% Уверенность`;
+    document.getElementById('verdictProb').textContent = `${(graphData.target_probability * 100).toFixed(1)}% Confidence`;
     
     // Narrative List
     const narrativeList = document.getElementById('chainNarrativeList');
@@ -506,7 +506,7 @@ function renderFinalSummary() {
         const item = document.createElement('div');
         item.className = `narrative-item ${s.type}`;
         
-        let connInfo = s.nmi_next ? `<div style="font-size: 0.68rem; color: var(--accent-cyan);">↓ Связь NMI: ${(s.nmi_next * 100).toFixed(1)}%</div>` : '';
+        let connInfo = s.nmi_next ? `<div style="font-size: 0.68rem; color: var(--accent-cyan);">↓ NMI Link: ${(s.nmi_next * 100).toFixed(1)}%</div>` : '';
         
         item.innerHTML = `
             <div class="narrative-item-title">${s.title}</div>
@@ -529,9 +529,9 @@ function showPopover(nodeData, event) {
     title.textContent = nodeData.label.split('(')[0].trim();
     subtitle.textContent = nodeData.raw_name;
     
-    if (nodeData.is_input) badge.textContent = "ВХОД";
-    else if (nodeData.is_target) badge.textContent = "ЦЕЛЬ";
-    else badge.textContent = `СЛОЙ ${nodeData.layer}`;
+    if (nodeData.is_input) badge.textContent = "INPUT";
+    else if (nodeData.is_target) badge.textContent = "TARGET";
+    else badge.textContent = `LAYER ${nodeData.layer}`;
     
     const list = document.getElementById('popoverProbList');
     list.innerHTML = '';
@@ -598,7 +598,7 @@ init();
 function openKBModal() {
     const targetSelect = document.getElementById('kbTargetSelect');
     const mainTargetVal = document.getElementById('targetSelect').value;
-    targetSelect.innerHTML = '<option value="all">🌐 Весь датасет (Искать любые побеждающие цепочки)</option>';
+    targetSelect.innerHTML = '<option value="all">🌐 Entire Dataset (Search for any winning chains)</option>';
     
     allColumns.forEach(col => {
         const opt = document.createElement('option');
@@ -620,7 +620,7 @@ async function mineGlobalLinks() {
     const minNmi = parseFloat(document.getElementById('kbMinNmiSelect').value);
     
     const resultsContainer = document.getElementById('kbResults');
-    resultsContainer.innerHTML = '<div class="kb-empty-state">Поиск цепочек, где вывод через медиаторов превосходит прямой замер... ⏳</div>';
+    resultsContainer.innerHTML = '<div class="kb-empty-state">Searching for statistically significant reasoning chains via mediators (permutation test + FDR correction)... ⏳</div>';
     
     try {
         const res = await fetch('/api/mine_graph_links', {
@@ -633,7 +633,7 @@ async function mineGlobalLinks() {
         renderKBResults(data);
     } catch (e) {
         console.error("Mining failed", e);
-        resultsContainer.innerHTML = '<div class="kb-empty-state" style="color: #ef4444;">Ошибка майнинга</div>';
+        resultsContainer.innerHTML = '<div class="kb-empty-state" style="color: #ef4444;">Mining Error</div>';
     }
 }
 
@@ -642,7 +642,7 @@ function renderKBResults(data) {
     container.innerHTML = '';
     
     if (!data.top_chains || data.top_chains.length === 0) {
-        container.innerHTML = '<div class="kb-empty-state">Побеждающие цепочки не найдены для выбранных условий. Попробуйте снизить порог NMI.</div>';
+        container.innerHTML = '<div class="kb-empty-state">No statistically significant chains found for the selected criteria (all links must pass permutation test with FDR correction). Try lowering the NMI threshold.</div>';
         return;
     }
     
@@ -650,7 +650,7 @@ function renderKBResults(data) {
     countBanner.style.fontSize = '0.85rem';
     countBanner.style.color = 'var(--text-muted)';
     countBanner.style.marginBottom = '12px';
-    countBanner.innerHTML = `Найдено <b>${data.total_found}</b> цепочек, где <b>Цепочка ≥ Прямой NMI</b> (Цель: <b>${data.target_label}</b>):`;
+    countBanner.innerHTML = `Found <b>${data.total_found}</b> statistically significant chains (min link NMI ≥ threshold, FDR q ≤ ${(data.fdr_q ?? 0.05)}) for target <b>${data.target_label}</b>:`;
     container.appendChild(countBanner);
     
     data.top_chains.forEach((chain, idx) => {
@@ -677,9 +677,9 @@ function renderKBResults(data) {
         
         let gainHtml = '';
         if (chain.gain > 0.001) {
-            gainHtml = `<span style="color: #10b981; font-weight: bold; font-size: 0.75rem;">+${gainPct} выигрыш${ratioText}</span>`;
+            gainHtml = `<span style="color: #10b981; font-weight: bold; font-size: 0.75rem;">+${gainPct} vs direct link${ratioText}</span>`;
         } else {
-            gainHtml = `<span style="color: #a5b4fc; font-size: 0.75rem;">Эквивалент прямого пути</span>`;
+            gainHtml = `<span style="color: #a5b4fc; font-size: 0.75rem;">Comparable to direct path</span>`;
         }
         
         card.innerHTML = `
@@ -690,12 +690,12 @@ function renderKBResults(data) {
                 </div>
                 <div class="kb-chain-path">${pathHtml}</div>
                 <div style="font-size: 0.72rem; color: var(--text-dim); margin-top: 4px;">
-                    Прямой путь: <b>${directPct}</b> ➔ Косвенная цепочка: <b style="color: var(--accent-gold);">${chainPct}</b>
+                    Direct path: <b>${directPct}</b> ➔ Indirect chain: <b style="color: var(--accent-gold);">${chainPct}</b>
                 </div>
             </div>
             <div style="display: flex; flex-direction: column; align-items: flex-end; gap: 6px;">
                 <div class="kb-score" style="color: var(--accent-gold);">${chainPct}</div>
-                <button class="kb-apply-btn" onclick="applyChainToGraph('${chain.input}', '${chain.target}')">Применить</button>
+                <button class="kb-apply-btn" onclick="applyChainToGraph('${chain.input}', '${chain.target}')">Apply</button>
             </div>
         `;
         

@@ -13,12 +13,13 @@ import numpy as np
 from .math import mutual_information, normalized_mutual_information
 from .permutation import conditional_permutation_test, marginal_permutation_test
 from .pmd import adaptively_coarsen_bins, check_grid_capacity, discretize_dataset
+from .stats import benjamini_hochberg
 
 
 class Scenario(str, Enum):
     SCENARIO_A = "SCENARIO_A"  # Minimalist (2D/3D, d* <= 3)
-    SCENARIO_B = "SCENARIO_B"  # Full Load (4D-7D, d* in [4,7] and VIR >= 0.85)
-    SCENARIO_C = "SCENARIO_C"  # Warning (>7D, d* = 7 and VIR < 0.85)
+    SCENARIO_B = "SCENARIO_B"  # Full Load (4D-7D, d* in [4,7]); message flags incompleteness if VIR < threshold
+    SCENARIO_C = "SCENARIO_C"  # Warning (>7D would be needed: d* == max_d and VIR < threshold)
     SCENARIO_D = "SCENARIO_D"  # Chaos / Block (d* = 0, noise dataset)
 
 
@@ -35,14 +36,35 @@ class AVRResult:
     xai_message: str
     submodularity_ratio: float | None = None
     selection_history: list[dict] | None = None
+    # Number of features that survived Phase 1's FDR-controlled noise filter
+    # (i.e. |F|). d_star <= n_significant_features always; the gap between
+    # them is how many statistically-significant features Phase 2's greedy
+    # search declined to add because their conditional gain didn't clear
+    # significance, not "features beyond the 7D cap" — see the Phase 3
+    # routing logic in AVREngine.fit for why this distinction matters.
+    n_significant_features: int = 0
 
 
 class AVREngine:
     """
     Adaptive Visual Routing Engine (AVR)
-    
+
     Parameters:
-        alpha: Significance level for permutation tests (default 0.01)
+        alpha: Significance level for the Phase 2 conditional permutation
+            test's per-step stopping decision (default 0.01). This is a
+            sequential stopping rule (one test per greedy step), not a batch
+            of simultaneous hypotheses, so it is deliberately left as a
+            fixed-alpha test rather than FDR-corrected — see `fdr_q` for the
+            batch test that Phase 1 performs.
+        fdr_q: Target False Discovery Rate for Phase 1's marginal noise
+            filter (default 0.05, per Project_Master_Document.md Section
+            4.5.3: "Benjamini-Hochberg correction (FDR q <= 0.05)"). Phase 1
+            tests every input feature against Z independently in one batch,
+            so — unlike Phase 2 — its significance decisions are made
+            jointly via Benjamini-Hochberg rather than by thresholding each
+            feature's raw p-value against `alpha` in isolation; doing the
+            latter across M features lets the family-wise false discovery
+            rate grow with M instead of staying bounded at `fdr_q`.
         vir_threshold: VIR ratio threshold for Scenario B vs C (default 0.85)
         max_d: Upper perceptual channel limit (default 7)
         n_permutations: Number of iterations B for permutation test (default 1000)
@@ -51,12 +73,14 @@ class AVREngine:
     def __init__(
         self,
         alpha: float = 0.01,
+        fdr_q: float = 0.05,
         vir_threshold: float = 0.85,
         max_d: int = 7,
         n_permutations: int = 1000,
         random_state: int | None = 42,
     ):
         self.alpha = alpha
+        self.fdr_q = fdr_q
         self.vir_threshold = vir_threshold
         self.max_d = max_d
         self.n_permutations = n_permutations
@@ -73,7 +97,13 @@ class AVREngine:
         """
         Runs the full 3-Phase AVR algorithm on dataset X and target Z.
         """
-        X_arr = np.asarray(X, dtype=object)
+        # Let NumPy infer the natural dtype: a homogeneous numeric matrix stays
+        # numeric (fast path through PMD/np.unique), and a genuinely mixed
+        # input (e.g. a DataFrame.values with both string and numeric columns)
+        # already comes back as dtype=object from np.asarray without forcing
+        # it — forcing dtype=object unconditionally routed every dataset,
+        # numeric or not, through NumPy's much slower per-element object path.
+        X_arr = np.asarray(X)
         Z_arr = np.asarray(Z).ravel()
         
         n_samples, n_features = X_arr.shape
@@ -96,29 +126,43 @@ class AVREngine:
             Z_discrete = Z_discrete.astype(int)
             
         # -------------------------------------------------------------
-        # PHASE 1: Noise Filtering (Marginal Permutation Test)
+        # PHASE 1: Noise Filtering (Marginal Permutation Test + FDR Control)
         # -------------------------------------------------------------
-        significant_features = []
-        marginal_mis = {}
-        
+        # Run every feature's marginal permutation test first and collect the
+        # raw p-values, THEN decide significance jointly via Benjamini-Hochberg
+        # at fdr_q. Thresholding each feature's p-value against `alpha`
+        # independently (the previous behavior) lets the family-wise false
+        # discovery rate grow with n_features instead of staying bounded —
+        # exactly the multiple-testing exposure Project_Master_Document.md
+        # Section 4.5.3 requires FDR control to prevent.
+        marginal_mis: dict[int, float] = {}
+        marginal_pvals = np.ones(n_features, dtype=float)
+
         for j in range(n_features):
             x_j = X_discrete[:, j]
-            i_obs, p_val, is_sig = marginal_permutation_test(
+            i_obs, p_val, _ = marginal_permutation_test(
                 Z_discrete,
                 x_j,
                 n_permutations=self.n_permutations,
                 alpha=self.alpha,
                 random_state=self.random_state,
             )
-            if is_sig:
-                significant_features.append(j)
-                marginal_mis[j] = i_obs
+            marginal_mis[j] = i_obs
+            marginal_pvals[j] = p_val
+
+        fdr_reject = (
+            benjamini_hochberg(marginal_pvals, q=self.fdr_q)
+            if n_features > 0
+            else np.zeros(0, dtype=bool)
+        )
+        significant_features = [j for j in range(n_features) if fdr_reject[j]]
 
         # Phase 1 Guard: If no features pass noise filter -> Scenario D (Chaos)
         if len(significant_features) == 0:
             xai_msg = (
                 f"No statistically significant structure detected in data "
-                f"(p > {self.alpha} for all features). Visualization aborted."
+                f"(FDR q > {self.fdr_q} for all {n_features} features under "
+                f"Benjamini-Hochberg correction). Visualization aborted."
             )
             return AVRResult(
                 d_star=0,
@@ -130,7 +174,8 @@ class AVREngine:
                 l_feat=1.0,
                 nmi_full=0.0,
                 xai_message=xai_msg,
-                selection_history=[]
+                selection_history=[],
+                n_significant_features=0,
             )
 
         # -------------------------------------------------------------
@@ -184,21 +229,36 @@ class AVREngine:
             best_candidate = None
             best_delta_i = -1.0
             candidate_scores = []
-            
+
             X_S_curr = X_discrete[:, S]
-            
+            # I(Z; X_S_curr) does not depend on the candidate j — computing it
+            # once here instead of inside the loop below avoids |candidates|
+            # redundant full mutual-information passes (each an O(N log N)
+            # entropy computation) per greedy step.
+            i_base = mutual_information(Z_discrete, X_S_curr)
+
             for j in candidates:
                 x_j = X_discrete[:, j]
                 x_comb = np.column_stack([X_S_curr, x_j])
-                
+
                 # Check grid capacity protection limit
                 k_comb = [len(np.unique(x_comb[:, c])) for c in range(x_comb.shape[1])]
                 if not check_grid_capacity(k_comb, n_samples):
                     x_comb = adaptively_coarsen_bins(x_comb, n_samples)
-                    
-                i_base = mutual_information(Z_discrete, X_S_curr)
-                i_comb = mutual_information(Z_discrete, x_comb)
-                delta_i = max(0.0, i_comb - i_base)
+                    i_comb = mutual_information(Z_discrete, x_comb)
+                    # x_comb was just coarsened to a coarser bin resolution
+                    # than X_S_curr; comparing it against the hoisted i_base
+                    # (computed at the ORIGINAL resolution) would score
+                    # delta_i against two different binnings. Recompute the
+                    # baseline at the matching coarsened resolution for this
+                    # candidate only — the common case (no coarsening
+                    # triggered) still uses the hoisted i_base below.
+                    i_base_for_j = mutual_information(Z_discrete, x_comb[:, :-1])
+                else:
+                    i_comb = mutual_information(Z_discrete, x_comb)
+                    i_base_for_j = i_base
+
+                delta_i = max(0.0, i_comb - i_base_for_j)
                 candidate_scores.append((j, delta_i, i_comb))
                 
                 if delta_i > best_delta_i:
@@ -290,7 +350,18 @@ class AVREngine:
         # Full NMI of entire dataset
         nmi_full = float(normalized_mutual_information(Z_discrete, X_discrete))
 
-        # Routing Triggers:
+        # Number of Phase-1-significant features that did NOT make it into the
+        # final basis S* — the quantity that belongs in an "omitted features"
+        # message. This is never negative (d_star = |S| <= |sorted_F| by
+        # construction) and is distinct from "features beyond the max_d cap":
+        # greedy selection can stop below max_d simply because no remaining
+        # candidate's conditional gain was significant, independent of the cap.
+        n_unselected_significant = len(sorted_F) - d_star
+
+        # Routing Triggers. This chain is exhaustive over d_star in [1, max_d]
+        # (d_star == 0 already returned early as SCENARIO_D above, so d_star
+        # >= 1 here always): every combination of d_star and vir lands in
+        # exactly one branch below, with no mislabeled catch-all.
         if d_star <= 3:
             scenario = Scenario.SCENARIO_A
             if l_target > 0.70:
@@ -304,22 +375,41 @@ class AVREngine:
                     f"SCENARIO A (Minimalist): Selected d* = {d_star} axes. "
                     f"Target structure is well-explained by {d_star} features (VIR = {vir*100:.1f}%, NMI = {nmi_S_star*100:.1f}%)."
                 )
-        elif 4 <= d_star <= 7 and vir >= self.vir_threshold:
+        elif vir >= self.vir_threshold:
+            # 4 <= d_star <= max_d and VIR clears the threshold: genuine Full Load.
             scenario = Scenario.SCENARIO_B
             xai_msg = (
                 f"SCENARIO B (Full Load): Selected d* = {d_star} axes. "
                 f"VIR = {vir*100:.1f}% (>= {self.vir_threshold*100:.0f}%), NMI = {nmi_S_star*100:.1f}%. High-dimensional structure rendered."
             )
-        elif d_star == 7 and vir < self.vir_threshold:
+        elif d_star >= self.max_d:
+            # Genuinely hit the perceptual channel cap (d_star == max_d) and
+            # VIR is still below threshold: more axes would be needed than
+            # the display supports. This is the only case that should be
+            # framed as a ">max_d" warning.
             scenario = Scenario.SCENARIO_C
             xai_msg = (
-                f"SCENARIO C (Warning: >7D): Feature Projection Loss = {l_feat*100:.1f}%. "
-                f"Current visualization is incomplete. {n_features - 7} significant features omitted."
+                f"SCENARIO C (Warning: >{self.max_d}D): Feature Projection Loss = {l_feat*100:.1f}%. "
+                f"Current visualization is incomplete: {n_unselected_significant} additional "
+                f"statistically significant feature(s) beyond the {self.max_d}-axis display cap "
+                f"were not rendered."
             )
         else:
-            # Fallback for boundary combinations
-            scenario = Scenario.SCENARIO_B if vir >= self.vir_threshold else Scenario.SCENARIO_C
-            xai_msg = f"Routing completed: d* = {d_star}, VIR = {vir*100:.1f}%."
+            # 4 <= d_star < max_d and VIR < threshold: greedy selection
+            # plateaued (no remaining candidate cleared the conditional
+            # significance test) before reaching either full coverage or the
+            # dimensionality cap. Still a Full Load axis count, but the
+            # message must say so honestly instead of claiming a ">max_d"
+            # situation that isn't what happened.
+            scenario = Scenario.SCENARIO_B
+            xai_msg = (
+                f"SCENARIO B (Full Load - Incomplete): Selected d* = {d_star} axes, below the "
+                f"{self.max_d}-axis cap. VIR = {vir*100:.1f}% (< {self.vir_threshold*100:.0f}% target). "
+                f"Selection plateaued: {n_unselected_significant} additional statistically "
+                f"significant feature(s) did not clear the conditional permutation test and "
+                f"were left out, so this projection is missing information rather than being "
+                f"cap-limited."
+            )
 
         return AVRResult(
             d_star=d_star,
@@ -332,5 +422,6 @@ class AVREngine:
             nmi_full=float(nmi_full),
             xai_message=xai_msg,
             submodularity_ratio=submod_ratio,
-            selection_history=selection_history
+            selection_history=selection_history,
+            n_significant_features=len(sorted_F),
         )

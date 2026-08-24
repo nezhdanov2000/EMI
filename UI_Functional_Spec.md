@@ -1,61 +1,61 @@
 # VSF UI & Functional Specification
 
-Данный документ описывает архитектуру пользовательского интерфейса (UI) и логику взаимодействия для Visual Sufficiency Framework (VSF).
+This document describes the user interface (UI) architecture and interaction logic for the Visual Sufficiency Framework (VSF).
 
-## 1. Концепция интерфейса (Master-Detail View)
+## 1. Interface Concept (Master-Detail View)
 
-Интерфейс строится по паттерну Master-Detail и логически разделен на две основные области:
-1. **Каталог Инсайтов (Раздел 2 - Master):** Навигационная панель для исследования глобальных закономерностей датасета, найденных в процессе Auto-Discovery.
-2. **Адаптивный Визуализатор (Раздел 1 - Detail):** Рабочая область, где отрисовывается конкретная многомерная система (от 1D до 7D), выбранная пользователем в Каталоге.
-
----
-
-## 2. Раздел 2: Каталог Инсайтов (Общий топ систем)
-
-Раздел представляет собой иерархический аккордеон или древовидную таблицу, отражающую логику пропозиционализации (One-vs-Rest).
-
-### Уровень 1: Характеристики (Characteristics)
-* **Описание:** Список всех колонок датасета (например, Съедобность, Запах, Цвет шляпки).
-* **Метрики:** Для каждой характеристики выводится:
-  * `Max MI`: Максимальная предсказательная сила (Взаимная Информация), найденная для этой характеристики.
-  * `Optimal d*`: Размерность базиса, при котором достигается этот Max MI.
-* **Взаимодействие:** Клик по Характеристике раскрывает список её Критериев (Атомарных предикатов).
-
-### Уровень 2: Критерии (Atomic Predicates / Criteria)
-* **Описание:** Бинаризованные исходы конкретной характеристики (например, для Запаха: "Миндальный", "Анисовый", "Гнилостный").
-* **Метрики:** 
-  * `Max MI` для конкретного критерия.
-  * `Optimal d*` (оптимальное количество осей для объяснения именно этого критерия).
-* **Взаимодействие:** Клик по Критерию раскрывает Топ систем (Парето-фронт комбинаций признаков).
-
-### Уровень 3: Топ систем (Pareto Frontier of Feature Subsets)
-* **Описание:** Список наилучших найденных комбинаций осей (базисов $S^*$), отсортированных по росту MI и размерности (от 1D до $d^*$). Мы не показываем шумовые комбинации, а только «Парето-фронт» лучших решений:
-  * Лучшая 1D-система (например, `[Форма ножки]`) $\to MI = 0.45$
-  * Лучшая 2D-система (`[Форма ножки, Цвет спор]`) $\to MI = 0.82$
-  * Лучшая 3D-система (`[Форма ножки, Цвет спор, Популяция]`) $\to MI = 0.96$
-* **Взаимодействие:** Клик по конкретной системе отправляет команду в Раздел 1 на мгновенную отрисовку этого базиса.
+The interface follows the Master-Detail architectural pattern and is logically divided into two primary zones:
+1. **Insights Catalog (Section 2 - Master):** Navigation and exploratory panel for inspecting global dataset dependencies discovered during the Auto-Discovery process.
+2. **Adaptive Visualizer (Section 1 - Detail):** Interactive workspace where the specific multidimensional visual configuration (from 1D to 7D) selected by the user in the Catalog is dynamically rendered.
 
 ---
 
-## 3. Раздел 1: Адаптивный Визуализатор (AVR Workspace)
+## 2. Section 2: Insights Catalog (Global System Ranking)
 
-Рабочая область, занимающая основную часть экрана. 
+This section is structured as a hierarchical accordion / tree view reflecting the propositionalization (One-vs-Rest) pipeline.
 
-* **Логика работы:** Принимает сигнал от Каталога Инсайтов (выбранный предикат $Z$ и выбранную систему $S^*$).
-* **Адаптивная размерность:** В зависимости от размерности системы (от 1D до 7D), визуализатор автоматически переключает режим:
-  * **1D-3D:** Строится минималистичный пространственный график (Scatter plot / Bubble chart 2D/3D).
-  * **4D-7D:** Пространство дополняется цветовым кодированием (Hue, Lightness) и временем (анимация), строго согласно алгоритму AVR.
-* **XAI-сопровождение:**
-  * Если размерность $d^* < 7$ и система успешно объясняет критерий (Сценарии А и Б) — выводится подтверждающая плашка с $MI$.
-  * Если размерность достигла лимита 7D, но часть информации потеряна (Сценарий В) — выводится предупреждение: *"Отображена лучшая 7D-проекция. Потеря информации: X%"*.
+### Level 1: Characteristics (Features)
+* **Description:** List of all dataset columns (e.g., Edibility, Odor, Cap Color).
+* **Metrics:** For each characteristic:
+  * `Max MI`: Maximum predictive power (Mutual Information) discovered for this feature.
+  * `Optimal d*`: Dimensionality of the minimal sufficient basis achieving this Max MI.
+* **Interaction:** Clicking a Characteristic expands its list of Criteria (Atomic Predicates).
+
+### Level 2: Criteria (Atomic Predicates / Outcomes)
+* **Description:** Binarized outcomes of a specific characteristic (e.g., for Odor: "Almond", "Anise", "Foul").
+* **Metrics:** 
+  * `Max MI` for the specific criterion.
+  * `Optimal d*` (optimal number of visual axes required to explain this outcome).
+* **Interaction:** Clicking a Criterion expands its Top Systems (Pareto frontier of feature subsets).
+
+### Level 3: Top Systems (Pareto Frontier of Feature Subsets)
+* **Description:** Ordered list of best-performing feature subsets (bases $S^*$), sorted by increasing MI and minimal dimensionality (from 1D up to $d^*$). Only Pareto-optimal solutions are presented:
+  * Best 1D system (e.g., `[Stalk Shape]`) $\to MI = 0.45$
+  * Best 2D system (`[Stalk Shape, Spore Print Color]`) $\to MI = 0.82$
+  * Best 3D system (`[Stalk Shape, Spore Print Color, Population]`) $\to MI = 0.96$
+* **Interaction:** Clicking a specific system sends an event to Section 1 to instantly render this coordinate basis.
 
 ---
 
-## 4. Сценарий использования (User Flow)
+## 3. Section 1: Adaptive Visualizer (AVR Workspace)
 
-1. Пользователь загружает датасет. Бэкенд мгновенно прогоняет Auto-Discovery.
-2. В **Разделе 2** появляется Топ: характеристика "Съедобность" имеет `Max MI = 0.99`.
-3. Пользователь кликает на "Съедобность", видит критерий "Ядовитый".
-4. Клик на "Ядовитый" раскрывает Топ систем. Пользователь видит, что 1D-система (только Запах) дает `MI = 0.90`, а 3D-система (Запах + Цвет спор + Кольцо) дает `MI = 0.99`.
-5. Пользователь кликает на 3D-систему.
-6. В **Разделе 1** мгновенно строится адаптивный 3D-график, где красным подсвечены "Ядовитые" грибы, наглядно сгруппированные в кластеры по трем выбранным осям.
+The main workspace occupying the central area of the display.
+
+* **Operational Logic:** Receives state updates from the Insights Catalog (target predicate $Z$ and selected basis $S^*$).
+* **Adaptive Dimensionality:** Depending on system dimensionality (from 1D to 7D), the visualizer automatically selects the appropriate mode:
+  * **1D-3D:** Minimalist spatial coordinate plot (2D/3D Scatter plot / Bubble chart).
+  * **4D-7D:** Spatial coordinates augmented with color encodings (Hue, Lightness) and time (animation) in strict accordance with the AVR algorithm.
+* **XAI Feedback:**
+  * If dimensionality $d^* < 7$ and the system fully captures the criterion (Scenarios A & B) — an explanatory confirmation pill with $MI$ metrics is displayed.
+  * If dimensionality reaches the 7D limit but residual structure remains uncaptured (Scenario C) — a warning is displayed: *"Rendered best 7D projection. Information loss: X%"*.
+
+---
+
+## 4. User Flow Scenario
+
+1. The user loads a dataset. The backend executes the Auto-Discovery pipeline.
+2. In **Section 2**, the ranking appears: characteristic "Edibility" exhibits `Max MI = 0.99`.
+3. The user clicks "Edibility" and views the criterion "Poisonous".
+4. Clicking "Poisonous" expands the Top Systems. The user observes that a 1D system (Odor alone) achieves `MI = 0.90`, while a 3D system (Odor + Spore Print Color + Ring Type) achieves `MI = 0.99`.
+5. The user selects the 3D system.
+6. In **Section 1**, the adaptive 3D scatter plot is rendered immediately: poisonous mushrooms are highlighted in red and cleanly segregated into dense clusters along the three selected axes.

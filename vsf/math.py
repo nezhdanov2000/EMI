@@ -103,38 +103,52 @@ def joint_entropy(X: np.ndarray | list, Y: np.ndarray | list) -> float:
     return shannon_entropy(joint_arr)
 
 
-def mutual_information(Z: np.ndarray | list, X_S: np.ndarray | list) -> float:
+def _mi_with_entropies(
+    Z: np.ndarray | list, X_S: np.ndarray | list
+) -> tuple[float, float, float]:
     """
-    Computes Discrete Mutual Information I(Z; X_S) in bits.
-    
-    I(Z; X_S) = H(Z) + H(X_S) - H(Z, X_S)
+    Internal helper: computes H(Z), H(X_S) and I(Z; X_S) with each entropy
+    evaluated exactly once. mutual_information and normalized_mutual_information
+    both need H(Z) and H(X_S) individually as well as the combined MI value;
+    routing them through this single helper avoids recomputing the same
+    entropy (each an O(N log N) unique/sort pass) twice per call.
+
+    Returns:
+        (mi, h_z, h_xs)
     """
     h_z = shannon_entropy(Z)
     h_xs = shannon_entropy(X_S)
     h_z_xs = joint_entropy(Z, X_S)
-    
-    mi = h_z + h_xs - h_z_xs
-    return max(0.0, float(mi))  # Floating point accuracy guard
+
+    mi = max(0.0, float(h_z + h_xs - h_z_xs))  # Floating point accuracy guard
+    return mi, h_z, h_xs
+
+
+def mutual_information(Z: np.ndarray | list, X_S: np.ndarray | list) -> float:
+    """
+    Computes Discrete Mutual Information I(Z; X_S) in bits.
+
+    I(Z; X_S) = H(Z) + H(X_S) - H(Z, X_S)
+    """
+    mi, _, _ = _mi_with_entropies(Z, X_S)
+    return mi
 
 
 def normalized_mutual_information(Z: np.ndarray | list, X_S: np.ndarray | list) -> float:
     """
     Computes Normalized Mutual Information NMI(Z; X_S).
-    
+
     NMI(Z; X_S) = I(Z; X_S) / min(H(Z), H(X_S))
-    
+
     Uses min(H(Z), H(X_S)) normalization as defined in VSF spec Section 3.2.
     """
-    mi = mutual_information(Z, X_S)
+    mi, h_z, h_xs = _mi_with_entropies(Z, X_S)
     if mi <= 0.0:
         return 0.0
-        
-    h_z = shannon_entropy(Z)
-    h_xs = shannon_entropy(X_S)
-    
+
     denom = min(h_z, h_xs)
     if denom <= 1e-12:
         return 0.0
-        
+
     nmi = mi / denom
     return min(1.0, max(0.0, float(nmi)))

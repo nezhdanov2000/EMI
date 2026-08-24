@@ -7,11 +7,21 @@ import http.server
 import json
 import os
 import socketserver
+import threading
 import urllib.parse
 from datetime import datetime
 from typing import Any, Dict
 
-# Global cache to speed up visual-only updates (e.g. blue_feature changes)
+# Global cache to speed up visual-only updates (e.g. blue_feature changes).
+# `VSFRequestHandler` runs under `http.server.ThreadingHTTPServer`, i.e. one
+# thread per connection: two concurrent requests can read/write these globals
+# interleaved (e.g. one thread checking `_last_params == cache_key` while
+# another is mid-assignment to `_last_res`), which can serve a request the
+# stale/half-written cached tuple from a DIFFERENT target than the one that
+# was just requested, or crash on a partially-updated tuple. `_cache_lock`
+# serializes every read AND write of `_last_params` / `_last_res` /
+# `_top_columns_cache` so a request always observes a consistent snapshot.
+_cache_lock = threading.Lock()
 _last_params = None
 _last_res = None
 _top_columns_cache = None
@@ -61,10 +71,24 @@ class VSFRequestHandler(http.server.SimpleHTTPRequestHandler):
         super().end_headers()
 
     def _send_json_response(self, status_code: int, payload: Dict[str, Any]) -> None:
-        """Helper to send JSON responses."""
+        """
+        Helper to send JSON responses.
+
+        No `Access-Control-Allow-Origin` header is sent: this handler serves
+        both the static frontend (`index.html`, `graph.html`, `static/*`)
+        AND the `/api/*` endpoints from the same origin
+        (`http://127.0.0.1:PORT`), so the frontend never needs cross-origin
+        access. An earlier version sent `Access-Control-Allow-Origin: *`
+        unconditionally, which does nothing for the legitimate same-origin
+        frontend but does let ANY third-party site's JavaScript read these
+        endpoints' responses (dataset contents, mining/inference results) for
+        a browser that has this local server reachable — e.g. via
+        `http://127.0.0.1:8050/...` fetches from an unrelated open tab. Add a
+        specific, non-wildcard origin back here only if a genuine
+        cross-origin frontend is introduced.
+        """
         self.send_response(status_code)
         self.send_header("Content-Type", "application/json")
-        self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         self.wfile.write(json.dumps(payload).encode("utf-8"))
 
@@ -102,15 +126,50 @@ class VSFRequestHandler(http.server.SimpleHTTPRequestHandler):
             self._send_json_response(500, {"error": str(e)})
 
     def _handle_top_columns_api(self) -> None:
-        """API endpoint to get the list of columns & criteria with NMI >= 75%."""
+        """
+        API endpoint to get the list of columns & criteria whose best
+        achievable association with a small forward-selected feature subset
+        clears both an effect-size floor and a statistical-significance bar.
+
+        Two-stage pipeline (Project_Master_Document.md Section 4.5.3), run
+        because exhaustively significance-testing every single (column,
+        value) criterion in the dataset against every candidate feature
+        subset is too expensive to do directly:
+
+        Stage 1 (fast screen, effect size only): for every (column, value)
+            binary criterion Z that clears a minimum support count (the same
+            support floor `vsf.mining._min_support_count` uses for
+            dirty-center filter mining), run greedy forward NMI selection
+            (up to 4 steps) over the OTHER features and keep the best
+            Normalized Mutual Information seen and the feature subset S that
+            achieved it. Criteria below `min_nmi` are dropped here. This is
+            a point-estimate screen — it says nothing about whether the
+            association could be a small-sample fluctuation.
+
+        Stage 2 (validation, statistical significance): for the Stage-1
+            survivors ONLY, run a marginal permutation test (H0: Z carries
+            no information about the joint code of its selected subset S
+            beyond chance) and apply Benjamini-Hochberg FDR correction
+            JOINTLY across all survivors tested in this call. A criterion is
+            only returned if it passes BOTH stages.
+
+        An earlier version of this endpoint returned every criterion whose
+        raw NMI cleared `min_nmi`, with NO minimum support requirement and
+        NO significance test at all — a criterion with a handful of positive
+        examples can trivially reach NMI close to 1.0 by chance with a
+        large-enough candidate feature pool, and nothing distinguished that
+        from a genuine association.
+        """
+        global _top_columns_cache
         try:
             if not os.path.exists(DATASET_PATH):
                 self.send_error(404, "Mushroom dataset not found")
                 return
 
-            global _top_columns_cache
-            if _top_columns_cache is not None:
-                self._send_json_response(200, _top_columns_cache)
+            with _cache_lock:
+                cached = _top_columns_cache
+            if cached is not None:
+                self._send_json_response(200, cached)
                 return
 
             df = pd.read_csv(DATASET_PATH)
@@ -120,23 +179,34 @@ class VSFRequestHandler(http.server.SimpleHTTPRequestHandler):
             feature_names = list(df.columns)
 
             min_nmi = 0.75
-            top_cols_map = {}
+            min_support = vsf.mining._min_support_count(n_samples)
+            n_permutations = 200
+            fdr_q = 0.05
+            random_state = 42
+
+            # --- Stage 1: fast effect-size screen ---
+            stage1_survivors: list[Dict[str, Any]] = []
 
             for c_idx, col_name in enumerate(feature_names):
                 unique_vals = np.unique(X_arr[:, c_idx])
                 for val in unique_vals:
                     val_str = str(val)
                     Z = (X_arr[:, c_idx] == val).astype(int)
+                    n_pos = int(Z.sum())
+                    if n_pos < min_support:
+                        continue
+
                     cand_indices = [j for j in range(n_features) if j != c_idx]
-                    
-                    S = []
+
+                    S: list[int] = []
                     max_nmi_seen = 0.0
-                    
+                    best_S_at_max: list[int] = []
+
                     for step in range(1, 5):
                         best_feat = None
                         best_mi = -1.0
                         best_nmi = 0.0
-                        
+
                         for j in cand_indices:
                             if j in S:
                                 continue
@@ -146,42 +216,88 @@ class VSFRequestHandler(http.server.SimpleHTTPRequestHandler):
                                 best_mi = mi_cand
                                 best_feat = j
                                 best_nmi = vsf.math.normalized_mutual_information(Z, X_discrete[:, S_cand])
-                                
+
                         if best_feat is not None:
                             S.append(best_feat)
                             if best_nmi > max_nmi_seen:
                                 max_nmi_seen = best_nmi
-                                
+                                best_S_at_max = list(S)
+
                     if max_nmi_seen >= min_nmi:
-                        if col_name not in top_cols_map:
-                            ru_title = vsf.vis.MUSHROOM_TRANSLATIONS["columns"].get(col_name, col_name)
-                            display_label = f"{ru_title} ({col_name})" if ru_title != col_name else col_name
-                            top_cols_map[col_name] = {
-                                "id": col_name,
-                                "label": display_label,
-                                "criteria": [],
-                                "max_nmi": 0.0
-                            }
-                        
-                        human_val = vsf.vis.humanize_val(col_name, val_str)
-                        top_cols_map[col_name]["criteria"].append({
-                            "id": val_str,
-                            "label": human_val,
-                            "max_nmi": float(max_nmi_seen)
+                        stage1_survivors.append({
+                            "col_name": col_name,
+                            "val_str": val_str,
+                            "Z": Z,
+                            "S": best_S_at_max,
+                            "max_nmi_seen": max_nmi_seen,
                         })
-                        if max_nmi_seen > top_cols_map[col_name]["max_nmi"]:
-                            top_cols_map[col_name]["max_nmi"] = float(max_nmi_seen)
+
+            # --- Stage 2: permutation test + joint BH correction on survivors ---
+            top_cols_map: Dict[str, Dict[str, Any]] = {}
+
+            if stage1_survivors:
+                p_values = np.empty(len(stage1_survivors), dtype=float)
+                for i, cand in enumerate(stage1_survivors):
+                    S = cand["S"]
+                    if S:
+                        _, joint_codes = np.unique(X_discrete[:, S], axis=0, return_inverse=True)
+                    else:
+                        joint_codes = np.zeros(n_samples, dtype=np.int64)
+                    _, p_val, _ = vsf.permutation.marginal_permutation_test(
+                        cand["Z"],
+                        joint_codes,
+                        n_permutations=n_permutations,
+                        alpha=fdr_q,
+                        random_state=random_state,
+                    )
+                    p_values[i] = p_val
+
+                significant_mask = vsf.stats.benjamini_hochberg(p_values, q=fdr_q)
+
+                for cand, p_val, sig in zip(stage1_survivors, p_values, significant_mask):
+                    if not sig:
+                        continue
+                    col_name = cand["col_name"]
+                    val_str = cand["val_str"]
+                    max_nmi_seen = cand["max_nmi_seen"]
+
+                    if col_name not in top_cols_map:
+                        ru_title = vsf.vis.MUSHROOM_TRANSLATIONS["columns"].get(col_name, col_name)
+                        display_label = f"{ru_title} ({col_name})" if ru_title != col_name else col_name
+                        top_cols_map[col_name] = {
+                            "id": col_name,
+                            "label": display_label,
+                            "criteria": [],
+                            "max_nmi": 0.0
+                        }
+
+                    human_val = vsf.vis.humanize_val(col_name, val_str)
+                    top_cols_map[col_name]["criteria"].append({
+                        "id": val_str,
+                        "label": human_val,
+                        "max_nmi": float(max_nmi_seen),
+                        "p_value": float(p_val),
+                    })
+                    if max_nmi_seen > top_cols_map[col_name]["max_nmi"]:
+                        top_cols_map[col_name]["max_nmi"] = float(max_nmi_seen)
 
             top_cols_list = list(top_cols_map.values())
             for col in top_cols_list:
                 col["criteria"].sort(key=lambda x: x["max_nmi"], reverse=True)
             top_cols_list.sort(key=lambda x: x["max_nmi"], reverse=True)
 
-            _top_columns_cache = {
+            result = {
                 "columns": top_cols_list,
-                "total_count": sum(len(c["criteria"]) for c in top_cols_list)
+                "total_count": sum(len(c["criteria"]) for c in top_cols_list),
+                "min_nmi": min_nmi,
+                "fdr_q": fdr_q,
+                "n_stage1_survivors": len(stage1_survivors),
             }
-            self._send_json_response(200, _top_columns_cache)
+
+            with _cache_lock:
+                _top_columns_cache = result
+
+            self._send_json_response(200, result)
 
         except Exception as e:
             self._send_json_response(500, {"error": str(e)})
@@ -271,22 +387,31 @@ class VSFRequestHandler(http.server.SimpleHTTPRequestHandler):
                 "criterion": req.get("criterion")
             }
 
-            if _last_params == cache_key and _last_res is not None:
-                res, cached_X, cached_Z, cached_features, cached_target_name = _last_res
-                # Use cached items to prevent redundant delay
-                X = cached_X
-                Z = cached_Z
-                feature_names = cached_features
-                display_target_name = cached_target_name
-            else:
-                engine = vsf.AVREngine(
-                    alpha=0.01, vir_threshold=0.85, max_d=7, n_permutations=100, random_state=42
-                )
-                res = engine.fit(X, Z, feature_names=feature_names)
-                
-                # Update cache
-                _last_params = cache_key
-                _last_res = (res, X, Z, feature_names, display_target_name)
+            # `_last_params`/`_last_res` are shared across every connection
+            # thread under ThreadingHTTPServer. Holding `_cache_lock` across
+            # both the check and the (potentially several-second) fit+update
+            # means two concurrent requests for different targets can no
+            # longer interleave a read of one target's half-written cache
+            # tuple with another's write; the cost is that a second request
+            # simply waits for the first engine.fit() to finish rather than
+            # running concurrently against stale/inconsistent globals.
+            with _cache_lock:
+                if _last_params == cache_key and _last_res is not None:
+                    res, cached_X, cached_Z, cached_features, cached_target_name = _last_res
+                    # Use cached items to prevent redundant delay
+                    X = cached_X
+                    Z = cached_Z
+                    feature_names = cached_features
+                    display_target_name = cached_target_name
+                else:
+                    engine = vsf.AVREngine(
+                        alpha=0.01, vir_threshold=0.85, max_d=7, n_permutations=100, random_state=42
+                    )
+                    res = engine.fit(X, Z, feature_names=feature_names)
+
+                    # Update cache
+                    _last_params = cache_key
+                    _last_res = (res, X, Z, feature_names, display_target_name)
 
             payload = vsf.prepare_visualization_payload(
                 res, X, Z, feature_names=feature_names, target_name=display_target_name, sort_Z=sort_Z
@@ -400,10 +525,20 @@ class VSFRequestHandler(http.server.SimpleHTTPRequestHandler):
             self._send_json_response(500, {"error": str(e)})
 
 def main() -> None:
-    """Entry point for the VSF Local Web Server."""
+    """
+    Entry point for the VSF Local Web Server.
+
+    Binds to 127.0.0.1 only. `("", PORT)` (the previous binding) listens on
+    ALL network interfaces, exposing this dashboard — including the raw
+    mushroom dataset and every mining/inference endpoint, none of which
+    perform authentication — to every other host on the local network (and
+    to the internet if the machine has a public IP / port-forwarded router).
+    This is a local research dashboard with no auth layer; it has no reason
+    to accept connections from anywhere but the machine running it.
+    """
     os.chdir(os.path.dirname(__file__))
     http.server.ThreadingHTTPServer.allow_reuse_address = True
-    with http.server.ThreadingHTTPServer(("", PORT), VSFRequestHandler) as httpd:
+    with http.server.ThreadingHTTPServer(("127.0.0.1", PORT), VSFRequestHandler) as httpd:
         print("=" * 70)
         print(f" VSF Interactive Visual Dashboard Server Running!")
         print(f" Local URL: http://localhost:{PORT}")

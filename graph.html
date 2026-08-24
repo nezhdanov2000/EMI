@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="ru">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Сеть логического вывода на графе NMI — VSF</title>
+    <title>NMI Graph Reasoning & Inference Network — VSF</title>
 
     <!-- Google Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -19,10 +19,10 @@
     <header class="graph-header">
         <div class="brand">
             <div class="badge-logo">NMI GRAPH</div>
-            <div class="brand-title">Сеть логического вывода и рассуждений</div>
+            <div class="brand-title">Reasoning & Inference Network</div>
         </div>
         <div class="header-actions">
-            <a href="/" class="btn-return">🔙 3D Визуализатор VSF</a>
+            <a href="/" class="btn-return">🔙 3D Visualizer VSF</a>
         </div>
     </header>
 
@@ -30,82 +30,82 @@
         <!-- Control Panel -->
         <aside class="graph-sidebar">
             <div class="panel-section">
-                <div class="section-title">1. Входные признаки (Inputs)</div>
+                <div class="section-title">1. Input Observations (Inputs)</div>
                 <div id="inputsContainer" class="inputs-list">
                     <div class="input-form">
                         <select class="input-col-select" id="newInputCol">
-                            <option value="">Выберите признак...</option>
+                            <option value="">Select feature...</option>
                         </select>
                         <select class="input-val-select" id="newInputVal" disabled>
-                            <option value="">Значение...</option>
+                            <option value="">Value...</option>
                         </select>
-                        <button class="btn-add" id="btnAddInput" title="Добавить наблюдение">+ Добавить</button>
+                        <button class="btn-add" id="btnAddInput" title="Add observation">+ Add</button>
                     </div>
                 </div>
                 <div id="activeInputs" class="active-inputs"></div>
             </div>
 
             <div class="panel-section">
-                <div class="section-title">2. Цель и критерий (Target)</div>
+                <div class="section-title">2. Target & Criterion (Target)</div>
                 <div class="target-form">
-                    <label class="field-label">Целевой признак:</label>
+                    <label class="field-label">Target Feature:</label>
                     <select class="target-select" id="targetSelect">
-                        <option value="class">Edibility / Съедобность (class)</option>
+                        <option value="class">Edibility (class)</option>
                     </select>
 
-                    <label class="field-label" style="margin-top: 8px;">Интересующий критерий/исход:</label>
+                    <label class="field-label" style="margin-top: 8px;">Target Criterion / Outcome:</label>
                     <select class="target-val-select" id="targetCriterionSelect">
-                        <option value="p">Ядовитый / Poisonous (p)</option>
-                        <option value="e">Съедобный / Edible (e)</option>
+                        <option value="p">Poisonous (p)</option>
+                        <option value="e">Edible (e)</option>
                     </select>
                 </div>
             </div>
 
             <div class="panel-section">
-                <div class="section-title">3. Порог связи (NMI Threshold)</div>
+                <div class="section-title">3. Connection Threshold (NMI Threshold)</div>
                 <div class="slider-container">
                     <input type="range" id="nmiThreshold" min="0.05" max="0.6" step="0.05" value="0.15">
                     <span id="nmiThresholdLabel" class="slider-value">0.15</span>
                 </div>
-                <div class="slider-hint">Чем выше порог, тем строже и чище логические цепочки.</div>
+                <div class="slider-hint">Higher thresholds result in stricter, more reliable reasoning chains.</div>
             </div>
 
             <div class="panel-section controls-section">
-                <button id="btnRunInference" class="btn-primary glow-btn">🚀 Запустить вывод рассуждений</button>
-                <button id="btnOpenKB" class="btn-secondary glow-btn-alt" style="margin-top: 10px;">📚 Каталог супер-связей</button>
+                <button id="btnRunInference" class="btn-primary glow-btn">🚀 Run Reasoning Inference</button>
+                <button id="btnOpenKB" class="btn-secondary glow-btn-alt" style="margin-top: 10px;">📚 Super-Links Catalog</button>
             </div>
             
             <div class="panel-section playback-controls" style="display: none;" id="playbackControls">
                 <div class="playback-buttons">
-                    <button id="btnPrevPhase" class="btn-icon" title="Предыдущая фаза">⏮️</button>
-                    <button id="btnPlayPause" class="btn-icon" title="Пауза / Старт">⏯️</button>
-                    <button id="btnNextPhase" class="btn-icon" title="Следующая фаза">⏭️</button>
+                    <button id="btnPrevPhase" class="btn-icon" title="Previous Phase">⏮️</button>
+                    <button id="btnPlayPause" class="btn-icon" title="Pause / Play">⏯️</button>
+                    <button id="btnNextPhase" class="btn-icon" title="Next Phase">⏭️</button>
                 </div>
-                <div class="phase-indicator" id="phaseIndicator">Фаза 1: База знаний</div>
+                <div class="phase-indicator" id="phaseIndicator">Phase 1: Knowledge Base</div>
             </div>
             
             <!-- Result Summary Card -->
             <div class="panel-section summary-section" id="summarySection" style="display: none;">
-                <div class="section-title">Итог логического вывода</div>
+                <div class="section-title">Inference Summary</div>
                 
                 <div class="verdict-banner" id="verdictBanner">
-                    <div class="verdict-label">Целевой прогноз:</div>
-                    <div class="verdict-value" id="verdictValue">Ядовитый (p)</div>
-                    <div class="verdict-prob" id="verdictProb">100.0% уверенность</div>
+                    <div class="verdict-label">Target Prediction:</div>
+                    <div class="verdict-value" id="verdictValue">Poisonous (p)</div>
+                    <div class="verdict-prob" id="verdictProb">100.0% Confidence</div>
                 </div>
 
                 <div class="summary-stats">
                     <div class="stat-box">
-                        <div class="stat-label">Прямой MI</div>
+                        <div class="stat-label">Direct MI</div>
                         <div class="stat-value" id="statDirectNmi">0.0%</div>
                     </div>
                     <div class="stat-box highlight">
-                        <div class="stat-label">Цепочка MI</div>
+                        <div class="stat-label">Chain MI</div>
                         <div class="stat-value" id="statChainNmi">0.0%</div>
                     </div>
                 </div>
 
-                <div class="chain-narrative-title">Шаги рассуждений:</div>
+                <div class="chain-narrative-title">Reasoning Steps:</div>
                 <div class="chain-narrative-list" id="chainNarrativeList"></div>
             </div>
         </aside>
@@ -120,10 +120,10 @@
 
             <!-- Layer Titles Overlay -->
             <div class="layers-overlay" id="layersOverlay" style="display: none;">
-                <div class="layer-header col-input">ВХОДЫ (Inputs)</div>
-                <div class="layer-header col-layer1">СЛОЙ 1 (Медиаторы)</div>
-                <div class="layer-header col-layer2">СЛОЙ 2 (Медиаторы)</div>
-                <div class="layer-header col-target">ЦЕЛЬ (Target)</div>
+                <div class="layer-header col-input">INPUTS</div>
+                <div class="layer-header col-layer1">LAYER 1 (Mediators)</div>
+                <div class="layer-header col-layer2">LAYER 2 (Mediators)</div>
+                <div class="layer-header col-target">TARGET</div>
             </div>
         </section>
         
@@ -131,13 +131,13 @@
         <div id="nodePopover" class="node-popover hidden">
             <div class="popover-header">
                 <div>
-                    <h4 id="popoverTitle">Название признака</h4>
+                    <h4 id="popoverTitle">Feature Name</h4>
                     <div class="popover-subtitle" id="popoverSubtitle">raw_name</div>
                 </div>
-                <span class="popover-layer badge" id="popoverBadge">Слой 1</span>
+                <span class="popover-layer badge" id="popoverBadge">Layer 1</span>
             </div>
             <div class="popover-content">
-                <div class="prob-list-title">Распределение предсказанных значений:</div>
+                <div class="prob-list-title">Predicted Value Distribution:</div>
                 <div class="prob-list" id="popoverProbList">
                     <!-- Probabilities injected here -->
                 </div>
@@ -149,27 +149,27 @@
         <div id="kbModal" class="kb-modal hidden">
             <div class="kb-modal-content">
                 <div class="kb-header">
-                    <h2>📚 База знаний: Супер-связи и Медиаторы</h2>
+                    <h2>📚 Knowledge Base: Super-Links & Mediators</h2>
                     <button class="kb-close" id="kbCloseBtn">×</button>
                 </div>
                 <div class="kb-controls">
                     <div>
-                        <label>Цель майнинга:</label>
+                        <label>Mining Target:</label>
                         <select id="kbTargetSelect" class="kb-select"></select>
                     </div>
                     <div>
-                        <label>Мин. NMI:</label>
+                        <label>Min NMI:</label>
                         <select id="kbMinNmiSelect" class="kb-select">
-                            <option value="0.30" selected>⚡ NMI ≥ 30% (Качественные)</option>
-                            <option value="0.50">🔥 NMI ≥ 50% (Сильные)</option>
-                            <option value="0.70">👑 NMI ≥ 70% (Сверхсильные)</option>
-                            <option value="0.15">🔹 NMI ≥ 15% (Все найденные)</option>
+                            <option value="0.30" selected>⚡ NMI ≥ 30% (High Quality)</option>
+                            <option value="0.50">🔥 NMI ≥ 50% (Strong)</option>
+                            <option value="0.70">👑 NMI ≥ 70% (Very Strong)</option>
+                            <option value="0.15">🔹 NMI ≥ 15% (All Discovered)</option>
                         </select>
                     </div>
-                    <button id="btnMineLinks" class="btn-primary">🔍 Замайнить всё</button>
+                    <button id="btnMineLinks" class="btn-primary">🔍 Mine All Links</button>
                 </div>
                 <div class="kb-results" id="kbResults">
-                    <div class="kb-empty-state">Нажмите "Замайнить всё", чтобы найти сильнейшие логические цепи (до 3 слоев) в датасете.</div>
+                    <div class="kb-empty-state">Click "Mine All Links" to find the strongest logical reasoning chains (up to 3 layers) in the dataset.</div>
                 </div>
             </div>
         </div>

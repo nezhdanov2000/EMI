@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 from typing import Dict, List, Any, Optional
+from .graph_miner import compute_significant_edges
 from .math import normalized_mutual_information
 from .vis import humanize_col, humanize_val, MUSHROOM_TRANSLATIONS
 
@@ -27,11 +28,14 @@ def compute_nmi_matrix(df: pd.DataFrame) -> Dict[str, Dict[str, float]]:
 
 
 def run_graph_inference(
-    df: pd.DataFrame, 
-    inputs: Dict[str, str], 
-    target: str = "class", 
+    df: pd.DataFrame,
+    inputs: Dict[str, str],
+    target: str = "class",
     target_criterion: Optional[str] = None,
-    nmi_threshold: float = 0.10
+    nmi_threshold: float = 0.10,
+    fdr_q: float = 0.05,
+    n_permutations: int = 200,
+    random_state: int | None = 42,
 ) -> Dict[str, Any]:
     """
     Runs graph inference reasoning:
@@ -40,10 +44,28 @@ def run_graph_inference(
     3. Allocates nodes into clean non-overlapping layers.
     4. Computes prior & posterior belief distributions for each node given inputs.
     5. Formulates step-by-step reasoning narrative.
+
+    Every edge considered for a reasoning path must clear BOTH an effect-size
+    floor (`nmi_threshold`, unchanged) and a Benjamini-Hochberg-corrected
+    permutation-test significance bar (new — see
+    `vsf.graph_miner.compute_significant_edges`); a path's overall score is
+    the MINIMUM (bottleneck) NMI among its edges, not their product. See
+    `vsf.graph_miner.mine_strong_links` for why: the product of differently-
+    normalized NMI values is not a validated information-theoretic quantity
+    despite an earlier version of this function labeling it a "DPI compliant
+    multiplicative cascade", and thresholding purely on raw NMI magnitude
+    (with no significance test at all) does not control the false discovery
+    rate across the O(M^3) candidate paths this search enumerates.
     """
     cols = df.columns.tolist()
     nmi_matrix = compute_nmi_matrix(df)
-    
+    _, significant_edges = compute_significant_edges(
+        df, fdr_q=fdr_q, n_permutations=n_permutations, random_state=random_state
+    )
+
+    def edge_ok(a: str, b: str) -> bool:
+        return significant_edges.get(frozenset((a, b)), False)
+
     # 1. Base Filter Mask for Inputs
     base_mask = np.ones(len(df), dtype=bool)
     for col, val in inputs.items():
@@ -70,31 +92,33 @@ def run_graph_inference(
             if z1 in input_cols or z1 == target:
                 continue
             nmi_inp_z1 = nmi_matrix[inp].get(z1, 0.0)
-            if nmi_inp_z1 < nmi_threshold:
+            if nmi_inp_z1 < nmi_threshold or not edge_ok(inp, z1):
                 continue
-                
+
             # Check 2-step: Input -> Z1 -> Target
             nmi_z1_tgt = nmi_matrix[z1].get(target, 0.0)
-            if nmi_z1_tgt >= nmi_threshold:
-                # Multiplicative Cascade: I_cascade = NMI_1 * NMI_2 (DPI compliant)
-                score = float(nmi_inp_z1 * nmi_z1_tgt)
+            if nmi_z1_tgt >= nmi_threshold and edge_ok(z1, target):
+                # Bottleneck score: the weakest edge caps the chain's
+                # transmitted information, consistent with how information
+                # can only be lost (never manufactured) by an intermediate
+                # step — NOT the product of the two edges' NMI values.
+                score = float(min(nmi_inp_z1, nmi_z1_tgt))
                 valid_paths.append({
                     "path": [inp, z1, target],
                     "score": score,
                     "nmis": [nmi_inp_z1, nmi_z1_tgt]
                 })
-                
+
             # Check 3-step: Input -> Z1 -> Z2 -> Target
             for z2 in cols:
                 if z2 in input_cols or z2 == target or z2 == z1:
                     continue
                 nmi_z1_z2 = nmi_matrix[z1].get(z2, 0.0)
-                if nmi_z1_z2 < nmi_threshold:
+                if nmi_z1_z2 < nmi_threshold or not edge_ok(z1, z2):
                     continue
                 nmi_z2_tgt = nmi_matrix[z2].get(target, 0.0)
-                if nmi_z2_tgt >= nmi_threshold:
-                    # Multiplicative Cascade: I_cascade = NMI_1 * NMI_2 * NMI_3 (DPI compliant)
-                    score = float(nmi_inp_z1 * nmi_z1_z2 * nmi_z2_tgt)
+                if nmi_z2_tgt >= nmi_threshold and edge_ok(z2, target):
+                    score = float(min(nmi_inp_z1, nmi_z1_z2, nmi_z2_tgt))
                     valid_paths.append({
                         "path": [inp, z1, z2, target],
                         "score": score,
@@ -256,7 +280,7 @@ def run_graph_inference(
                 reasoning_steps.append({
                     "step": 1,
                     "type": "input",
-                    "title": f"Входное наблюдение: {node_obj['label']}",
+                    "title": f"Input Observation: {node_obj['label']}",
                     "detail": f"{val_lbl} ({inp_val})",
                     "nmi_next": float(top_paths[0]["nmis"][0]) if top_paths[0]["nmis"] else 0.0
                 })
@@ -264,7 +288,7 @@ def run_graph_inference(
                 reasoning_steps.append({
                     "step": i + 1,
                     "type": "target",
-                    "title": f"Целевой вывод: {node_obj['label']}",
+                    "title": f"Target Conclusion: {node_obj['label']}",
                     "detail": f"{target_criterion_label} ({target_criterion})",
                     "confidence": f"{target_probability * 100:.1f}%"
                 })
@@ -275,8 +299,8 @@ def run_graph_inference(
                     "step": i + 1,
                     "type": "mediator",
                     "layer": node_obj["layer"],
-                    "title": f"Слой {node_obj['layer']} (Медиатор): {node_obj['label']}",
-                    "detail": f"{pred['label']} ({pred['value']}) — вероятность {pred['posterior']*100:.1f}%",
+                    "title": f"Layer {node_obj['layer']} (Mediator): {node_obj['label']}",
+                    "detail": f"{pred['label']} ({pred['value']}) — probability {pred['posterior']*100:.1f}%",
                     "nmi_next": nmi_next
                 })
 

@@ -46,6 +46,26 @@ class TestMathModule(unittest.TestCase):
         nmi = normalized_mutual_information(x, y)
         self.assertAlmostEqual(nmi, 1.0, places=5)
 
+    def test_mi_and_nmi_stay_consistent_after_entropy_hoisting(self):
+        # Regression test for the redundant-entropy-computation fix:
+        # mutual_information and normalized_mutual_information used to
+        # independently recompute H(Z)/H(X_S)/H(Z,X_S) (5 entropy calls
+        # total across both functions for the same pair); they now share a
+        # single `_mi_with_entropies` helper. This checks the shared path
+        # still produces results consistent with the textbook relation
+        # NMI = MI / min(H(Z), H(X_S)) computed independently here.
+        rng = np.random.default_rng(0)
+        z = rng.integers(0, 5, size=500)
+        x = np.where(rng.random(500) < 0.6, z, rng.integers(0, 5, size=500))
+
+        mi = mutual_information(z, x)
+        nmi = normalized_mutual_information(z, x)
+        h_z = shannon_entropy(z)
+        h_x = shannon_entropy(x)
+
+        expected_nmi = mi / min(h_z, h_x)
+        self.assertAlmostEqual(nmi, expected_nmi, places=9)
+
 
 if __name__ == "__main__":
     unittest.main()

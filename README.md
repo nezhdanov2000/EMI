@@ -1,37 +1,41 @@
 # Visual Sufficiency Framework (VSF)
 
-VSF — это информационно-теоретическая система адаптивного выбора размерности визуализации. Она анализирует датасет и автоматически определяет минимально необходимое и достаточное количество визуальных каналов (от 2D до 7D) для отображения структуры данных.
+VSF is an information-theoretic framework for adaptive visualization dimensionality selection. It analyzes a dataset and automatically determines the minimal necessary and sufficient number of visual channels (from 2D to 7D) required to faithfully represent the data structure.
 
-## Структура проекта
+## Project Structure
 
-*   `vsf/` — Математическое ядро библиотеки VSF. Содержит алгоритмы дискретизации, вычисления взаимной информации и выбора размерности.
-*   `server.py` — Локальный веб-сервер и REST API, который обслуживает визуализацию.
-*   `index.html` — Веб-интерфейс визуализатора (3D Scatter Plot с использованием Plotly.js).
-*   `static/` — Статические ресурсы (CSS, JS).
-*   `data/` — Директория с наборами данных (например, `mushrooms.csv`).
+*   `vsf/` — Mathematical core of the VSF library. Contains discretization algorithms, mutual information calculations, FDR control, and dimensionality routing.
+*   `server.py` — Local web server and REST API serving the interactive visualization.
+*   `index.html` — Interactive visualization web interface (3D Scatter Plot powered by Plotly.js).
+*   `graph.html` — NMI reasoning graph and logical inference interface.
+*   `static/` — Static assets (CSS, JS).
+*   `data/` — Dataset directory (e.g., `mushrooms.csv`).
 
-## Быстрый запуск (Quick Start)
+## Quick Start
 
-### Требования
+### Requirements
 * Python 3.8+
-* Установленные зависимости (из `setup.py`): `numpy`, `scipy`, `pandas`.
+* Dependencies (from `setup.py`): `numpy`, `scipy`, `pandas`.
 
-Вы можете установить зависимости с помощью `pip`:
+You can install dependencies using `pip`:
 ```bash
 pip install -e .
 ```
 
-### Запуск сервера
-Запустите локальный сервер с помощью Python:
+### Starting the Server
+Start the local server using Python:
 ```bash
 python server.py
 ```
 
-После запуска сервера откройте браузер и перейдите по адресу: [http://localhost:8050](http://localhost:8050)
+Once the server is running, open your browser and navigate to: [http://localhost:8050](http://localhost:8050)
 
-## Особенности
-*   **Перцептивно-Согласованная Дискретизация (PMD):** Оптимальное квантование непрерывных признаков с учетом пропускной способности визуальных каналов.
-*   **Adaptive Visual Routing (AVR):** Автоматический выбор от 1 до 7 осей на основе Пермутационного Теста и метрики Взаимной Информации (Mutual Information).
-*   **Объяснимый ИИ (XAI):** Система выводит текстовые предупреждения, если структура данных слишком сложна для визуализации в 7D, или если выбранные признаки являются шумом.
+To open the Reasoning Graph interface, go to: [http://localhost:8050/graph.html](http://localhost:8050/graph.html)
 
-Подробное научное описание алгоритмов смотрите в файле `Project_Master_Document.md`.
+## Features
+*   **Perceptually-Matched Discretization (PMD):** Optimal quantization of continuous features constrained by visual channel capacities based on Rate-Distortion Theory.
+*   **Adaptive Visual Routing (AVR):** Automatic selection of 1 to 7 axes based on Conditional Permutation Testing, FDR Control (Benjamini-Hochberg), and Normalized Mutual Information (NMI).
+*   **Explainable AI (XAI):** Built-in textual warnings when data complexity exceeds 7D visual bandwidth, or when selected candidate features are statistically indistinguishable from noise.
+*   **Graph Reasoning & Inference:** Automatic mining of statistically sound mediator chains and logical inference paths across feature hierarchies.
+
+For detailed theoretical derivations and algorithmic specifications, see `Project_Master_Document.md`.

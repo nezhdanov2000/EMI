@@ -126,8 +126,49 @@ def humanize_val(col_name: str, val: str) -> str:
 
 def humanize_col(col_name: str) -> str:
     """Translates column name to human readable name."""
-    ru_name = MUSHROOM_TRANSLATIONS["columns"].get(col_name, col_name)
-    return f"{ru_name} ({col_name})" if ru_name != col_name else col_name
+    human_name = MUSHROOM_TRANSLATIONS["columns"].get(col_name, col_name)
+    return f"{human_name} ({col_name})" if human_name != col_name else col_name
+
+
+def _axis_fallback_indices(selected_idx: List[int], n_features: int, count: int) -> List[int]:
+    """
+    Returns `count` distinct feature-column indices to use as display axes:
+    the first `count` entries of `selected_idx` (in AVR's chosen order),
+    padded out with the lowest-index columns NOT already used, when AVR
+    selected fewer than `count` features (d* < count, e.g. d* = 1 while the
+    caller wants 3 scatter axes).
+
+    An earlier version padded with the raw literal indices 1 and 2
+    (`selected_idx[1] if len(selected_idx) > 1 else 1`, `... else 2`)
+    regardless of what `selected_idx[0]` actually was. Whenever the single
+    selected feature happened to BE column 1 or column 2, the "fallback"
+    axis silently duplicated the primary axis — e.g. `selected_idx = [1]`
+    produced `x_col_idx = y_col_idx = 1`, collapsing the Y axis onto the X
+    axis and rendering a degenerate 2D plane instead of a 3D scatter, with
+    no indication to the user that this had happened.
+    """
+    idx_list: List[int] = []
+    used = set()
+    for idx in selected_idx:
+        if len(idx_list) >= count:
+            break
+        idx_list.append(int(idx))
+        used.add(int(idx))
+
+    candidate = 0
+    while len(idx_list) < count and candidate < n_features:
+        if candidate not in used:
+            idx_list.append(candidate)
+            used.add(candidate)
+        candidate += 1
+
+    # Degenerate case: fewer feature columns exist than axes requested.
+    # Repeat the last valid index rather than raising, since the caller
+    # (a 3D scatter builder) must always receive `count` indices.
+    while len(idx_list) < count:
+        idx_list.append(idx_list[-1] if idx_list else 0)
+
+    return idx_list
 
 
 def target_conditioned_sort(x_vals: np.ndarray, z_vals: np.ndarray, col_name: str = ""):
@@ -196,9 +237,7 @@ def prepare_visualization_payload(
     selected_idx = result.selected_features
     d_star = result.d_star
 
-    x_col_idx = selected_idx[0] if len(selected_idx) > 0 else 0
-    y_col_idx = selected_idx[1] if len(selected_idx) > 1 else (1 if n_features > 1 else 0)
-    z_col_idx = selected_idx[2] if len(selected_idx) > 2 else (2 if n_features > 2 else 0)
+    x_col_idx, y_col_idx, z_col_idx = _axis_fallback_indices(selected_idx, n_features, 3)
 
     # 4th dimension (slice axis) — extracted when d* >= 4
     has_4d = d_star >= 4 and len(selected_idx) >= 4
@@ -300,8 +339,26 @@ def prepare_visualization_payload(
         
         for (cx, cy, cz), c_idx in g_groups.items():
             N_c = len(c_idx)
-            c_cols = [color_num[i] for i in c_idx]
-            pur = float(np.mean(c_cols)) / max(len(unique_targets) - 1, 1)
+            c_cols = color_num[c_idx]
+            # Share of the designated "positive" class (the highest-index
+            # class, `unique_targets[-1]` — see `target_pos_label` below,
+            # which this value is displayed against) among this cell's
+            # samples: exactly what the "Share of {target_pos_label}" hover
+            # label promises, for any number of target classes K.
+            #
+            # The prior formula, `mean(c_cols) / max(K - 1, 1)`, is the
+            # cell's AVERAGE class INDEX normalized to [0, 1] — that only
+            # coincides with "share of the positive class" when K = 2 (where
+            # mean(c_cols) IS already the fraction of class-index 1). For
+            # K = 3 a cell that is 100% the MIDDLE class (index 1, not the
+            # positive class at index 2) averaged to 1 / 2 = 0.5, reporting
+            # "50% positive" for a cell containing ZERO positive-class
+            # samples — not a purity measure at all for K > 2, and
+            # incompatible with the frontend's diverging 0..1 "dirty center"
+            # color banding (`getColorIndexForPurity` in static/js/app.js),
+            # which assumes this value IS a positive-class probability.
+            positive_class_idx = len(unique_targets) - 1
+            pur = float(np.mean(c_cols == positive_class_idx)) if N_c > 0 else 0.0
             norm_d = 0.2 + 0.8 * (np.sqrt(N_c) / np.sqrt(m_N))
             
             gx.append(float(cx))
