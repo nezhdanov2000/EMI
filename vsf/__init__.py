@@ -29,10 +29,13 @@ from .pmd import (
     discretize_feature,
 )
 from .vis import (
+    catalog_from_dataframe,
     generate_interactive_html,
     prepare_visualization_payload,
 )
-from .mining import mine_dirty_center
+from .mining import compute_top_insights, mine_dirty_center
+from .dashboard import export_full_dashboard
+from .server import serve
 
 __version__ = "1.0.0"
 
@@ -41,17 +44,22 @@ __all__ = [
     "AVREngine",
     "AVRResult",
     "Scenario",
+    "catalog_from_dataframe",
     "check_grid_capacity",
+    "compute_top_insights",
     "conditional_permutation_test",
     "discretize_dataset",
     "discretize_feature",
     "evaluate_vsf_accuracy",
+    "export_full_dashboard",
     "generate_interactive_html",
     "generate_synthetic_dataset",
     "joint_entropy",
     "marginal_permutation_test",
+    "mine_dirty_center",
     "mutual_information",
     "normalized_mutual_information",
     "prepare_visualization_payload",
+    "serve",
     "shannon_entropy",
 ]

@@ -3,7 +3,7 @@ import pandas as pd
 from typing import Dict, List, Any, Optional
 from .graph_miner import compute_significant_edges
 from .math import normalized_mutual_information
-from .vis import humanize_col, humanize_val, MUSHROOM_TRANSLATIONS
+from .vis import humanize_col, humanize_val
 
 
 def compute_nmi_matrix(df: pd.DataFrame) -> Dict[str, Dict[str, float]]:
@@ -36,6 +36,7 @@ def run_graph_inference(
     fdr_q: float = 0.05,
     n_permutations: int = 200,
     random_state: int | None = 42,
+    translations: Optional[dict] = None,
 ) -> Dict[str, Any]:
     """
     Runs graph inference reasoning:
@@ -56,6 +57,11 @@ def run_graph_inference(
     multiplicative cascade", and thresholding purely on raw NMI magnitude
     (with no significance test at all) does not control the false discovery
     rate across the O(M^3) candidate paths this search enumerates.
+
+    `translations` is an optional dataset-specific display table (see
+    `vsf.vis.Translations`) used only for the human-readable node/value
+    labels in the returned `nodes`/`reasoning_steps`; with no
+    `translations`, those fall back to raw column/value strings.
     """
     cols = df.columns.tolist()
     nmi_matrix = compute_nmi_matrix(df)
@@ -217,7 +223,7 @@ def run_graph_inference(
         unique_vals = df[col].dropna().unique()
         for v in unique_vals:
             v_str = str(v)
-            human_val_label = humanize_val(col, v_str)
+            human_val_label = humanize_val(col, v_str, translations)
             prior_p = float(value_counts.get(v, 0.0))
             post_p = float(posterior_counts.get(v, 0.0))
             distribution.append({
@@ -230,7 +236,7 @@ def run_graph_inference(
         distribution.sort(key=lambda x: x["posterior"], reverse=True)
         top_prediction = distribution[0] if distribution else {"value": "-", "label": "-", "posterior": 0.0}
         
-        col_label = humanize_col(col)
+        col_label = humanize_col(col, translations)
         
         nodes.append({
             "id": col,
@@ -276,11 +282,11 @@ def run_graph_inference(
             node_obj = next((n for n in nodes if n["id"] == node_id), None)
             if i == 0:
                 inp_val = inputs.get(node_id, "")
-                val_lbl = humanize_val(node_id, inp_val)
+                val_lbl = humanize_val(node_id, inp_val, translations)
                 reasoning_steps.append({
                     "step": 1,
                     "type": "input",
-                    "title": f"Input Observation: {node_obj['label']}",
+                    "title": f"Входное наблюдение: {node_obj['label']}",
                     "detail": f"{val_lbl} ({inp_val})",
                     "nmi_next": float(top_paths[0]["nmis"][0]) if top_paths[0]["nmis"] else 0.0
                 })
@@ -288,7 +294,7 @@ def run_graph_inference(
                 reasoning_steps.append({
                     "step": i + 1,
                     "type": "target",
-                    "title": f"Target Conclusion: {node_obj['label']}",
+                    "title": f"Целевой вывод: {node_obj['label']}",
                     "detail": f"{target_criterion_label} ({target_criterion})",
                     "confidence": f"{target_probability * 100:.1f}%"
                 })
@@ -299,8 +305,8 @@ def run_graph_inference(
                     "step": i + 1,
                     "type": "mediator",
                     "layer": node_obj["layer"],
-                    "title": f"Layer {node_obj['layer']} (Mediator): {node_obj['label']}",
-                    "detail": f"{pred['label']} ({pred['value']}) — probability {pred['posterior']*100:.1f}%",
+                    "title": f"Слой {node_obj['layer']} (Медиатор): {node_obj['label']}",
+                    "detail": f"{pred['label']} ({pred['value']}) — вероятность {pred['posterior']*100:.1f}%",
                     "nmi_next": nmi_next
                 })
 

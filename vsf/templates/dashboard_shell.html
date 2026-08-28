@@ -1,0 +1,238 @@
+<!--
+  vsf.dashboard body shell.
+
+  Ported from index.html's "3D Visualizer" markup. Deliberate cuts from
+  the live app (see vsf/dashboard.py's module docstring):
+    - The "Filter Search" composite AND-condition builder is dropped — it
+      reruns full permutation-tested feature selection on an arbitrary
+      user-built condition, which this static export cannot precompute.
+    - The "Space Representation" toggle (#btn-grid) and "Noise Reduction"
+      panel are dropped — both are already inert in the live app (no JS
+      ever wires them to a re-render), so porting them here would just add
+      dead controls to a page that has none elsewhere.
+    - Graph Inference / Knowledge-Base chain mining (graph.html) is
+      dropped entirely — a separate reasoning-graph project, out of scope
+      for this 3D/4D scatter export.
+  Global dimensionality is capped at 4D: 1D-3D are spatial coordinate
+  axes (X/Y/Z) inside the scatter plot; 4D decomposes the 3D system into
+  discrete chronological frames over the 4th selected feature's K
+  categories, driven by the "4D Time Axis" controller below (step
+  buttons, an "All" composite frame, and play/pause/speed autoplay — see
+  dashboard.js's renderSliceTabs/toggleSliceAutoplay). Local dirty-center
+  rule mining (the Rule Explorer / Mitosis Engine, opened by clicking an
+  ambiguous-purity sphere in ANY frame) is a separate mechanism from this
+  global time axis — see dashboard.js's plotly_click handler.
+-->
+<header>
+    <div class="brand">
+        <div class="badge-logo">VSF</div>
+        <div class="brand-title">Visual Sufficiency Framework</div>
+    </div>
+    <div class="header-status" style="display: flex; gap: 16px; align-items: center;">
+        <div id="scenarioPill" class="scenario-pill SCENARIO_A">
+            <span id="scenarioText">Scenario A: Minimalist</span>
+        </div>
+    </div>
+</header>
+
+<main>
+    <!-- Master Panel: Insights Catalog -->
+    <aside class="catalog-sidebar">
+
+        <!-- Main Accordion Header for Catalog -->
+        <div class="main-acc-header open" id="headerCatalog" onclick="toggleMainAcc('catalog')">
+            <div class="main-acc-title">📚 Insights Catalog</div>
+            <div class="main-acc-icon">▶</div>
+        </div>
+        <!-- Main Accordion Content for Catalog -->
+        <div class="main-acc-content open" id="contentCatalog">
+            <div class="catalog-subtitle" style="padding: 0 1.5rem 0.5rem 1.5rem;">Auto-Discovery (Propositionalization)</div>
+            <div id="catalogAccordion" class="catalog-accordion">
+                <div style="color: var(--text-dim); font-size: 0.85rem; padding: 1rem;">Loading dataset structure...</div>
+            </div>
+        </div>
+
+        <!-- Main Accordion Header for Top Insights -->
+        <div class="main-acc-header" id="headerTop" onclick="toggleMainAcc('top')">
+            <div class="main-acc-title">🏆 Top Insights (NMI ≥ 75%)</div>
+            <div class="main-acc-icon">▶</div>
+        </div>
+        <!-- Main Accordion Content for Top Insights -->
+        <div class="main-acc-content" id="contentTop">
+            <div class="catalog-subtitle" style="padding: 0 1.5rem 0.5rem 1.5rem;">Deterministic Laws (NMI ≥ 75%)</div>
+            <div id="topCatalogAccordion" class="catalog-accordion">
+                <div style="color: var(--text-dim); font-size: 0.85rem; padding: 1rem;">Loading top insights...</div>
+            </div>
+        </div>
+    </aside>
+
+    <!-- Visualization Area -->
+    <section class="viz-viewport">
+        <div id="loader" class="loader-overlay">
+            <div class="spinner"></div>
+            <div style="font-size: 0.9rem; color: #94a3b8;">Rendering...</div>
+        </div>
+
+        <div class="viewport-toolbar">
+            <div style="display: flex; gap: 1.25rem; align-items: center; width: 100%; flex-wrap: wrap;">
+                <div
+                    style="font-weight: 600; font-size: 0.9rem; color: #f8fafc; border-right: 1px solid var(--border-color); padding-right: 1.25rem;">
+                    📊 VSF Metrics</div>
+                <div style="display: flex; gap: 1.25rem; flex: 1; flex-wrap: wrap;">
+                    <div style="display: flex; align-items: baseline; gap: 6px;"
+                        title="Normalized Mutual Information (NMI) — predictive power of discrete centers relative to target (0% = chaos, 100% = exact separation)">
+                        <span style="font-size: 0.75rem; color: var(--text-dim);">NMI (Association):</span>
+                        <strong id="val-nmi" style="color: var(--accent-cyan); font-size: 1rem;">-</strong>
+                    </div>
+                    <div style="display: flex; align-items: baseline; gap: 6px;"
+                        title="Target Loss (100% - NMI) — loss of target information. Higher values indicate mixed classes in centers">
+                        <span style="font-size: 0.75rem; color: var(--text-dim);">Target Loss:</span>
+                        <strong id="val-loss" style="color: var(--amber); font-size: 1rem;">-</strong>
+                    </div>
+                    <div style="display: flex; align-items: baseline; gap: 6px;"
+                        title="Visual Information Ratio (VIR) — fraction of dataset information captured by this projection">
+                        <span style="font-size: 0.75rem; color: var(--text-dim);">VIR (Axis Coverage):</span>
+                        <strong id="val-vir" style="color: var(--green); font-size: 1rem;">-</strong>
+                    </div>
+                    <div style="display: flex; align-items: baseline; gap: 6px;"
+                        title="Optimal number of visual axes (dimension d*), capped at 4D — see vsf.dashboard's module docstring">
+                        <span style="font-size: 0.75rem; color: var(--text-dim);">Optimal Axes (d*):</span>
+                        <strong id="val-dstar" style="color: var(--accent-purple); font-size: 1rem;">-</strong>
+                    </div>
+                    <div style="display: flex; align-items: baseline; gap: 6px;"
+                        title="Statistical significance of association (permutation test, computed at export time)">
+                        <span style="font-size: 0.75rem; color: var(--text-dim);">p-value:</span>
+                        <strong id="val-pval" style="color: var(--text-muted); font-size: 1rem;">-</strong>
+                    </div>
+                </div>
+                <div style="display: flex; align-items: center; gap: 8px; border-left: 1px solid var(--border-color); padding-left: 1rem;">
+                    <span style="font-size: 0.75rem; color: var(--text-dim); font-weight: 500;">Dimensionality:</span>
+                    <div id="dimButtonsGroup" class="view-toggle-group" style="padding: 2px;"></div>
+                </div>
+                <div style="font-size: 0.85rem; color: var(--text-dim);">
+                    Total Samples: <strong id="totalSamplesVal" style="color: #fff;">-</strong>
+                </div>
+            </div>
+        </div>
+
+        <div id="xaiBanner" class="xai-banner" style="display: none;"></div>
+
+        <div id="plot-container"></div>
+
+        <!-- 4D Time / Frame Controller: the 4th selected feature's K
+             categories become K chronological frames of the 3D scene,
+             plus a composite "All" frame. Distinct from local dirty-
+             center mining (see the Rule Explorer / XAI panel below),
+             which activates per-sphere inside whichever frame is showing. -->
+        <div id="slice-controller" class="slice-controller" style="display: none;">
+            <div class="slice-header-row">
+                <div class="slice-label">
+                    <span>🎞️</span>
+                    <span>4D Time Axis: <strong id="slice-axis-name">—</strong></span>
+                </div>
+                <div class="slice-playback-controls">
+                    <button id="btnSlicePrev" class="slice-play-btn" title="Previous frame" onclick="stepSlice(-1)">⏮️</button>
+                    <button id="btnSlicePlayPause" class="slice-play-btn" title="Play / Pause" onclick="toggleSliceAutoplay()">▶️</button>
+                    <button id="btnSliceNext" class="slice-play-btn" title="Next frame" onclick="stepSlice(1)">⏭️</button>
+                    <select id="sliceSpeedSelect" class="slice-speed-select" title="Playback speed" onchange="setSliceAutoplaySpeed(this.value)">
+                        <option value="1600">0.5×</option>
+                        <option value="800" selected>1×</option>
+                        <option value="400">2×</option>
+                        <option value="200">4×</option>
+                    </select>
+                </div>
+            </div>
+            <div id="slice-tabs" class="slice-tabs">
+                <!-- Frame tabs injected by JS -->
+            </div>
+        </div>
+    </section>
+
+    <!-- Visual Settings Sidebar -->
+    <aside class="settings-sidebar">
+        <div
+            style="font-size: 1.1rem; font-weight: 600; color: #f8fafc; padding-bottom: 0.5rem; border-bottom: 1px solid var(--border-color);">
+            Display Settings
+        </div>
+
+        <!-- Stroke Settings -->
+        <div>
+            <div style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 8px;">✨ Purity Contour (Focus)</div>
+            <div
+                style="display: flex; flex-direction: column; gap: 10px; font-size: 0.85rem; background: rgba(15, 23, 42, 0.4); padding: 12px; border-radius: 12px; border: 1px solid var(--border-color);">
+                <div style="display: flex; gap: 10px; align-items: center;">
+                    <label style="color: var(--text-muted); width: 60px;">Color:</label>
+                    <input type="color" id="strokeColor" value="#ffffff"
+                        style="background: transparent; border: 1px solid rgba(255,255,255,0.2); border-radius: 4px; padding: 0; width: 40px; height: 24px; cursor: pointer;">
+                    <label style="color: var(--text-muted); margin-left: 10px;">Width:</label>
+                    <input type="number" id="strokeWidth" min="0" max="10" step="0.5" value="2"
+                        style="background: rgba(15, 23, 42, 0.8); color: white; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 2px 6px; width: 50px;">
+                </div>
+
+                <div style="display: flex; gap: 8px; margin-top: 4px;">
+                    <button id="btnStrokeModeRange" class="filter-btn run-btn"
+                        style="flex:1; padding: 4px; font-size: 0.75rem;"
+                        onclick="setStrokeMode('range')">Range</button>
+                    <button id="btnStrokeModeExact" class="filter-btn add-btn"
+                        style="flex:1; padding: 4px; font-size: 0.75rem;" onclick="setStrokeMode('exact')">Exact Value</button>
+                </div>
+
+                <div id="strokeRangeControls"
+                    style="display: flex; gap: 10px; align-items: center; margin-top: 4px;">
+                    <label style="color: var(--text-muted);">From:</label>
+                    <input type="number" id="strokeMin" min="0" max="100" value="90"
+                        style="background: rgba(15, 23, 42, 0.8); color: white; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 2px 6px; width: 50px;">
+                    <span style="color: var(--text-muted);">%</span>
+
+                    <label style="color: var(--text-muted); margin-left: 10px;">To:</label>
+                    <input type="number" id="strokeMax" min="0" max="100" value="100"
+                        style="background: rgba(15, 23, 42, 0.8); color: white; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 2px 6px; width: 50px;">
+                    <span style="color: var(--text-muted);">%</span>
+                </div>
+
+                <div id="strokeExactControls"
+                    style="display: none; align-items: center; gap: 10px; margin-top: 4px;">
+                    <label style="color: var(--text-muted);">Value:</label>
+                    <select id="strokeExactVal"
+                        style="background: rgba(15, 23, 42, 0.8); color: white; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 2px 6px; flex: 1;">
+                        <option value="">-- Select --</option>
+                    </select>
+                </div>
+
+                <div style="display: flex; gap: 8px; margin-top: 8px;">
+                    <button class="filter-btn add-btn" style="flex:1; padding: 6px;"
+                        onclick="applyStroke(false)">Off (Reset)</button>
+                    <button class="filter-btn run-btn" style="flex:1; padding: 6px;"
+                        onclick="applyStroke(true)">Apply</button>
+                </div>
+            </div>
+        </div>
+    </aside>
+</main>
+
+<!-- XAI Floating Panel: Local Dirty Discrete Center Decomposition (Rule
+     Explorer / Mitosis Engine). Opened by clicking any ambiguous-purity
+     sphere (0.3 <= purity <= 0.7) in the 3D plot, in ANY 4D frame — a
+     mechanism entirely separate from the global 4D time axis above. -->
+<div id="xaiPanel" class="xai-panel">
+    <div class="xai-panel-header">
+        <div class="xai-panel-title">
+            <span>🔬 Conjunctive Explorer</span>
+        </div>
+        <div class="xai-panel-close" onclick="closeXaiPanel()">×</div>
+    </div>
+    <div class="xai-panel-body">
+        <div id="xaiPanelInfo" class="xai-panel-info">
+            <!-- Center info injected here -->
+        </div>
+
+        <!-- Dedicated Mitosis Animation Stage -->
+        <div id="xaiMitosisContainer" class="xai-mitosis-container">
+            <canvas id="xaiMitosisCanvas" width="418" height="150"></canvas>
+        </div>
+
+        <div id="xaiFilterList" style="display: flex; flex-direction: column; gap: 8px;">
+            <!-- Filter candidates injected here -->
+        </div>
+    </div>
+</div>

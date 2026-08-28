@@ -7,7 +7,7 @@ import pandas as pd
 from .math import mutual_information, shannon_entropy
 from .permutation import marginal_permutation_test
 from .stats import benjamini_hochberg
-from .vis import humanize_col, humanize_val
+from .vis import humanize_col
 
 
 def compute_predictiveness_matrix(df: pd.DataFrame) -> Dict[str, Dict[str, float]]:
@@ -96,6 +96,7 @@ def mine_strong_links(
     fdr_q: float = 0.05,
     n_permutations: int = 200,
     random_state: int | None = 42,
+    translations: dict | None = None,
 ) -> Dict[str, Any]:
     """
     Mines mediator chains (input -> z1 [-> z2] -> target) whose EVERY edge is
@@ -120,6 +121,10 @@ def mine_strong_links(
     comparison direct edge, passed the significance test" — a chain that
     merely LOOKS bigger than a noisy direct estimate is no longer treated as
     a discovery.
+
+    `translations` is an optional dataset-specific display table (see
+    `vsf.vis.Translations`) used only for `path_labels`/`target_label`;
+    with no `translations`, those fall back to raw column names.
     """
     cols = df.columns.tolist()
     nmi = compute_predictiveness_matrix(df)
@@ -158,12 +163,12 @@ def mine_strong_links(
 
                     found_chains.append({
                         "type": "mediator_1",
-                        "type_label": "2 steps (1 mediator)",
+                        "type_label": "2 шага (1 медиатор)",
                         "input": inp,
                         "mediators": [z1],
                         "target": tgt,
                         "path": [inp, z1, tgt],
-                        "path_labels": [humanize_col(inp), humanize_col(z1), humanize_col(tgt)],
+                        "path_labels": [humanize_col(inp, translations), humanize_col(z1, translations), humanize_col(tgt, translations)],
                         "chain_score": float(chain_score),
                         "direct_nmi": float(direct_nmi),
                         "gain": float(gain),
@@ -197,12 +202,12 @@ def mine_strong_links(
 
                             found_chains.append({
                                 "type": "mediator_2",
-                                "type_label": "3 steps (2 mediators)",
+                                "type_label": "3 шага (2 медиатора)",
                                 "input": inp,
                                 "mediators": [z1, z2],
                                 "target": tgt,
                                 "path": [inp, z1, z2, tgt],
-                                "path_labels": [humanize_col(inp), humanize_col(z1), humanize_col(z2), humanize_col(tgt)],
+                                "path_labels": [humanize_col(inp, translations), humanize_col(z1, translations), humanize_col(z2, translations), humanize_col(tgt, translations)],
                                 "chain_score": float(chain_score),
                                 "direct_nmi": float(direct_nmi),
                                 "gain": float(gain),
@@ -228,7 +233,7 @@ def mine_strong_links(
 
     return {
         "target": target,
-        "target_label": humanize_col(target) if target != "all" else "Entire Dataset (All Pairs)",
+        "target_label": humanize_col(target, translations) if target != "all" else "Весь датасет (Все пары)",
         "min_nmi": min_nmi,
         "fdr_q": fdr_q,
         "total_found": len(deduped),

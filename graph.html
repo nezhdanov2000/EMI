@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -8,12 +9,15 @@
     <!-- Google Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@500;600;700;800&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@500;600;700;800&family=JetBrains+Mono:wght@400;600;700&display=swap"
+        rel="stylesheet">
 
     <!-- CSS -->
     <link rel="stylesheet" href="/static/css/styles.css">
     <link rel="stylesheet" href="/static/css/graph_reasoning.css?v=2026">
 </head>
+
 <body class="graph-reasoning-body">
 
     <header class="graph-header">
@@ -72,9 +76,10 @@
 
             <div class="panel-section controls-section">
                 <button id="btnRunInference" class="btn-primary glow-btn">🚀 Run Reasoning Inference</button>
-                <button id="btnOpenKB" class="btn-secondary glow-btn-alt" style="margin-top: 10px;">📚 Super-Links Catalog</button>
+                <button id="btnOpenKB" class="btn-secondary glow-btn-alt" style="margin-top: 10px;">📚 Super-Links
+                    Catalog</button>
             </div>
-            
+
             <div class="panel-section playback-controls" style="display: none;" id="playbackControls">
                 <div class="playback-buttons">
                     <button id="btnPrevPhase" class="btn-icon" title="Previous Phase">⏮️</button>
@@ -83,11 +88,11 @@
                 </div>
                 <div class="phase-indicator" id="phaseIndicator">Phase 1: Knowledge Base</div>
             </div>
-            
+
             <!-- Result Summary Card -->
             <div class="panel-section summary-section" id="summarySection" style="display: none;">
                 <div class="section-title">Inference Summary</div>
-                
+
                 <div class="verdict-banner" id="verdictBanner">
                     <div class="verdict-label">Target Prediction:</div>
                     <div class="verdict-value" id="verdictValue">Poisonous (p)</div>
@@ -126,7 +131,7 @@
                 <div class="layer-header col-target">TARGET</div>
             </div>
         </section>
-        
+
         <!-- Interactive Node Popover / Inspector -->
         <div id="nodePopover" class="node-popover hidden">
             <div class="popover-header">
@@ -169,7 +174,8 @@
                     <button id="btnMineLinks" class="btn-primary">🔍 Mine All Links</button>
                 </div>
                 <div class="kb-results" id="kbResults">
-                    <div class="kb-empty-state">Click "Mine All Links" to find the strongest logical reasoning chains (up to 3 layers) in the dataset.</div>
+                    <div class="kb-empty-state">Click "Mine All Links" to find the strongest logical reasoning chains
+                        (up to 3 layers) in the dataset.</div>
                 </div>
             </div>
         </div>
@@ -177,4 +183,5 @@
 
     <script src="/static/js/graph_reasoning.js?v=2026" defer></script>
 </body>
+
 </html>

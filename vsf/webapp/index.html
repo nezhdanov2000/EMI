@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Visual Sufficiency Framework (VSF) — 3D Visualizer</title>
+
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap"
+        rel="stylesheet">
+
+    <!-- Plotly.js -->
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+
+    <link rel="stylesheet" href="/static/css/styles.css?v=4240">
+    <script src="/static/js/app.js?v=4240" defer></script>
+</head>
+
+<body>
+
+    <header>
+        <div class="brand">
+            <div class="badge-logo">VSF</div>
+            <div class="brand-title">Visual Sufficiency Framework</div>
+        </div>
+        <div class="header-status" style="display: flex; gap: 16px; align-items: center;">
+            <a href="/graph.html" style="color: #e2e2e8; text-decoration: none; font-size: 0.9rem; padding: 6px 12px; background: rgba(255,255,255,0.05); border-radius: 6px; border: 1px solid rgba(255,255,255,0.1); transition: background 0.2s;">🕸️ Граф рассуждений</a>
+            <div id="scenarioPill" class="scenario-pill SCENARIO_A">
+                <span id="scenarioText">Scenario A: Minimalist</span>
+            </div>
+        </div>
+    </header>
+
+    <main>
+        <!-- Master Panel: Insights Catalog -->
+        <aside class="catalog-sidebar">
+
+            <!-- Main Accordion Header for Search -->
+            <div class="main-acc-header" id="headerSearch" onclick="toggleMainAcc('search')">
+                <div class="main-acc-title">🔍 Filter Search</div>
+                <div class="main-acc-icon">▶</div>
+            </div>
+            <!-- Main Accordion Content for Search -->
+            <div class="main-acc-content" id="contentSearch">
+                <div class="filter-ui-container">
+                    <div style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 12px;">
+                        Create a combination of conditions (AND) for analysis.
+                    </div>
+                    <div id="filterRowsContainer" style="display: flex; flex-direction: column; gap: 8px;">
+                        <!-- Filter rows injected by JS -->
+                    </div>
+                    <div style="display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap;">
+                        <button class="filter-btn add-btn" onclick="addFilterRow()">+ Condition</button>
+                        <button class="filter-btn run-btn" onclick="runCompositeAnalysis()">Analyze</button>
+                    </div>
+                    <!-- Place for history to render for composite -->
+                    <div id="compositeHistoryContainer" class="history-list" style="margin-top: 16px;"></div>
+                </div>
+            </div>
+
+            <!-- Main Accordion Header for Catalog -->
+            <div class="main-acc-header open" id="headerCatalog" onclick="toggleMainAcc('catalog')">
+                <div class="main-acc-title">📚 Insights Catalog</div>
+                <div class="main-acc-icon">▶</div>
+            </div>
+            <!-- Main Accordion Content for Catalog -->
+            <div class="main-acc-content open" id="contentCatalog">
+                <div class="catalog-subtitle" style="padding: 0 1.5rem 0.5rem 1.5rem;">Auto-Discovery (Propositionalization)</div>
+                <div id="catalogAccordion" class="catalog-accordion">
+                    <div style="color: var(--text-dim); font-size: 0.85rem; padding: 1rem;">Loading dataset structure...</div>
+                </div>
+            </div>
+
+            <!-- Main Accordion Header for Top Insights -->
+            <div class="main-acc-header" id="headerTop" onclick="toggleMainAcc('top')">
+                <div class="main-acc-title">🏆 Top Insights (NMI ≥ 75%)</div>
+                <div class="main-acc-icon">▶</div>
+            </div>
+            <!-- Main Accordion Content for Top Insights -->
+            <div class="main-acc-content" id="contentTop">
+                <div class="catalog-subtitle" style="padding: 0 1.5rem 0.5rem 1.5rem;">Deterministic Laws (NMI ≥ 75%)</div>
+                <div id="topCatalogAccordion" class="catalog-accordion">
+                    <div style="color: var(--text-dim); font-size: 0.85rem; padding: 1rem;">Loading top insights...</div>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Visualization Area -->
+        <section class="viz-viewport">
+            <div id="loader" class="loader-overlay active">
+                <div class="spinner"></div>
+                <div style="font-size: 0.9rem; color: #94a3b8;">Computing Mutual Information & Permutations...</div>
+            </div>
+
+            <div class="viewport-toolbar">
+                <div style="display: flex; gap: 1.25rem; align-items: center; width: 100%; flex-wrap: wrap;">
+                    <div
+                        style="font-weight: 600; font-size: 0.9rem; color: #f8fafc; border-right: 1px solid var(--border-color); padding-right: 1.25rem;">
+                        📊 VSF Metrics</div>
+                    <div style="display: flex; gap: 1.25rem; flex: 1; flex-wrap: wrap;">
+                        <div style="display: flex; align-items: baseline; gap: 6px;"
+                            title="Normalized Mutual Information (NMI) — predictive power of discrete centers relative to target (0% = chaos, 100% = exact separation)">
+                            <span style="font-size: 0.75rem; color: var(--text-dim);">NMI (Association):</span>
+                            <strong id="val-nmi" style="color: var(--accent-cyan); font-size: 1rem;">-</strong>
+                        </div>
+                        <div style="display: flex; align-items: baseline; gap: 6px;"
+                            title="Target Loss (100% - NMI) — loss of target information. Higher values indicate mixed classes in centers">
+                            <span style="font-size: 0.75rem; color: var(--text-dim);">Target Loss:</span>
+                            <strong id="val-loss" style="color: var(--amber); font-size: 1rem;">-</strong>
+                        </div>
+                        <div style="display: flex; align-items: baseline; gap: 6px;"
+                            title="Visual Information Ratio (VIR) — fraction of dataset information captured by this projection">
+                            <span style="font-size: 0.75rem; color: var(--text-dim);">VIR (Axis Coverage):</span>
+                            <strong id="val-vir" style="color: var(--green); font-size: 1rem;">-</strong>
+                        </div>
+                        <div style="display: flex; align-items: baseline; gap: 6px;"
+                            title="Optimal number of visual axes (dimension d*)">
+                            <span style="font-size: 0.75rem; color: var(--text-dim);">Optimal Axes (d*):</span>
+                            <strong id="val-dstar" style="color: var(--accent-purple); font-size: 1rem;">-</strong>
+                        </div>
+                        <div style="display: flex; align-items: baseline; gap: 6px;"
+                            title="Statistical significance of association (permutation test)">
+                            <span style="font-size: 0.75rem; color: var(--text-dim);">p-value:</span>
+                            <strong id="val-pval" style="color: var(--text-muted); font-size: 1rem;">-</strong>
+                        </div>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 8px; border-left: 1px solid var(--border-color); padding-left: 1rem;">
+                        <span style="font-size: 0.75rem; color: var(--text-dim); font-weight: 500;">Dimensionality:</span>
+                        <div id="dimButtonsGroup" class="view-toggle-group" style="padding: 2px;"></div>
+                    </div>
+                    <div style="font-size: 0.85rem; color: var(--text-dim);">
+                        Total Samples: <strong id="totalSamplesVal" style="color: #fff;">8,124</strong>
+                    </div>
+                </div>
+            </div>
+
+            <div id="plot-container"></div>
+
+            <!-- 4D Slice Controller -->
+            <div id="slice-controller" class="slice-controller" style="display: none;">
+                <div class="slice-label">
+                    <span>🎞️</span>
+                    <span>4D Slice: <strong id="slice-axis-name">—</strong></span>
+                </div>
+                <div id="slice-tabs" class="slice-tabs">
+                    <!-- Tabs injected by JS -->
+                </div>
+            </div>
+        </section>
+
+        <!-- Visual Settings Sidebar -->
+        <aside class="settings-sidebar">
+            <div
+                style="font-size: 1.1rem; font-weight: 600; color: #f8fafc; padding-bottom: 0.5rem; border-bottom: 1px solid var(--border-color);">
+                Display Settings
+            </div>
+
+            <!-- Display Mode -->
+            <div>
+                <div style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 8px;">Space Representation</div>
+                <div class="view-toggle-group">
+                    <button class="toggle-btn active" id="btn-grid" style="width: 100%;">📐 Discrete Centers</button>
+                </div>
+            </div>
+
+            <!-- Stroke Settings -->
+            <div>
+                <div style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 8px;">✨ Purity Contour (Focus)</div>
+                <div
+                    style="display: flex; flex-direction: column; gap: 10px; font-size: 0.85rem; background: rgba(15, 23, 42, 0.4); padding: 12px; border-radius: 12px; border: 1px solid var(--border-color);">
+                    <div style="display: flex; gap: 10px; align-items: center;">
+                        <label style="color: var(--text-muted); width: 60px;">Color:</label>
+                        <input type="color" id="strokeColor" value="#ffffff"
+                            style="background: transparent; border: 1px solid rgba(255,255,255,0.2); border-radius: 4px; padding: 0; width: 40px; height: 24px; cursor: pointer;">
+                        <label style="color: var(--text-muted); margin-left: 10px;">Width:</label>
+                        <input type="number" id="strokeWidth" min="0" max="10" step="0.5" value="2"
+                            style="background: rgba(15, 23, 42, 0.8); color: white; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 2px 6px; width: 50px;">
+                    </div>
+
+                    <div style="display: flex; gap: 8px; margin-top: 4px;">
+                        <button id="btnStrokeModeRange" class="filter-btn run-btn"
+                            style="flex:1; padding: 4px; font-size: 0.75rem;"
+                            onclick="setStrokeMode('range')">Range</button>
+                        <button id="btnStrokeModeExact" class="filter-btn add-btn"
+                            style="flex:1; padding: 4px; font-size: 0.75rem;" onclick="setStrokeMode('exact')">Exact Value</button>
+                    </div>
+
+                    <div id="strokeRangeControls"
+                        style="display: flex; gap: 10px; align-items: center; margin-top: 4px;">
+                        <label style="color: var(--text-muted);">From:</label>
+                        <input type="number" id="strokeMin" min="0" max="100" value="90"
+                            style="background: rgba(15, 23, 42, 0.8); color: white; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 2px 6px; width: 50px;">
+                        <span style="color: var(--text-muted);">%</span>
+
+                        <label style="color: var(--text-muted); margin-left: 10px;">To:</label>
+                        <input type="number" id="strokeMax" min="0" max="100" value="100"
+                            style="background: rgba(15, 23, 42, 0.8); color: white; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 2px 6px; width: 50px;">
+                        <span style="color: var(--text-muted);">%</span>
+                    </div>
+
+                    <div id="strokeExactControls"
+                        style="display: none; align-items: center; gap: 10px; margin-top: 4px;">
+                        <label style="color: var(--text-muted);">Value:</label>
+                        <select id="strokeExactVal"
+                            style="background: rgba(15, 23, 42, 0.8); color: white; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 2px 6px; flex: 1;">
+                            <option value="">-- Select --</option>
+                        </select>
+                    </div>
+
+                    <div style="display: flex; gap: 8px; margin-top: 8px;">
+                        <button class="filter-btn add-btn" style="flex:1; padding: 6px;"
+                            onclick="applyStroke(false)">Off (Reset)</button>
+                        <button class="filter-btn run-btn" style="flex:1; padding: 6px;"
+                            onclick="applyStroke(true)">Apply</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Noise Reduction -->
+            <div>
+                <div style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 8px;">🧹 Noise Reduction (Outliers)</div>
+                <div
+                    style="display: flex; flex-direction: column; gap: 10px; font-size: 0.85rem; background: rgba(15, 23, 42, 0.4); padding: 12px; border-radius: 12px; border: 1px solid var(--border-color);">
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <label style="color: var(--text-muted);">Threshold (min. samples):</label>
+                        <input type="number" id="noiseThreshold" min="0" max="1000" value="5"
+                            style="background: rgba(15, 23, 42, 0.8); color: white; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 2px 6px; width: 60px;">
+                    </div>
+
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 4px;">
+                        <label style="color: var(--text-muted);">Noise Opacity:</label>
+                        <input type="range" id="noiseOpacity" min="0" max="1" step="0.1" value="0.2"
+                            style="width: 100px;">
+                    </div>
+
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 4px;">
+                        <label style="color: var(--text-muted);">Outlier Shape:</label>
+                        <select id="noiseShape"
+                            style="background: rgba(15, 23, 42, 0.8); color: white; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 2px 6px;">
+                            <option value="circle-open">⭕ Open Circle</option>
+                            <option value="x">❌ Cross</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+        </aside>
+    </main>
+
+    <!-- XAI Floating Panel -->
+    <div id="xaiPanel" class="xai-panel">
+        <div class="xai-panel-header">
+            <div class="xai-panel-title">
+                <span>🔬 Conjunctive Explorer</span>
+            </div>
+            <div class="xai-panel-close" onclick="closeXaiPanel()">×</div>
+        </div>
+        <div class="xai-panel-body">
+            <div id="xaiPanelInfo" class="xai-panel-info">
+                <!-- Center info injected here -->
+            </div>
+
+            <!-- Dedicated Mitosis Animation Stage -->
+            <div id="xaiMitosisContainer" class="xai-mitosis-container">
+                <canvas id="xaiMitosisCanvas" width="418" height="150"></canvas>
+            </div>
+
+            <div id="xaiFilterList" style="display: flex; flex-direction: column; gap: 8px;">
+                <!-- Filter candidates injected here -->
+            </div>
+        </div>
+    </div>
+
+</body>
+</html>

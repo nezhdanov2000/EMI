@@ -112,6 +112,41 @@ class TestServerThreadSafetyAndCORS(_ServerTestBase):
         self.assertNotEqual(results[0]["target_name"], results[1]["target_name"])
 
 
+class TestMushroomTranslationsWiring(_ServerTestBase):
+    """
+    Regression coverage for the library/example-vocabulary decoupling:
+    `vsf.vis` no longer carries a hardcoded `MUSHROOM_TRANSLATIONS` dict —
+    `server.py` now imports it from `examples.mushroom_demo` and passes it
+    explicitly as `translations` to every `vsf` call that renders a label.
+    A broken import (e.g. `examples/` not resolvable, wrong package
+    shape) would raise at `import server` time, failing every test in this
+    module at collection — this class additionally asserts the resulting
+    labels are actually humanized, not just that import didn't crash.
+    """
+
+    def test_server_imports_mushroom_translations_from_examples_package(self):
+        from examples.mushroom_demo import MUSHROOM_TRANSLATIONS
+        self.assertIs(srv.MUSHROOM_TRANSLATIONS, MUSHROOM_TRANSLATIONS)
+        self.assertIn("odor", srv.MUSHROOM_TRANSLATIONS["columns"])
+
+    def test_columns_endpoint_uses_mushroom_translations_for_labels(self):
+        resp = self._get("/api/columns")
+        data = json.loads(resp.read())
+        odor_col = next(c for c in data["columns"] if c["id"] == "odor")
+        # "Odor (odor)" per vsf.vis.humanize_col, not the raw "odor".
+        self.assertEqual(odor_col["label"], "Odor (odor)")
+        foul_criterion = next(c for c in odor_col["criteria"] if c["id"] == "f")
+        self.assertEqual(foul_criterion["label"], "foul")
+
+    def test_mushroom_endpoint_payload_uses_humanized_target_name(self):
+        resp = self._get("/api/mushroom", timeout=60)
+        data = json.loads(resp.read())
+        # target_name="class" -> humanize_col("class", MUSHROOM_TRANSLATIONS)
+        # == "Edibility (class)", proving `translations` reached
+        # `prepare_visualization_payload` inside `_handle_mushroom_api`.
+        self.assertEqual(data["target_name"], "Edibility (class)")
+
+
 class TestTopColumnsTwoStagePipeline(_ServerTestBase):
 
     def test_top_columns_reports_gating_metadata_and_significant_criteria_only(self):

@@ -1,41 +1,109 @@
 # Visual Sufficiency Framework (VSF)
 
-VSF is an information-theoretic framework for adaptive visualization dimensionality selection. It analyzes a dataset and automatically determines the minimal necessary and sufficient number of visual channels (from 2D to 7D) required to faithfully represent the data structure.
+VSF — это информационно-теоретическая система адаптивного выбора размерности визуализации. Она анализирует датасет и автоматически определяет минимально необходимое и достаточное количество визуальных каналов (от 2D до 7D) для отображения структуры данных.
 
-## Project Structure
+## Структура проекта
 
-*   `vsf/` — Mathematical core of the VSF library. Contains discretization algorithms, mutual information calculations, FDR control, and dimensionality routing.
-*   `server.py` — Local web server and REST API serving the interactive visualization.
-*   `index.html` — Interactive visualization web interface (3D Scatter Plot powered by Plotly.js).
-*   `graph.html` — NMI reasoning graph and logical inference interface.
-*   `static/` — Static assets (CSS, JS).
-*   `data/` — Dataset directory (e.g., `mushrooms.csv`).
+*   `vsf/` — Устанавливаемая библиотека VSF (`pip install -e .`). Математическое ядро: алгоритмы дискретизации, вычисления взаимной информации, выбора размерности, майнинга и визуализации. Не содержит словаря конкретного датасета — см. `translations` ниже. Включает `vsf/dashboard.py` (`export_full_dashboard` — автономный офлайн-экспорт всего интерактивного веб-интерфейса в один HTML-файл, см. раздел ниже) и упакованные вместе с библиотекой ассеты `vsf/templates/` (CSS/JS/HTML-шаблоны, которые `export_full_dashboard` читает через `importlib.resources`).
+*   `examples/mushroom_demo.py` — Специфичные для демо-датасета (UCI Mushroom) человекочитаемые названия столбцов/значений (`MUSHROOM_TRANSLATIONS`). Не часть библиотеки `vsf`; это то, что должен предоставить *вызывающий код* для своего датасета.
+*   `server.py` — Локальный веб-сервер и REST API, который обслуживает визуализацию демо-датасета; импортирует `MUSHROOM_TRANSLATIONS` из `examples/` и передаёт его в `vsf` как `translations`.
+*   `index.html` — Веб-интерфейс визуализатора (3D Scatter Plot с использованием Plotly.js).
+*   `static/` — Статические ресурсы (CSS, JS).
+*   `data/` — Директория с наборами данных (например, `mushrooms.csv`).
+*   `tests/` — Регрессионный набор pytest (не входит в устанавливаемый пакет).
+*   `pyproject.toml` — Единственный источник метаданных пакета (заменил `setup.py`).
 
-## Quick Start
+## Быстрый запуск (Quick Start)
 
-### Requirements
-* Python 3.8+
-* Dependencies (from `setup.py`): `numpy`, `scipy`, `pandas`.
+### Требования
+* Python **3.10+** (не 3.8 — часть модулей использует синтаксис `X | None`
+  (PEP 604) в аннотациях без `from __future__ import annotations`, что
+  падает с `TypeError` при импорте на 3.8/3.9).
+* Зависимости объявлены в `pyproject.toml`: `numpy`, `pandas`.
+  Опциональные extras: `vsf[gpu]` (GPU-бэкенд через `cupy` —
+  `vsf/backend.py` использует его как необязательный, отключаемый бэкенд с
+  откатом на `numpy`) и `vsf[test]` (`pytest`, для запуска `tests/`).
 
-You can install dependencies using `pip`:
+Установите пакет в editable-режиме (для воспроизводимости результатов
+статьи; публикация в PyPI не предполагается):
 ```bash
 pip install -e .
+# или, вместе с тестовыми зависимостями:
+pip install -e ".[test]"
 ```
 
-### Starting the Server
-Start the local server using Python:
+### Запуск сервера
+Запустите локальный сервер с помощью Python (из корня репозитория,
+после `pip install -e .`):
 ```bash
 python server.py
 ```
 
-Once the server is running, open your browser and navigate to: [http://localhost:8050](http://localhost:8050)
+После запуска сервера откройте браузер и перейдите по адресу: [http://localhost:8050](http://localhost:8050)
 
-To open the Reasoning Graph interface, go to: [http://localhost:8050/graph.html](http://localhost:8050/graph.html)
+### Использование `vsf` с собственным датасетом
+Библиотека не привязана к датасету грибов — она принимает опциональный
+`translations` (см. `vsf.vis.Translations`) для человекочитаемых
+подписей; без него используются сырые значения из данных:
+```python
+import vsf
 
-## Features
-*   **Perceptually-Matched Discretization (PMD):** Optimal quantization of continuous features constrained by visual channel capacities based on Rate-Distortion Theory.
-*   **Adaptive Visual Routing (AVR):** Automatic selection of 1 to 7 axes based on Conditional Permutation Testing, FDR Control (Benjamini-Hochberg), and Normalized Mutual Information (NMI).
-*   **Explainable AI (XAI):** Built-in textual warnings when data complexity exceeds 7D visual bandwidth, or when selected candidate features are statistically indistinguishable from noise.
-*   **Graph Reasoning & Inference:** Automatic mining of statistically sound mediator chains and logical inference paths across feature hierarchies.
+# Без translations: подписи = сырые значения/названия столбцов.
+payload = vsf.prepare_visualization_payload(res, X, Z, feature_names=feature_names)
 
-For detailed theoretical derivations and algorithmic specifications, see `Project_Master_Document.md`.
+# С translations (по образцу examples/mushroom_demo.py) — свой словарь
+# для своего датасета, не модификация библиотеки:
+my_translations = {"columns": {...}, "values": {...}}
+payload = vsf.prepare_visualization_payload(
+    res, X, Z, feature_names=feature_names, translations=my_translations
+)
+```
+
+### Автономный HTML-дашборд (`vsf.export_full_dashboard`)
+Весь интерактивный веб-интерфейс (`index.html` + `graph.html` +
+`static/` + `server.py`) можно упаковать в **один самодостаточный
+HTML-файл**, который открывается локально (`file:///...`) без запуска
+`server.py` — никаких CORS-ограничений и сетевых запросов к бэкенду,
+только Plotly.js и Google Fonts с CDN:
+```python
+import pandas as pd
+import vsf
+
+df = pd.read_csv("data/mushrooms.csv")
+html = vsf.export_full_dashboard(df, target="class", criterion="p")
+open("dashboard.html", "w", encoding="utf-8").write(html)
+```
+Получившийся файл включает: интерактивное переключение осей X/Y/Z и
+режимов 1D/2D/3D/4D на встроенных данных, панель Rule Explorer
+("грязные" дискретные центры + майнинг конъюнктивных правил), XAI HUD
+(сценарий A/B/C/D, `d*`, VIR, объяснение), а также полностью офлайновый
+Graph Inference (цепочки логического вывода и каталог супер-связей,
+портированные из `graph.html`).
+
+**Важные, осознанные ограничения** (в отличие от живого `server.py`):
+*   В один экспорт "запекается" **один** сценарий `target`/`criterion` —
+    остальные листья каталога показаны для справки, но неактивны. Нужен
+    другой сценарий — вызовите `export_full_dashboard` ещё раз с другими
+    `target`/`criterion`.
+*   Композитный AND-фильтр ("Filter Search") не портирован — он
+    перезапускает полный permutation-tested отбор признаков AVR на
+    произвольном пользовательском условии, что нельзя исчерпывающе
+    предвычислить в статическом файле. Для этого используйте живой
+    `server.py`.
+
+Вся статистика (отбор признаков, чистота, скорректированная по
+Миллеру-Мэдоу NMI, Benjamini-Hochberg-значимость) считается **в Python**
+при вызове `export_full_dashboard` — встроенный JavaScript никогда не
+пересчитывает p-value или переобучает модель, только фильтрует/считает
+уже провалидированные данные (см. docstring `vsf/dashboard.py`).
+
+## Особенности
+*   **Перцептивно-Согласованная Дискретизация (PMD):** Оптимальное квантование непрерывных признаков с учетом пропускной способности визуальных каналов.
+*   **Adaptive Visual Routing (AVR):** Автоматический выбор от 1 до 7 осей на основе Пермутационного Теста и метрики Взаимной Информации (Mutual Information).
+*   **Объяснимый ИИ (XAI):** Система выводит текстовые предупреждения, если структура данных слишком сложна для визуализации в 7D, или если выбранные признаки являются шумом.
+
+Подробное научное описание алгоритмов смотрите в файле `Project_Master_Document.md`.
+
+## Лицензия
+
+MIT — см. файл `LICENSE`.

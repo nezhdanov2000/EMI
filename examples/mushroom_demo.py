@@ -1,0 +1,120 @@
+"""
+Dataset-specific display metadata for the demo bundled with this repository
+(UCI Mushroom dataset, data/mushrooms.csv).
+
+This file — not the `vsf` package — is where dataset vocabulary belongs.
+`vsf.vis`, `vsf.mining`, `vsf.graph_miner`, and `vsf.graph_inference` accept
+an optional `translations` argument shaped like `MUSHROOM_TRANSLATIONS`
+below (see `vsf.vis.Translations`); pass it to get human-readable column
+and value labels for this specific dataset. Every one of those functions
+works perfectly well with no `translations` at all — they fall back to the
+dataset's own raw column/value strings — so a different dataset needs its
+own small file like this one, not a change to the library.
+
+`server.py` (the demo web app in this repository) imports
+`MUSHROOM_TRANSLATIONS` from here and threads it through every call into
+`vsf` that renders a label for the end user.
+"""
+
+MUSHROOM_TRANSLATIONS = {
+    "columns": {
+        "class": "Edibility",
+        "cap-shape": "Cap Shape",
+        "cap-surface": "Cap Surface",
+        "cap-color": "Cap Color",
+        "bruises": "Bruises",
+        "odor": "Odor",
+        "gill-attachment": "Gill Attachment",
+        "gill-spacing": "Gill Spacing",
+        "gill-size": "Gill Size",
+        "gill-color": "Gill Color",
+        "stalk-shape": "Stalk Shape",
+        "stalk-root": "Stalk Root",
+        "stalk-surface-above-ring": "Stalk Surface Above Ring",
+        "stalk-surface-below-ring": "Stalk Surface Below Ring",
+        "stalk-color-above-ring": "Stalk Color Above Ring",
+        "stalk-color-below-ring": "Stalk Color Below Ring",
+        "veil-type": "Veil Type",
+        "veil-color": "Veil Color",
+        "ring-number": "Ring Number",
+        "ring-type": "Ring Type",
+        "spore-print-color": "Spore Print Color",
+        "population": "Population",
+        "habitat": "Habitat",
+    },
+    "values": {
+        "class": {"e": "Edible (e)", "p": "Poisonous (p)"},
+        "cap-shape": {
+            "b": "bell", "c": "conical", "x": "convex", "f": "flat", "k": "knobbed", "s": "sunken"
+        },
+        "cap-surface": {
+            "f": "fibrous", "g": "grooves", "y": "scaly", "s": "smooth"
+        },
+        "cap-color": {
+            "n": "brown", "b": "buff", "c": "cinnamon", "g": "gray", "r": "green",
+            "p": "pink", "u": "purple", "e": "red", "w": "white", "y": "yellow"
+        },
+        "bruises": {"t": "bruises", "f": "no bruises"},
+        "odor": {
+            "a": "almond", "l": "anise", "c": "creosote", "y": "fishy",
+            "f": "foul", "m": "musty", "n": "none", "p": "pungent", "s": "spicy"
+        },
+        "gill-attachment": {
+            "a": "attached", "d": "descending", "f": "free", "n": "notched"
+        },
+        "gill-spacing": {
+            "c": "close", "w": "crowded", "d": "distant"
+        },
+        "gill-size": {
+            "b": "broad", "n": "narrow"
+        },
+        "gill-color": {
+            "k": "black", "n": "brown", "b": "buff", "h": "chocolate", "g": "gray",
+            "r": "green", "o": "orange", "p": "pink", "u": "purple", "e": "red", "w": "white", "y": "yellow"
+        },
+        "stalk-shape": {
+            "e": "enlarging", "t": "tapering"
+        },
+        "stalk-root": {
+            "b": "bulbous", "c": "club", "u": "cup", "e": "equal", "z": "rhizomorphs", "r": "rooted", "?": "missing"
+        },
+        "stalk-surface-above-ring": {
+            "f": "fibrous", "y": "scaly", "k": "silky", "s": "smooth"
+        },
+        "stalk-surface-below-ring": {
+            "f": "fibrous", "y": "scaly", "k": "silky", "s": "smooth"
+        },
+        "stalk-color-above-ring": {
+            "n": "brown", "b": "buff", "c": "cinnamon", "g": "gray", "o": "orange",
+            "p": "pink", "e": "red", "w": "white", "y": "yellow"
+        },
+        "stalk-color-below-ring": {
+            "n": "brown", "b": "buff", "c": "cinnamon", "g": "gray", "o": "orange",
+            "p": "pink", "e": "red", "w": "white", "y": "yellow"
+        },
+        "veil-type": {
+            "p": "partial", "u": "universal"
+        },
+        "veil-color": {
+            "n": "brown", "o": "orange", "w": "white", "y": "yellow"
+        },
+        "ring-number": {
+            "n": "none", "o": "one", "t": "two"
+        },
+        "ring-type": {
+            "c": "cobwebby", "e": "evanescent", "f": "flaring", "l": "large",
+            "n": "none", "p": "pendant", "s": "sheathing", "z": "zone"
+        },
+        "spore-print-color": {
+            "k": "black", "n": "brown", "b": "buff", "h": "chocolate",
+            "r": "green", "o": "orange", "u": "purple", "w": "white", "y": "yellow"
+        },
+        "population": {
+            "a": "abundant", "c": "clustered", "n": "numerous", "s": "scattered", "v": "several", "y": "solitary"
+        },
+        "habitat": {
+            "g": "grasses", "l": "leaves", "m": "meadows", "p": "paths",
+            "u": "urban", "w": "waste", "d": "woods"
+        },
+    }
+}

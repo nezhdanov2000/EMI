@@ -8,126 +8,66 @@ import numpy as np
 from typing import Dict, List, Optional, Union
 from .avr import AVRResult
 
-
-# Human-readable English translations for UCI Mushroom Dataset
-MUSHROOM_TRANSLATIONS = {
-    "columns": {
-        "class": "Edibility",
-        "cap-shape": "Cap Shape",
-        "cap-surface": "Cap Surface",
-        "cap-color": "Cap Color",
-        "bruises": "Bruises",
-        "odor": "Odor",
-        "gill-attachment": "Gill Attachment",
-        "gill-spacing": "Gill Spacing",
-        "gill-size": "Gill Size",
-        "gill-color": "Gill Color",
-        "stalk-shape": "Stalk Shape",
-        "stalk-root": "Stalk Root",
-        "stalk-surface-above-ring": "Stalk Surface Above Ring",
-        "stalk-surface-below-ring": "Stalk Surface Below Ring",
-        "stalk-color-above-ring": "Stalk Color Above Ring",
-        "stalk-color-below-ring": "Stalk Color Below Ring",
-        "veil-type": "Veil Type",
-        "veil-color": "Veil Color",
-        "ring-number": "Ring Number",
-        "ring-type": "Ring Type",
-        "spore-print-color": "Spore Print Color",
-        "population": "Population",
-        "habitat": "Habitat",
-    },
-    "values": {
-        "class": {"e": "Edible (e)", "p": "Poisonous (p)"},
-        "cap-shape": {
-            "b": "bell", "c": "conical", "x": "convex", "f": "flat", "k": "knobbed", "s": "sunken"
-        },
-        "cap-surface": {
-            "f": "fibrous", "g": "grooves", "y": "scaly", "s": "smooth"
-        },
-        "cap-color": {
-            "n": "brown", "b": "buff", "c": "cinnamon", "g": "gray", "r": "green",
-            "p": "pink", "u": "purple", "e": "red", "w": "white", "y": "yellow"
-        },
-        "bruises": {"t": "bruises", "f": "no bruises"},
-        "odor": {
-            "a": "almond", "l": "anise", "c": "creosote", "y": "fishy", 
-            "f": "foul", "m": "musty", "n": "none", "p": "pungent", "s": "spicy"
-        },
-        "gill-attachment": {
-            "a": "attached", "d": "descending", "f": "free", "n": "notched"
-        },
-        "gill-spacing": {
-            "c": "close", "w": "crowded", "d": "distant"
-        },
-        "gill-size": {
-            "b": "broad", "n": "narrow"
-        },
-        "gill-color": {
-            "k": "black", "n": "brown", "b": "buff", "h": "chocolate", "g": "gray",
-            "r": "green", "o": "orange", "p": "pink", "u": "purple", "e": "red", "w": "white", "y": "yellow"
-        },
-        "stalk-shape": {
-            "e": "enlarging", "t": "tapering"
-        },
-        "stalk-root": {
-            "b": "bulbous", "c": "club", "u": "cup", "e": "equal", "z": "rhizomorphs", "r": "rooted", "?": "missing"
-        },
-        "stalk-surface-above-ring": {
-            "f": "fibrous", "y": "scaly", "k": "silky", "s": "smooth"
-        },
-        "stalk-surface-below-ring": {
-            "f": "fibrous", "y": "scaly", "k": "silky", "s": "smooth"
-        },
-        "stalk-color-above-ring": {
-            "n": "brown", "b": "buff", "c": "cinnamon", "g": "gray", "o": "orange",
-            "p": "pink", "e": "red", "w": "white", "y": "yellow"
-        },
-        "stalk-color-below-ring": {
-            "n": "brown", "b": "buff", "c": "cinnamon", "g": "gray", "o": "orange",
-            "p": "pink", "e": "red", "w": "white", "y": "yellow"
-        },
-        "veil-type": {
-            "p": "partial", "u": "universal"
-        },
-        "veil-color": {
-            "n": "brown", "o": "orange", "w": "white", "y": "yellow"
-        },
-        "ring-number": {
-            "n": "none", "o": "one", "t": "two"
-        },
-        "ring-type": {
-            "c": "cobwebby", "e": "evanescent", "f": "flaring", "l": "large",
-            "n": "none", "p": "pendant", "s": "sheathing", "z": "zone"
-        },
-        "spore-print-color": {
-            "k": "black", "n": "brown", "b": "buff", "h": "chocolate", 
-            "r": "green", "o": "orange", "u": "purple", "w": "white", "y": "yellow"
-        },
-        "population": {
-            "a": "abundant", "c": "clustered", "n": "numerous", "s": "scattered", "v": "several", "y": "solitary"
-        },
-        "habitat": {
-            "g": "grasses", "l": "leaves", "m": "meadows", "p": "paths", 
-            "u": "urban", "w": "waste", "d": "woods"
-        },
-    }
-}
+# Shape of an optional dataset translation table accepted throughout this
+# module: {"columns": {raw_col_name: display_name},
+#          "values": {raw_col_name: {raw_value_str: display_value}}}.
+# This module carries NO built-in dataset vocabulary of its own — it is
+# generic over whatever dataset it is pointed at. For a worked example (the
+# UCI Mushroom dataset translations previously hardcoded here), see
+# `examples/mushroom_demo.py`; pass that dict as `translations` to get the
+# old behavior back. With no `translations` supplied, every function in this
+# module falls back to the raw column/value strings unchanged.
+Translations = Dict[str, Dict]
 
 
-def humanize_val(col_name: str, val: str) -> str:
-    """Translates raw category code to human readable name if available."""
+def humanize_val(col_name: str, val, translations: Optional[Translations] = None) -> str:
+    """
+    Translates a raw category code to a human-readable display value, if a
+    `translations` table is supplied (see `Translations` above). With no
+    `translations` (the default), returns the raw value as a string.
+    """
     val_str = str(val)
-    if col_name in MUSHROOM_TRANSLATIONS["values"]:
-        return MUSHROOM_TRANSLATIONS["values"][col_name].get(val_str, val_str)
-    if "class" in col_name and val_str in MUSHROOM_TRANSLATIONS["values"]["class"]:
-        return MUSHROOM_TRANSLATIONS["values"]["class"][val_str]
+    if not translations:
+        return val_str
+    values_for_col = translations.get("values", {}).get(col_name)
+    if values_for_col:
+        return values_for_col.get(val_str, val_str)
     return val_str
 
 
-def humanize_col(col_name: str) -> str:
-    """Translates column name to human readable name."""
-    human_name = MUSHROOM_TRANSLATIONS["columns"].get(col_name, col_name)
-    return f"{human_name} ({col_name})" if human_name != col_name else col_name
+def humanize_col(col_name: str, translations: Optional[Translations] = None) -> str:
+    """
+    Translates a column name to a "Display Name (raw_name)" label, if a
+    `translations` table is supplied (see `Translations` above). With no
+    `translations` (the default), returns `col_name` unchanged.
+    """
+    if not translations:
+        return col_name
+    display_name = translations.get("columns", {}).get(col_name, col_name)
+    return f"{display_name} ({col_name})" if display_name != col_name else col_name
+
+
+def catalog_from_dataframe(df, translations: Optional[Translations] = None) -> List[Dict]:
+    """
+    Builds the `{id, label, criteria: [{id, label}, ...]}` catalog listing
+    — every column of `df` paired with its observed unique values — shared
+    by the live server's `/api/columns` endpoint and `vsf.dashboard`'s
+    static catalog tree, so both stay byte-for-byte consistent instead of
+    hand-rolling this loop twice. `df` is any `pandas.DataFrame`; humanized
+    via `humanize_val`/`humanize_col` when `translations` is supplied, and
+    falls back to raw column/value strings with none, matching every other
+    function in this module.
+    """
+    catalog = []
+    for col in df.columns:
+        label = humanize_col(col, translations)
+        unique_vals = df[col].dropna().unique().tolist()
+        criteria = [
+            {"id": str(val), "label": humanize_val(col, str(val), translations)}
+            for val in unique_vals
+        ]
+        catalog.append({"id": col, "label": label, "criteria": criteria})
+    return catalog
 
 
 def _axis_fallback_indices(selected_idx: List[int], n_features: int, count: int) -> List[int]:
@@ -171,7 +111,12 @@ def _axis_fallback_indices(selected_idx: List[int], n_features: int, count: int)
     return idx_list
 
 
-def target_conditioned_sort(x_vals: np.ndarray, z_vals: np.ndarray, col_name: str = ""):
+def target_conditioned_sort(
+    x_vals: np.ndarray,
+    z_vals: np.ndarray,
+    col_name: str = "",
+    translations: Optional[Translations] = None,
+):
     """
     Sorts categories of x_vals based on their association with the target z_vals.
     Uses deterministic tie-breaking (by frequency and lexical order) to prevent spatial warping.
@@ -181,21 +126,21 @@ def target_conditioned_sort(x_vals: np.ndarray, z_vals: np.ndarray, col_name: st
     """
     _, z_idx = np.unique(z_vals, return_inverse=True)
     x_unique, x_counts = np.unique(x_vals, return_counts=True)
-    
+
     cat_stats = []
     for c, cnt in zip(x_unique, x_counts):
         mask = (x_vals == c)
         score = float(np.mean(z_idx[mask])) if np.any(mask) else 0.0
         cat_stats.append((score, -int(cnt), str(c), c))
-        
+
     cat_stats.sort(key=lambda item: (item[0], item[1], item[2]))
     x_sorted = [item[3] for item in cat_stats]
-    
+
     x_to_num = {val: i for i, val in enumerate(x_sorted)}
     x_num = np.array([x_to_num[val] for val in x_vals])
-    
-    # Translate tick labels into human readable Russian words
-    x_labels = [humanize_val(col_name, v) for v in x_sorted]
+
+    # Translate tick labels via the supplied translation table, if any.
+    x_labels = [humanize_val(col_name, v, translations) for v in x_sorted]
     return x_num, x_labels
 
 
@@ -207,10 +152,17 @@ def prepare_visualization_payload(
     max_display_samples: int = 10000,
     target_name: str = "class",
     sort_Z: Optional[np.ndarray] = None,
+    translations: Optional[Translations] = None,
 ) -> Dict:
     """
-    Prepares a structured visualization payload with human readable Russian axis titles,
-    category labels, color mappings, and cluster occupancy density counts.
+    Prepares a structured visualization payload with axis titles, category
+    labels, color mappings, and cluster occupancy density counts.
+
+    `translations` is an optional dataset-specific display table (see the
+    `Translations` type alias above) — pass it to get human-readable column
+    and value labels; with no `translations`, every label in the payload is
+    the raw column/value string as it appears in the input data. This
+    function has no built-in knowledge of any particular dataset.
     """
     X_arr = np.asarray(X_matrix)
     Z_arr = np.asarray(Z_target).ravel()
@@ -254,23 +206,23 @@ def prepare_visualization_payload(
     w_vals = X_sub[:, w_col_idx] if has_4d else None
 
     # Human-readable value strings
-    x_human = [humanize_val(x_name, v) for v in x_vals]
-    y_human = [humanize_val(y_name, v) for v in y_vals]
-    z_human = [humanize_val(z_name, v) for v in z_vals]
-    w_human = [humanize_val(w_name, v) for v in w_vals] if has_4d else None
-    z_target_human = [humanize_val(target_name, v) for v in Z_sub]
+    x_human = [humanize_val(x_name, v, translations) for v in x_vals]
+    y_human = [humanize_val(y_name, v, translations) for v in y_vals]
+    z_human = [humanize_val(z_name, v, translations) for v in z_vals]
+    w_human = [humanize_val(w_name, v, translations) for v in w_vals] if has_4d else None
+    z_target_human = [humanize_val(target_name, v, translations) for v in Z_sub]
 
     # Target-Conditioned Categorical Ordering using canonical sort_Z_sub
-    x_num, x_ticks = target_conditioned_sort(x_vals, sort_Z_sub, col_name=x_name)
-    y_num, y_ticks = target_conditioned_sort(y_vals, sort_Z_sub, col_name=y_name)
-    z_num, z_ticks = target_conditioned_sort(z_vals, sort_Z_sub, col_name=z_name)
+    x_num, x_ticks = target_conditioned_sort(x_vals, sort_Z_sub, col_name=x_name, translations=translations)
+    y_num, y_ticks = target_conditioned_sort(y_vals, sort_Z_sub, col_name=y_name, translations=translations)
+    z_num, z_ticks = target_conditioned_sort(z_vals, sort_Z_sub, col_name=z_name, translations=translations)
     if has_4d:
-        w_num, w_ticks = target_conditioned_sort(w_vals, sort_Z_sub, col_name=w_name)
+        w_num, w_ticks = target_conditioned_sort(w_vals, sort_Z_sub, col_name=w_name, translations=translations)
     else:
         w_num, w_ticks = None, None
-    
+
     unique_targets, color_num = np.unique(Z_sub, return_inverse=True)
-    unique_target_labels = [humanize_val(target_name, t) for t in unique_targets]
+    unique_target_labels = [humanize_val(target_name, t, translations) for t in unique_targets]
 
     # Group sample indices by cell for 3D Voxel Crystal Lattice Packing
     from collections import defaultdict, Counter
@@ -312,14 +264,14 @@ def prepare_visualization_payload(
     coords = list(zip(x_num, y_num, z_num))
     cell_counts = Counter(coords)
 
-    target_display_name = humanize_col(target_name)
+    target_display_name = humanize_col(target_name, translations)
 
     hover_texts = [
         f"<b>🍄 Sample #{idx+1}</b><br>"
         f"🎯 <b>{target_display_name}:</b> {z_target_human[i]}<br>"
-        f"📍 <b>{humanize_col(x_name)}:</b> {x_human[i]}<br>"
-        f"📍 <b>{humanize_col(y_name)}:</b> {y_human[i]}<br>"
-        f"📍 <b>{humanize_col(z_name)}:</b> {z_human[i]}<br>"
+        f"📍 <b>{humanize_col(x_name, translations)}:</b> {x_human[i]}<br>"
+        f"📍 <b>{humanize_col(y_name, translations)}:</b> {y_human[i]}<br>"
+        f"📍 <b>{humanize_col(z_name, translations)}:</b> {z_human[i]}<br>"
         f"📦 <b>Cube Volume (Density):</b> {cell_counts[(x_num[i], y_num[i], z_num[i])]} samples in cell"
         for i, idx in enumerate(indices)
     ]
@@ -388,7 +340,7 @@ def prepare_visualization_payload(
                 f"💠 <b>Z:</b> {hz}"
             )
             if hw is not None:
-                hov += f"<br>🎞️ <b>{humanize_col(w_name)}:</b> {hw}"
+                hov += f"<br>🎞️ <b>{humanize_col(w_name, translations)}:</b> {hw}"
             ghov.append(hov)
             
             # Use raw values for API queries so filtering works, cast to standard types for JSON
@@ -431,7 +383,7 @@ def prepare_visualization_payload(
             slice_counts.append(int(np.sum(mask)))
         grids["4_all"] = build_grid(3)
         slice_axis_info = {
-            "name": humanize_col(w_name),
+            "name": humanize_col(w_name, translations),
             "ticks": w_ticks,
             "counts": slice_counts
         }
@@ -460,9 +412,9 @@ def prepare_visualization_payload(
         "target_name": target_display_name,
         "hover_text": hover_texts,
         "axis_names": {
-            "x": humanize_col(x_name),
-            "y": humanize_col(y_name),
-            "z": humanize_col(z_name),
+            "x": humanize_col(x_name, translations),
+            "y": humanize_col(y_name, translations),
+            "z": humanize_col(z_name, translations),
         },
         "axis_ticks": {
             "x": {"vals": list(range(len(x_ticks))), "text": x_ticks},
@@ -471,9 +423,9 @@ def prepare_visualization_payload(
         },
         "slice_axis": slice_axis_info,
         "total_samples": len(indices),
-        "all_feature_names": [humanize_col(fn) for fn in feature_names],
+        "all_feature_names": [humanize_col(fn, translations) for fn in feature_names],
         "raw_feature_names": feature_names,
-        "selected_features": [humanize_col(sfn) for sfn in result.selected_feature_names],
+        "selected_features": [humanize_col(sfn, translations) for sfn in result.selected_feature_names],
         "metrics": {
             "d_star": result.d_star,
             "scenario": result.scenario.value,
@@ -486,11 +438,11 @@ def prepare_visualization_payload(
             "history": [
                 {
                     **h,
-                    "feature": humanize_col(h["feature"]),
+                    "feature": humanize_col(h["feature"], translations),
                     "alternatives": [
                         {
                             **alt,
-                            "feature": humanize_col(alt["feature"])
+                            "feature": humanize_col(alt["feature"], translations)
                         } for alt in h.get("alternatives", [])
                     ]
                 } for h in result.selection_history

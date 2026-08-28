@@ -12,13 +12,22 @@ Covers two bugs from the code review:
      normalized to [0,1], which only coincides with "share of the positive
      class" when K=2. For K>2 it can report a large "purity" for a cell
      containing ZERO samples of the actual positive/last class.
+
+Also covers the library/example-vocabulary decoupling: `vsf.vis` used to
+hardcode a UCI-mushroom-specific `MUSHROOM_TRANSLATIONS` dict. It now
+carries NO dataset vocabulary of its own — `humanize_val`/`humanize_col`
+and `prepare_visualization_payload` accept an optional `translations`
+table (see `vsf.vis.Translations`) and fall back to raw column/value
+strings with none supplied. `examples/mushroom_demo.py` is where the old
+mushroom-specific dict now lives, as a caller-supplied table rather than
+library-internal state.
 """
 
 import numpy as np
 import pytest
 
 from vsf.avr import AVRResult, Scenario
-from vsf.vis import _axis_fallback_indices, prepare_visualization_payload
+from vsf.vis import _axis_fallback_indices, humanize_col, humanize_val, prepare_visualization_payload
 
 
 def _make_result(selected_features, d_star=None):
@@ -128,3 +137,73 @@ def test_build_grid_purity_correct_for_multiclass_middle_class_cell():
                 f"100% the middle class, got {pur}"
             )
     assert found, "expected to find the constructed cell in the 1D grid"
+
+
+def test_humanize_functions_raw_passthrough_with_no_translations():
+    """
+    With no `translations` supplied (the default), `vsf.vis` must have zero
+    embedded dataset vocabulary: every label — from the bare helpers up
+    through the full `prepare_visualization_payload` output — falls back to
+    the raw column/value strings exactly as they appear in the input data.
+    """
+    assert humanize_val("odor", "f") == "f"
+    assert humanize_val("odor", "f", None) == "f"
+    assert humanize_val("odor", "f", {}) == "f"
+    assert humanize_col("odor") == "odor"
+    assert humanize_col("odor", None) == "odor"
+
+    rng = np.random.default_rng(3)
+    n = 200
+    X = rng.integers(0, 4, size=(n, 3))
+    Z = rng.integers(0, 2, size=n)
+    res = _make_result(selected_features=[0, 1, 2])
+    payload = prepare_visualization_payload(
+        res, X, Z, feature_names=["cap-shape", "odor", "habitat"],
+        target_name="class", sort_Z=Z,
+    )
+    assert payload["axis_names"] == {"x": "cap-shape", "y": "odor", "z": "habitat"}
+    assert payload["target_name"] == "class"
+    assert payload["all_feature_names"] == ["cap-shape", "odor", "habitat"]
+    # Raw integer-coded target values pass through as their str() form.
+    assert set(payload["target_labels"]) <= {"0", "1"}
+    assert set(payload["unique_target_classes"]) <= {"0", "1"}
+
+
+def test_humanize_functions_translations_override_end_to_end():
+    """
+    A caller-supplied `translations` table — shaped like
+    `examples.mushroom_demo.MUSHROOM_TRANSLATIONS` — must be threaded all
+    the way through `prepare_visualization_payload`'s human-readable
+    fields. This is the contract `server.py` relies on to keep showing
+    mushroom-specific labels after the vocabulary moved out of the library.
+    """
+    translations = {
+        "columns": {"odor": "Odor", "cap-shape": "Cap Shape"},
+        "values": {"odor": {"f": "foul", "n": "none"}},
+    }
+    assert humanize_val("odor", "f", translations) == "foul"
+    assert humanize_col("odor", translations) == "Odor (odor)"
+    # A column/value absent from the table falls back to the raw string —
+    # a partial translation table must not raise or blank out the rest.
+    assert humanize_val("habitat", "g", translations) == "g"
+    assert humanize_col("habitat", translations) == "habitat"
+
+    rng = np.random.default_rng(4)
+    n = 200
+    X = np.column_stack([
+        rng.choice(["f", "n"], size=n),
+        rng.integers(0, 4, size=n),
+        rng.integers(0, 4, size=n),
+    ])
+    Z = rng.choice(["f", "n"], size=n)
+    res = _make_result(selected_features=[0, 1, 2])
+    payload = prepare_visualization_payload(
+        res, X, Z, feature_names=["odor", "cap-shape", "habitat"],
+        target_name="odor", sort_Z=Z, translations=translations,
+    )
+    assert payload["axis_names"]["x"] == "Odor (odor)"
+    assert payload["axis_names"]["y"] == "Cap Shape (cap-shape)"
+    # habitat has no column-name entry in this (deliberately partial) table.
+    assert payload["axis_names"]["z"] == "habitat"
+    assert set(payload["target_labels"]) <= {"foul", "none"}
+    assert set(payload["unique_target_classes"]) <= {"foul", "none"}

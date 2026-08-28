@@ -142,6 +142,7 @@ def mine_dirty_center(
     n_permutations: int = 200,
     fdr_q: float = 0.05,
     random_state: int | None = 42,
+    translations: dict | None = None,
 ) -> List[Dict[str, Any]]:
     """
     Mines conjunctive filters for a dirty center using greedy expansion.
@@ -158,6 +159,13 @@ def mine_dirty_center(
     function previously did (`nmi_local >= 0.05`, no permutation test at
     all) — does not control the false discovery rate across that search;
     see Project_Master_Document.md Section 4.5.3.
+
+    `translations` is an optional dataset-specific display table (see
+    `vsf.vis.Translations`) used only to build the human-readable
+    `human_col`/`human_val`/`human_text` fields on each returned candidate;
+    with no `translations`, those fields fall back to the raw column/value
+    strings. This module has no built-in knowledge of any particular
+    dataset's vocabulary.
     """
     N_total = len(Z_target)
     N_c = int(np.sum(center_mask))
@@ -265,7 +273,7 @@ def mine_dirty_center(
 
     final_list.sort(key=lambda x: (x["nmi_local"], x["delta_vir"]), reverse=True)
 
-    from .vis import humanize_val, MUSHROOM_TRANSLATIONS
+    from .vis import humanize_val
 
     # Format human readable descriptions
     for item in final_list:
@@ -274,11 +282,177 @@ def mine_dirty_center(
         for cond in item["conditions"]:
             col = cond["col"]
             val = str(cond["val"])
-            en_col = MUSHROOM_TRANSLATIONS.get("columns", {}).get(col, col)
-            en_val = humanize_val(col, val)
+            en_col = (translations or {}).get("columns", {}).get(col, col)
+            en_val = humanize_val(col, val, translations)
             cond["human_col"] = en_col
             cond["human_val"] = en_val
             human_parts.append(f"{en_col} = {en_val}")
         item["human_text"] = " ∧ ".join(human_parts)
 
     return final_list[:5]
+
+
+def compute_top_insights(
+    df: pd.DataFrame,
+    min_nmi: float = 0.75,
+    n_permutations: int = 200,
+    fdr_q: float = 0.05,
+    random_state: int | None = 42,
+    translations: dict | None = None,
+) -> Dict[str, Any]:
+    """
+    Two-stage screen for (column, value) criteria whose best achievable
+    association with a small forward-selected feature subset clears both
+    an effect-size floor and a statistical-significance bar — the shared
+    implementation behind both the live server's `/api/top_columns`
+    endpoint and `vsf.dashboard`'s static "Top Insights" catalog, extracted
+    here (rather than left duplicated inline in `server.py`) so there is
+    exactly one tested implementation of this pipeline.
+
+    Exhaustively significance-testing every single (column, value)
+    criterion in the dataset against every candidate feature subset is too
+    expensive to do directly, so this runs two stages:
+
+    Stage 1 (fast screen, effect size only): for every (column, value)
+        binary criterion Z that clears a minimum support count (the same
+        support floor `_min_support_count` uses for dirty-center filter
+        mining), run greedy forward NMI selection (up to 4 steps) over the
+        OTHER features and keep the best Normalized Mutual Information seen
+        and the feature subset S that achieved it. Criteria below `min_nmi`
+        are dropped here. This is a point-estimate screen — it says nothing
+        about whether the association could be a small-sample fluctuation.
+
+    Stage 2 (validation, statistical significance): for the Stage-1
+        survivors ONLY, run a marginal permutation test (H0: Z carries no
+        information about the joint code of its selected subset S beyond
+        chance) and apply Benjamini-Hochberg FDR correction JOINTLY across
+        all survivors tested in this call. A criterion is only returned if
+        it passes BOTH stages.
+
+    An earlier version of the endpoint this was extracted from returned
+    every criterion whose raw NMI cleared `min_nmi`, with NO minimum
+    support requirement and NO significance test at all — a criterion with
+    a handful of positive examples can trivially reach NMI close to 1.0 by
+    chance with a large-enough candidate feature pool, and nothing
+    distinguished that from a genuine association.
+
+    `translations` is an optional dataset-specific display table (see
+    `vsf.vis.Translations`) used only for the human-readable `label`
+    fields; with no `translations`, those fall back to raw column/value
+    strings.
+    """
+    from .math import mutual_information, normalized_mutual_information
+    from .pmd import discretize_dataset
+    from .vis import humanize_col, humanize_val
+
+    X_arr = df.values
+    n_samples, n_features = X_arr.shape
+    X_discrete, _, _ = discretize_dataset(X_arr)
+    feature_names = list(df.columns)
+    min_support = _min_support_count(n_samples)
+
+    stage1_survivors: List[Dict[str, Any]] = []
+
+    for c_idx, col_name in enumerate(feature_names):
+        unique_vals = np.unique(X_arr[:, c_idx])
+        for val in unique_vals:
+            val_str = str(val)
+            Z = (X_arr[:, c_idx] == val).astype(int)
+            n_pos = int(Z.sum())
+            if n_pos < min_support:
+                continue
+
+            cand_indices = [j for j in range(n_features) if j != c_idx]
+
+            S: List[int] = []
+            max_nmi_seen = 0.0
+            best_S_at_max: List[int] = []
+
+            for step in range(1, 5):
+                best_feat = None
+                best_mi = -1.0
+                best_nmi = 0.0
+
+                for j in cand_indices:
+                    if j in S:
+                        continue
+                    S_cand = S + [j]
+                    mi_cand = mutual_information(Z, X_discrete[:, S_cand])
+                    if mi_cand > best_mi:
+                        best_mi = mi_cand
+                        best_feat = j
+                        best_nmi = normalized_mutual_information(Z, X_discrete[:, S_cand])
+
+                if best_feat is not None:
+                    S.append(best_feat)
+                    if best_nmi > max_nmi_seen:
+                        max_nmi_seen = best_nmi
+                        best_S_at_max = list(S)
+
+            if max_nmi_seen >= min_nmi:
+                stage1_survivors.append({
+                    "col_name": col_name,
+                    "val_str": val_str,
+                    "Z": Z,
+                    "S": best_S_at_max,
+                    "max_nmi_seen": max_nmi_seen,
+                })
+
+    top_cols_map: Dict[str, Dict[str, Any]] = {}
+
+    if stage1_survivors:
+        p_values = np.empty(len(stage1_survivors), dtype=float)
+        for i, cand in enumerate(stage1_survivors):
+            S = cand["S"]
+            if S:
+                _, joint_codes = np.unique(X_discrete[:, S], axis=0, return_inverse=True)
+            else:
+                joint_codes = np.zeros(n_samples, dtype=np.int64)
+            _, p_val, _ = marginal_permutation_test(
+                cand["Z"],
+                joint_codes,
+                n_permutations=n_permutations,
+                alpha=fdr_q,
+                random_state=random_state,
+            )
+            p_values[i] = p_val
+
+        significant_mask = benjamini_hochberg(p_values, q=fdr_q)
+
+        for cand, p_val, sig in zip(stage1_survivors, p_values, significant_mask):
+            if not sig:
+                continue
+            col_name = cand["col_name"]
+            val_str = cand["val_str"]
+            max_nmi_seen = cand["max_nmi_seen"]
+
+            if col_name not in top_cols_map:
+                top_cols_map[col_name] = {
+                    "id": col_name,
+                    "label": humanize_col(col_name, translations),
+                    "criteria": [],
+                    "max_nmi": 0.0,
+                }
+
+            human_val = humanize_val(col_name, val_str, translations)
+            top_cols_map[col_name]["criteria"].append({
+                "id": val_str,
+                "label": human_val,
+                "max_nmi": float(max_nmi_seen),
+                "p_value": float(p_val),
+            })
+            if max_nmi_seen > top_cols_map[col_name]["max_nmi"]:
+                top_cols_map[col_name]["max_nmi"] = float(max_nmi_seen)
+
+    top_cols_list = list(top_cols_map.values())
+    for col in top_cols_list:
+        col["criteria"].sort(key=lambda x: x["max_nmi"], reverse=True)
+    top_cols_list.sort(key=lambda x: x["max_nmi"], reverse=True)
+
+    return {
+        "columns": top_cols_list,
+        "total_count": sum(len(c["criteria"]) for c in top_cols_list),
+        "min_nmi": min_nmi,
+        "fdr_q": fdr_q,
+        "n_stage1_survivors": len(stage1_survivors),
+    }

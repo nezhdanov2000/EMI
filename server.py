@@ -7,6 +7,7 @@ import http.server
 import json
 import os
 import socketserver
+import sys
 import threading
 import urllib.parse
 from datetime import datetime
@@ -30,6 +31,19 @@ import numpy as np
 import pandas as pd
 
 import vsf
+
+# `server.py` is a standalone script, not itself part of an installed
+# package, and `main()` later does `os.chdir(os.path.dirname(__file__))` —
+# but that chdir happens at server-start time, AFTER module import, so it
+# cannot be relied on to make `examples/` importable. Explicitly put this
+# script's own directory on `sys.path` (idempotent if already invoked via
+# `python /path/to/server.py`, where Python already does this) so
+# `examples.mushroom_demo` resolves regardless of the caller's cwd.
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+if _SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPT_DIR)
+
+from examples.mushroom_demo import MUSHROOM_TRANSLATIONS
 
 PORT = 8050
 DATASET_PATH = os.path.join(os.path.dirname(__file__), "data", "mushrooms.csv")
@@ -100,21 +114,7 @@ class VSFRequestHandler(http.server.SimpleHTTPRequestHandler):
                 return
                 
             df = pd.read_csv(DATASET_PATH)
-            raw_cols = list(df.columns)
-            ru_cols = []
-            
-            for c in raw_cols:
-                ru_title = vsf.vis.MUSHROOM_TRANSLATIONS["columns"].get(c, c)
-                display_label = f"{ru_title} ({c})" if ru_title != c else c
-                
-                unique_vals = df[c].dropna().unique().tolist()
-                criteria = []
-                for val in unique_vals:
-                    val_str = str(val)
-                    human_val = vsf.vis.humanize_val(c, val_str)
-                    criteria.append({"id": val_str, "label": human_val})
-                    
-                ru_cols.append({"id": c, "label": display_label, "criteria": criteria})
+            ru_cols = vsf.catalog_from_dataframe(df, MUSHROOM_TRANSLATIONS)
 
             self._send_json_response(200, {
                 "columns": ru_cols,
@@ -173,126 +173,14 @@ class VSFRequestHandler(http.server.SimpleHTTPRequestHandler):
                 return
 
             df = pd.read_csv(DATASET_PATH)
-            X_arr = df.values
-            n_samples, n_features = X_arr.shape
-            X_discrete, _, _ = vsf.pmd.discretize_dataset(X_arr)
-            feature_names = list(df.columns)
-
-            min_nmi = 0.75
-            min_support = vsf.mining._min_support_count(n_samples)
-            n_permutations = 200
-            fdr_q = 0.05
-            random_state = 42
-
-            # --- Stage 1: fast effect-size screen ---
-            stage1_survivors: list[Dict[str, Any]] = []
-
-            for c_idx, col_name in enumerate(feature_names):
-                unique_vals = np.unique(X_arr[:, c_idx])
-                for val in unique_vals:
-                    val_str = str(val)
-                    Z = (X_arr[:, c_idx] == val).astype(int)
-                    n_pos = int(Z.sum())
-                    if n_pos < min_support:
-                        continue
-
-                    cand_indices = [j for j in range(n_features) if j != c_idx]
-
-                    S: list[int] = []
-                    max_nmi_seen = 0.0
-                    best_S_at_max: list[int] = []
-
-                    for step in range(1, 5):
-                        best_feat = None
-                        best_mi = -1.0
-                        best_nmi = 0.0
-
-                        for j in cand_indices:
-                            if j in S:
-                                continue
-                            S_cand = S + [j]
-                            mi_cand = vsf.math.mutual_information(Z, X_discrete[:, S_cand])
-                            if mi_cand > best_mi:
-                                best_mi = mi_cand
-                                best_feat = j
-                                best_nmi = vsf.math.normalized_mutual_information(Z, X_discrete[:, S_cand])
-
-                        if best_feat is not None:
-                            S.append(best_feat)
-                            if best_nmi > max_nmi_seen:
-                                max_nmi_seen = best_nmi
-                                best_S_at_max = list(S)
-
-                    if max_nmi_seen >= min_nmi:
-                        stage1_survivors.append({
-                            "col_name": col_name,
-                            "val_str": val_str,
-                            "Z": Z,
-                            "S": best_S_at_max,
-                            "max_nmi_seen": max_nmi_seen,
-                        })
-
-            # --- Stage 2: permutation test + joint BH correction on survivors ---
-            top_cols_map: Dict[str, Dict[str, Any]] = {}
-
-            if stage1_survivors:
-                p_values = np.empty(len(stage1_survivors), dtype=float)
-                for i, cand in enumerate(stage1_survivors):
-                    S = cand["S"]
-                    if S:
-                        _, joint_codes = np.unique(X_discrete[:, S], axis=0, return_inverse=True)
-                    else:
-                        joint_codes = np.zeros(n_samples, dtype=np.int64)
-                    _, p_val, _ = vsf.permutation.marginal_permutation_test(
-                        cand["Z"],
-                        joint_codes,
-                        n_permutations=n_permutations,
-                        alpha=fdr_q,
-                        random_state=random_state,
-                    )
-                    p_values[i] = p_val
-
-                significant_mask = vsf.stats.benjamini_hochberg(p_values, q=fdr_q)
-
-                for cand, p_val, sig in zip(stage1_survivors, p_values, significant_mask):
-                    if not sig:
-                        continue
-                    col_name = cand["col_name"]
-                    val_str = cand["val_str"]
-                    max_nmi_seen = cand["max_nmi_seen"]
-
-                    if col_name not in top_cols_map:
-                        ru_title = vsf.vis.MUSHROOM_TRANSLATIONS["columns"].get(col_name, col_name)
-                        display_label = f"{ru_title} ({col_name})" if ru_title != col_name else col_name
-                        top_cols_map[col_name] = {
-                            "id": col_name,
-                            "label": display_label,
-                            "criteria": [],
-                            "max_nmi": 0.0
-                        }
-
-                    human_val = vsf.vis.humanize_val(col_name, val_str)
-                    top_cols_map[col_name]["criteria"].append({
-                        "id": val_str,
-                        "label": human_val,
-                        "max_nmi": float(max_nmi_seen),
-                        "p_value": float(p_val),
-                    })
-                    if max_nmi_seen > top_cols_map[col_name]["max_nmi"]:
-                        top_cols_map[col_name]["max_nmi"] = float(max_nmi_seen)
-
-            top_cols_list = list(top_cols_map.values())
-            for col in top_cols_list:
-                col["criteria"].sort(key=lambda x: x["max_nmi"], reverse=True)
-            top_cols_list.sort(key=lambda x: x["max_nmi"], reverse=True)
-
-            result = {
-                "columns": top_cols_list,
-                "total_count": sum(len(c["criteria"]) for c in top_cols_list),
-                "min_nmi": min_nmi,
-                "fdr_q": fdr_q,
-                "n_stage1_survivors": len(stage1_survivors),
-            }
+            result = vsf.compute_top_insights(
+                df,
+                min_nmi=0.75,
+                n_permutations=200,
+                fdr_q=0.05,
+                random_state=42,
+                translations=MUSHROOM_TRANSLATIONS,
+            )
 
             with _cache_lock:
                 _top_columns_cache = result
@@ -320,7 +208,8 @@ class VSFRequestHandler(http.server.SimpleHTTPRequestHandler):
             )
             res = engine.fit(X, Z, feature_names=feature_names)
             payload = vsf.prepare_visualization_payload(
-                res, X, Z, feature_names=feature_names, target_name="class", sort_Z=Z
+                res, X, Z, feature_names=feature_names, target_name="class", sort_Z=Z,
+                translations=MUSHROOM_TRANSLATIONS,
             )
 
             self._send_json_response(200, payload)
@@ -351,8 +240,8 @@ class VSFRequestHandler(http.server.SimpleHTTPRequestHandler):
                     val = str(cond.get("val"))
                     if col in df.columns:
                         mask = mask & (df[col].astype(str) == val)
-                        human_col = vsf.vis.humanize_col(col)
-                        human_val = vsf.vis.humanize_val(col, val)
+                        human_col = vsf.vis.humanize_col(col, MUSHROOM_TRANSLATIONS)
+                        human_val = vsf.vis.humanize_val(col, val, MUSHROOM_TRANSLATIONS)
                         display_parts.append(f"{human_col}={human_val}")
                         drop_cols.append(col)
                 
@@ -368,8 +257,8 @@ class VSFRequestHandler(http.server.SimpleHTTPRequestHandler):
 
                 if criterion is not None:
                     Z = (df[target_col].astype(str) == str(criterion)).astype(int).values
-                    human_criterion = vsf.vis.humanize_val(target_col, str(criterion))
-                    human_col = vsf.vis.humanize_col(target_col)
+                    human_criterion = vsf.vis.humanize_val(target_col, str(criterion), MUSHROOM_TRANSLATIONS)
+                    human_col = vsf.vis.humanize_col(target_col, MUSHROOM_TRANSLATIONS)
                     display_target_name = f"{human_col} = {human_criterion}"
                 else:
                     Z = df[target_col].values
@@ -414,7 +303,8 @@ class VSFRequestHandler(http.server.SimpleHTTPRequestHandler):
                     _last_res = (res, X, Z, feature_names, display_target_name)
 
             payload = vsf.prepare_visualization_payload(
-                res, X, Z, feature_names=feature_names, target_name=display_target_name, sort_Z=sort_Z
+                res, X, Z, feature_names=feature_names, target_name=display_target_name, sort_Z=sort_Z,
+                translations=MUSHROOM_TRANSLATIONS,
             )
 
             self._send_json_response(200, payload)
@@ -469,7 +359,7 @@ class VSFRequestHandler(http.server.SimpleHTTPRequestHandler):
             X_df = df.drop(columns=drop_cols)
             
             # Use mining module
-            results = vsf.mine_dirty_center(X_df, Z, mask, i_z_x_f)
+            results = vsf.mine_dirty_center(X_df, Z, mask, i_z_x_f, translations=MUSHROOM_TRANSLATIONS)
             
             self._send_json_response(200, {"results": results})
         except Exception as e:
@@ -491,11 +381,12 @@ class VSFRequestHandler(http.server.SimpleHTTPRequestHandler):
             
             from vsf.graph_inference import run_graph_inference
             result = run_graph_inference(
-                df=df, 
-                inputs=inputs, 
-                target=target, 
-                target_criterion=target_criterion, 
-                nmi_threshold=nmi_threshold
+                df=df,
+                inputs=inputs,
+                target=target,
+                target_criterion=target_criterion,
+                nmi_threshold=nmi_threshold,
+                translations=MUSHROOM_TRANSLATIONS,
             )
             
             self._send_json_response(200, result)
@@ -517,7 +408,10 @@ class VSFRequestHandler(http.server.SimpleHTTPRequestHandler):
             df = pd.read_csv(DATASET_PATH)
             
             from vsf.graph_miner import mine_strong_links
-            result = mine_strong_links(df, target=target, min_nmi=min_nmi, max_depth=max_depth)
+            result = mine_strong_links(
+                df, target=target, min_nmi=min_nmi, max_depth=max_depth,
+                translations=MUSHROOM_TRANSLATIONS,
+            )
             
             self._send_json_response(200, result)
             
