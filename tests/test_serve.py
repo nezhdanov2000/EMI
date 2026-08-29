@@ -22,20 +22,16 @@ Covers:
      regression shape as `tests/test_server.py`'s equivalent test, run here
      against the new implementation).
   4. No wildcard CORS header (same posture as `server.py`).
-  5. `/api/analyze` (and `/api/mine_center`, `/api/graph_inference`,
-     `/api/mine_graph_links`) default to the SERVER'S resolved
-     `default_target` when no `target` is given in the request, never a
-     hardcoded "class" — and reject an unknown target with 400 instead of
-     `server.py`'s silent fallback-to-"class".
-  6. Packaged static assets (`vsf/webapp/index.html`, `graph.html`,
-     `static/css/*`, `static/js/*`) are served correctly via
-     `importlib.resources`, proving the packaging works independent of
-     process cwd (constructed with cwd deliberately left unchanged from
-     the test runner's, unlike `server.py`'s `main()` which chdirs).
-  7. Dataset-agnosticism smoke test: analysis, dirty-center mining, and
-     graph inference all succeed end-to-end against a synthetic dataset
-     whose target column is NOT named "class" and whose values are not
-     mushroom vocabulary.
+  5. `/api/analyze` defaults to the SERVER'S resolved `default_target` when
+     no `target` is given in the request, never a hardcoded "class" — and
+     rejects an unknown target with 400 instead of silently falling back.
+  6. Packaged static assets (`vsf/webapp/index.html`, `static/css/*`,
+     `static/js/*`) are served correctly via `importlib.resources`, proving
+     the packaging works independent of process cwd (constructed with cwd
+     deliberately left unchanged from the test runner's).
+  7. Dataset-agnosticism smoke test: analysis succeeds end-to-end against a
+     synthetic dataset whose target column is NOT named "class" and whose
+     values are not mushroom vocabulary.
   8. `serve()`'s input validation (non-DataFrame / empty DataFrame) and its
      `open_browser` behavior (opens exactly once, with the right URL, only
      when requested) — exercised without blocking the test on
@@ -44,6 +40,26 @@ Covers:
      (proving `httpd.server_close()` still runs) for the "opens" case, and
      by shutting the constructed server down from another thread for the
      "does not open" case.
+  9. Global Pattern Scan (`/api/scan/start`/`/api/scan/status`/
+     `/api/scan/cancel`, `TestGlobalPatternScan`): idle status before any
+     scan; threshold validation; a planted XOR ground truth (`target = a
+     XOR b`, `c`/`d` pure noise) actually gets found and correctly
+     filtered/sorted by NMI; an all-noise dataset completes with an empty
+     result set rather than erroring; 409 on a concurrent start; cancel
+     genuinely stops a scan before every pair is scanned (verified via a
+     slowed-down `discover_branches`, not a size/speed-dependent race); a
+     cancel with nothing running is a harmless no-op; scan state is
+     per-`_VSFServer`-instance, not shared.
+
+v2.0 "Clean Core" note (Project_Master_Document.md Section 0): `/api/analyze`
+now runs Independent Branch Discovery and returns UP TO `MAX_BRANCH_D`
+branches in one response (`{target, criterion, branches, branch_dims,
+default_branch}`) instead of a single AVR-fit payload with a `target_name`
+field. `/api/mine_center`, `/api/top_columns`, `/api/graph_inference`, and
+`/api/mine_graph_links` — along with the static routes `/graph.html`,
+`/static/css/graph_reasoning.css`, and `/static/js/graph_reasoning.js` — are
+REMOVED (404) entirely, not merely deprecated; `_VSFServer.last_res` was
+renamed to `.last_branches_payload`.
 """
 
 import json
@@ -55,6 +71,7 @@ import time
 import unittest
 import urllib.error
 import urllib.request
+from unittest import mock
 
 import numpy as np
 import pandas as pd
@@ -189,8 +206,8 @@ class TestPerInstanceIsolation(unittest.TestCase):
             )
             with urllib.request.urlopen(req_a, timeout=30) as r:
                 json.loads(r.read())
-            self.assertIsNotNone(srv_a.last_res)
-            self.assertIsNone(srv_b.last_res)
+            self.assertIsNotNone(srv_a.last_branches_payload)
+            self.assertIsNone(srv_b.last_branches_payload)
         finally:
             srv_a.shutdown()
             srv_a.server_close()
@@ -233,7 +250,18 @@ class TestThreadSafetyAndCORS(_LiveServerTestBase):
         self.assertIsNone(errors[1], msg=errors[1])
         self.assertIsNotNone(results[0])
         self.assertIsNotNone(results[1])
-        self.assertNotEqual(results[0]["target_name"], results[1]["target_name"])
+        self.assertNotEqual(results[0]["target"], results[1]["target"])
+        self.assertEqual(results[0]["target"], "color")
+        self.assertEqual(results[1]["target"], "outcome")
+        # Each response's branches must actually be independent fits for
+        # its own target, not a leaked/aliased copy of the other request's
+        # in-flight cache entry.
+        self.assertIn("branches", results[0])
+        self.assertIn("branches", results[1])
+        self.assertNotEqual(
+            json.dumps(results[0]["branches"], sort_keys=True),
+            json.dumps(results[1]["branches"], sort_keys=True),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -251,8 +279,16 @@ class TestDatasetAgnosticDefaultTargetFallback(_LiveServerTestBase):
         resp = self._post("/api/analyze", {})
         self.assertEqual(resp.status, 200)
         data = json.loads(resp.read())
-        # target_name falls back to the raw column name with no criterion.
-        self.assertEqual(data["target_name"], "color")
+        # `target` falls back to the server's resolved default column, and
+        # the v2.0 response shape carries up to MAX_BRANCH_D branches keyed
+        # by dimensionality rather than a single AVR-fit payload.
+        self.assertEqual(data["target"], "color")
+        self.assertIsNone(data["criterion"])
+        self.assertIn("branches", data)
+        self.assertIn("branch_dims", data)
+        self.assertIn("default_branch", data)
+        self.assertTrue(set(data["branches"].keys()).issubset({"1", "2", "3"}))
+        self.assertEqual(data["default_branch"], str(max(data["branch_dims"])))
 
     def test_analyze_rejects_unknown_target_instead_of_silently_falling_back(self):
         # server.py silently rewrites an unknown target to "class" (which
@@ -263,30 +299,272 @@ class TestDatasetAgnosticDefaultTargetFallback(_LiveServerTestBase):
         data = json.loads(resp.read())
         self.assertIn("error", data)
 
-    def test_mine_center_rejects_unknown_target(self):
+
+# ---------------------------------------------------------------------------
+# Global Pattern Scan (/api/scan/start, /api/scan/status, /api/scan/cancel)
+# — added after v2.0. Every test here builds its OWN `_VSFServer` (rather
+# than sharing `_LiveServerTestBase`'s class-scoped instance) because scan
+# state (`scan_job`) is mutable, cross-request server state, and several
+# tests here depend on catching it mid-run — sharing a server across test
+# methods would make those tests order-dependent. This mirrors
+# `TestPerInstanceIsolation`'s own pattern above.
+# ---------------------------------------------------------------------------
+
+class TestGlobalPatternScan(unittest.TestCase):
+    @staticmethod
+    def _xor_df(seed: int = 0, n: int = 300) -> pd.DataFrame:
+        """
+        `target = a XOR b` (both binary), `c`/`d` pure noise — so a scan has
+        an unambiguous ground truth: every (a, value)/(b, value)/(target,
+        value) pair should score max_nmi == 1.0 (found via the branch that
+        pairs the other two of {a, b, target}), while every (c, *)/(d, *)
+        pair should score far below any reasonable threshold.
+        """
+        rng = np.random.RandomState(seed)
+        a = rng.randint(0, 2, n)
+        b = rng.randint(0, 2, n)
+        return pd.DataFrame({
+            "a": a,
+            "b": b,
+            "c": rng.randint(0, 3, n),
+            "d": rng.randint(0, 2, n),
+            "target": a ^ b,
+        })
+
+    @staticmethod
+    def _start_server(df):
+        httpd = _build_server(df, host="127.0.0.1", port=0, translations=None)
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        return httpd, thread
+
+    @staticmethod
+    def _stop_server(httpd, thread):
+        httpd.shutdown()
+        thread.join(timeout=5)
+        httpd.server_close()
+
+    @staticmethod
+    def _get(port, path, timeout=30):
+        return urllib.request.urlopen(f"http://127.0.0.1:{port}{path}", timeout=timeout)
+
+    @staticmethod
+    def _post(port, path, payload, timeout=30):
+        body = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}{path}",
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            return urllib.request.urlopen(req, timeout=timeout)
+        except urllib.error.HTTPError as e:
+            return e
+
+    @classmethod
+    def _poll_until_terminal(cls, port, timeout=30):
+        deadline = time.time() + timeout
+        status = None
+        while time.time() < deadline:
+            with cls._get(port, "/api/scan/status") as r:
+                status = json.loads(r.read())
+            if status["status"] in ("done", "cancelled", "error"):
+                return status
+            time.sleep(0.05)
+        raise AssertionError(f"scan did not reach a terminal state within {timeout}s (last: {status})")
+
+    def test_idle_before_any_scan_ever_ran(self):
+        httpd, thread = self._start_server(self._xor_df())
+        try:
+            port = httpd.server_address[1]
+            with self._get(port, "/api/scan/status") as r:
+                data = json.loads(r.read())
+            self.assertEqual(data, {"status": "idle"})
+        finally:
+            self._stop_server(httpd, thread)
+
+    def test_start_rejects_out_of_range_or_non_numeric_threshold(self):
+        httpd, thread = self._start_server(self._xor_df())
+        try:
+            port = httpd.server_address[1]
+            for bad in (150, -1, 100, "not-a-number"):
+                resp = self._post(port, "/api/scan/start", {"nmi_threshold": bad})
+                self.assertEqual(resp.code, 400, msg=f"threshold={bad!r} should be rejected")
+                data = json.loads(resp.read())
+                self.assertIn("error", data)
+            # A fresh, valid start must still work afterward — the rejected
+            # attempts above must not have left scan_job in a bad state.
+            resp = self._post(port, "/api/scan/start", {"nmi_threshold": 50})
+            self.assertEqual(resp.status, 200)
+        finally:
+            self._stop_server(httpd, thread)
+
+    def test_scan_finds_the_planted_relationship_and_filters_by_threshold(self):
+        httpd, thread = self._start_server(self._xor_df())
+        try:
+            port = httpd.server_address[1]
+            resp = self._post(port, "/api/scan/start", {"nmi_threshold": 80})
+            self.assertEqual(resp.status, 200)
+
+            status = self._poll_until_terminal(port, timeout=30)
+            self.assertEqual(status["status"], "done")
+            self.assertEqual(status["progress"]["current"], status["progress"]["total"])
+
+            results = status["results"]
+            self.assertIsInstance(results, list)
+            self.assertGreater(len(results), 0)
+
+            # Every surviving pair must genuinely exceed the threshold —
+            # the endpoint's own filtering, not just this test's assertion.
+            for r in results:
+                self.assertGreater(r["max_nmi"], 0.80)
+                self.assertIn(r["column"], {"a", "b", "target"})  # c/d are pure noise, must not survive
+
+            # Results are sorted by max_nmi descending.
+            nmis = [r["max_nmi"] for r in results]
+            self.assertEqual(nmis, sorted(nmis, reverse=True))
+
+            # a=0, a=1, b=0, b=1, target=0, target=1 should all be found
+            # (the XOR relationship is symmetric in all three columns).
+            found_columns = {r["column"] for r in results}
+            self.assertEqual(found_columns, {"a", "b", "target"})
+        finally:
+            self._stop_server(httpd, thread)
+
+    def test_scan_with_high_threshold_yields_no_results_but_still_completes(self):
+        # Same dataset, but plain noise columns c/d can never reach a
+        # threshold this permissive vantage... rather: use an all-noise
+        # dataset so nothing survives even a low bar, proving an empty
+        # result set is reported as "done" with results=[], not as an error.
+        rng = np.random.RandomState(1)
+        n = 150
+        noise_df = pd.DataFrame({f"col{i}": rng.randint(0, 3, n) for i in range(5)})
+        httpd, thread = self._start_server(noise_df)
+        try:
+            port = httpd.server_address[1]
+            resp = self._post(port, "/api/scan/start", {"nmi_threshold": 95})
+            self.assertEqual(resp.status, 200)
+            status = self._poll_until_terminal(port, timeout=30)
+            self.assertEqual(status["status"], "done")
+            self.assertEqual(status["results"], [])
+        finally:
+            self._stop_server(httpd, thread)
+
+    def test_start_while_running_is_rejected_with_409(self):
+        httpd, thread = self._start_server(self._xor_df())
+        try:
+            port = httpd.server_address[1]
+            # Slow discover_branches down so the first scan is still
+            # "running" when the second /api/scan/start arrives — avoids a
+            # dataset-size/CPU-speed-dependent race.
+            real_discover_branches = vserve.discover_branches
+
+            def _slow_discover_branches(*args, **kwargs):
+                time.sleep(0.5)
+                return real_discover_branches(*args, **kwargs)
+
+            with mock.patch.object(vserve, "discover_branches", _slow_discover_branches):
+                resp1 = self._post(port, "/api/scan/start", {"nmi_threshold": 50})
+                self.assertEqual(resp1.status, 200)
+                time.sleep(0.05)  # let the background thread actually start
+
+                resp2 = self._post(port, "/api/scan/start", {"nmi_threshold": 50})
+                self.assertEqual(resp2.code, 409)
+                data = json.loads(resp2.read())
+                self.assertIn("error", data)
+
+                self._poll_until_terminal(port, timeout=30)
+        finally:
+            self._stop_server(httpd, thread)
+
+    def test_cancel_stops_a_running_scan_before_it_finishes_all_pairs(self):
+        httpd, thread = self._start_server(self._xor_df())
+        try:
+            port = httpd.server_address[1]
+            real_discover_branches = vserve.discover_branches
+
+            def _slow_discover_branches(*args, **kwargs):
+                time.sleep(0.3)
+                return real_discover_branches(*args, **kwargs)
+
+            with mock.patch.object(vserve, "discover_branches", _slow_discover_branches):
+                resp = self._post(port, "/api/scan/start", {"nmi_threshold": 50})
+                self.assertEqual(resp.status, 200)
+                time.sleep(0.15)  # ensure it's mid-flight, not finished or unstarted
+
+                cancel_resp = self._post(port, "/api/scan/cancel", {})
+                self.assertEqual(cancel_resp.status, 200)
+                cancel_data = json.loads(cancel_resp.read())
+                self.assertEqual(cancel_data["status"], "cancelling")
+
+                status = self._poll_until_terminal(port, timeout=30)
+                self.assertEqual(status["status"], "cancelled")
+                self.assertLess(status["progress"]["current"], status["progress"]["total"])
+        finally:
+            self._stop_server(httpd, thread)
+
+    def test_cancel_when_nothing_is_running_is_a_harmless_no_op(self):
+        httpd, thread = self._start_server(self._xor_df())
+        try:
+            port = httpd.server_address[1]
+            resp = self._post(port, "/api/scan/cancel", {})
+            self.assertEqual(resp.status, 200)
+            data = json.loads(resp.read())
+            self.assertEqual(data["status"], "not_running")
+        finally:
+            self._stop_server(httpd, thread)
+
+    def test_scan_state_is_per_instance_not_shared(self):
+        httpd_a, thread_a = self._start_server(self._xor_df(seed=0))
+        httpd_b, thread_b = self._start_server(self._xor_df(seed=1))
+        try:
+            port_a = httpd_a.server_address[1]
+            port_b = httpd_b.server_address[1]
+
+            resp = self._post(port_a, "/api/scan/start", {"nmi_threshold": 50})
+            self.assertEqual(resp.status, 200)
+            self._poll_until_terminal(port_a, timeout=30)
+
+            with self._get(port_a, "/api/scan/status") as r:
+                status_a = json.loads(r.read())
+            with self._get(port_b, "/api/scan/status") as r:
+                status_b = json.loads(r.read())
+
+            self.assertIn(status_a["status"], ("done", "cancelled"))
+            self.assertEqual(status_b, {"status": "idle"})
+            self.assertIsNot(httpd_a.scan_lock, httpd_b.scan_lock)
+        finally:
+            self._stop_server(httpd_a, thread_a)
+            self._stop_server(httpd_b, thread_b)
+
+
+# ---------------------------------------------------------------------------
+# Removed endpoints (v1.0 Auto-Discovery / dirty-center mining / Graph
+# Inference — Project_Master_Document.md Section 0) must now 404, not just
+# behave differently.
+# ---------------------------------------------------------------------------
+
+class TestRemovedEndpoints(_LiveServerTestBase):
+    def test_mine_center_is_404(self):
         resp = self._post(
             "/api/mine_center",
-            {"target": "definitely_not_a_column", "center_coords": {}, "i_z_x_f": 1.0},
+            {"target": "color", "center_coords": {}, "i_z_x_f": 1.0},
         )
-        self.assertEqual(resp.status, 400)
+        self.assertEqual(resp.code, 404)
 
-    def test_graph_inference_and_mine_links_use_server_default_and_reject_unknown(self):
+    def test_top_columns_is_404(self):
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            self._get("/api/top_columns")
+        self.assertEqual(ctx.exception.code, 404)
+
+    def test_graph_inference_is_404(self):
         resp = self._post("/api/graph_inference", {"inputs": {"color": "red"}, "nmi_threshold": 0.01})
-        self.assertEqual(resp.status, 200)
-        data = json.loads(resp.read())
-        self.assertIn("nodes", data)
+        self.assertEqual(resp.code, 404)
 
-        resp = self._post("/api/graph_inference", {"inputs": {}, "target": "nope", "nmi_threshold": 0.01})
-        self.assertEqual(resp.status, 400)
-
+    def test_mine_graph_links_is_404(self):
         resp = self._post("/api/mine_graph_links", {"min_nmi": 0.01})
-        self.assertEqual(resp.status, 200)
-        data = json.loads(resp.read())
-        self.assertIn("target", data)
-        self.assertEqual(data["target"], "color")
-
-        resp = self._post("/api/mine_graph_links", {"target": "nope", "min_nmi": 0.01})
-        self.assertEqual(resp.status, 400)
+        self.assertEqual(resp.code, 404)
 
 
 # ---------------------------------------------------------------------------
@@ -303,25 +581,28 @@ class TestPackagedStaticAssets(_LiveServerTestBase):
         self.assertEqual(root_body, index_body)
         self.assertIn(b"<html", root_body.lower())
 
-    def test_graph_html_served(self):
-        with self._get("/graph.html") as r:
-            self.assertEqual(r.status, 200)
-            body = r.read()
-        self.assertIn(b"<html", body.lower())
+    def test_graph_html_route_is_404(self):
+        # graph.html and its dedicated static assets are gone entirely
+        # (Project_Master_Document.md Section 0), not just unlinked.
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            self._get("/graph.html")
+        self.assertEqual(ctx.exception.code, 404)
 
     def test_css_and_js_assets_served_with_correct_content_type(self):
         with self._get("/static/css/styles.css") as r:
             self.assertEqual(r.status, 200)
             self.assertIn("text/css", r.headers.get("Content-Type", ""))
-        with self._get("/static/css/graph_reasoning.css") as r:
-            self.assertEqual(r.status, 200)
         with self._get("/static/js/app.js") as r:
             self.assertEqual(r.status, 200)
             self.assertIn("javascript", r.headers.get("Content-Type", ""))
             body = r.read()
         self.assertIn(b"function init", body)
-        with self._get("/static/js/graph_reasoning.js") as r:
-            self.assertEqual(r.status, 200)
+
+    def test_removed_graph_static_assets_are_404(self):
+        for path in ("/static/css/graph_reasoning.css", "/static/js/graph_reasoning.js"):
+            with self.assertRaises(urllib.error.HTTPError) as ctx:
+                self._get(path)
+            self.assertEqual(ctx.exception.code, 404, msg=path)
 
     def test_unknown_path_is_404(self):
         with self.assertRaises(urllib.error.HTTPError) as ctx:

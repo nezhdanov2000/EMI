@@ -1,13 +1,14 @@
 """
-One-off script: re-export the standalone VSF dashboard after the Phase 2
-architecture cleanup (4D time/frame controller, hard 4D cap, graph removal).
+One-off script: re-export the standalone VSF dashboard for the UCI Mushroom
+demo dataset under the v2.0 "Clean Core" architecture (Independent Branch
+Discovery, up to 4 independently-found branches per export — see
+Project_Master_Document.md Section 4).
 
-Mirrors server.py's live-app AVR parameters (alpha=0.01, vir_threshold=0.85,
-n_permutations=100, random_state=42) for target="class", criterion="p"
-(poisonous) on the UCI Mushroom dataset, so the exported scenario matches
-what the live app would compute for the same inputs. `max_d` is left at its
-new default (`vsf.dashboard._MAX_SUPPORTED_D` == 4) rather than passed
-explicitly, since export_full_dashboard now rejects anything higher anyway.
+target="class", criterion="p" (poisonous). `discover_branches` is fully
+deterministic (Project_Master_Document.md Section 4.5) — there is no
+alpha/vir_threshold/n_permutations/random_state to pin anymore, unlike the
+v1.0 AVR engine this replaced. `max_d` is left at its default
+(`vsf.avr.MAX_BRANCH_D` == 4).
 """
 import os
 
@@ -26,10 +27,6 @@ html = vsf.export_full_dashboard(
     target="class",
     criterion="p",
     translations=MUSHROOM_TRANSLATIONS,
-    alpha=0.01,
-    vir_threshold=0.85,
-    n_permutations=100,
-    random_state=42,
 )
 
 with open(OUTPUT_PATH, "w", encoding="utf-8") as f:

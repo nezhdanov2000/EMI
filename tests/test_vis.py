@@ -2,10 +2,10 @@
 Regression tests for vsf.vis.
 
 Covers two bugs from the code review:
-  1. Axis fallback selection (`prepare_visualization_payload`): when AVR
-     selects fewer than 3 features (d* < 3), the Y/Z scatter axes used to
-     fall back to the raw literal column indices 1 and 2 regardless of
-     what the primary axis already was — silently duplicating an axis
+  1. Axis fallback selection (`prepare_visualization_payload`): when the
+     branch selects fewer than 3 features (d < 3), the Y/Z scatter axes
+     used to fall back to the raw literal column indices 1 and 2 regardless
+     of what the primary axis already was -- silently duplicating an axis
      whenever the single selected feature happened to be column 1 or 2.
   2. Multi-class purity (`build_grid`'s `pur` computation): the old formula
      `mean(class_index) / (K-1)` is the cell's average class index
@@ -13,34 +13,34 @@ Covers two bugs from the code review:
      class" when K=2. For K>2 it can report a large "purity" for a cell
      containing ZERO samples of the actual positive/last class.
 
-Also covers the library/example-vocabulary decoupling: `vsf.vis` used to
-hardcode a UCI-mushroom-specific `MUSHROOM_TRANSLATIONS` dict. It now
-carries NO dataset vocabulary of its own — `humanize_val`/`humanize_col`
-and `prepare_visualization_payload` accept an optional `translations`
-table (see `vsf.vis.Translations`) and fall back to raw column/value
-strings with none supplied. `examples/mushroom_demo.py` is where the old
-mushroom-specific dict now lives, as a caller-supplied table rather than
-library-internal state.
+Also covers the library/example-vocabulary decoupling: `vsf.vis` carries NO
+dataset vocabulary of its own -- `humanize_val`/`humanize_col` and
+`prepare_visualization_payload` accept an optional `translations` table
+(see `vsf.vis.Translations`) and fall back to raw column/value strings with
+none supplied.
+
+v2.0 note: `prepare_visualization_payload`'s first parameter is now a
+`vsf.avr.BranchResult` (Project_Master_Document.md Section 4.2), not the
+removed v1.0 `AVRResult`/`Scenario`. Its `metrics` output is now exactly
+`{"d", "mi", "nmi"}` -- no more scenario/vir/l_target/l_feat/xai_message/
+history. `vsf.vis` no longer exposes a `generate_interactive_html` function
+(deleted, confirmed dead/no callers) -- there is nothing left to test for it.
 """
 
 import numpy as np
 import pytest
 
-from vsf.avr import AVRResult, Scenario
+from vsf.avr import BranchResult
 from vsf.vis import _axis_fallback_indices, humanize_col, humanize_val, prepare_visualization_payload
 
 
-def _make_result(selected_features, d_star=None):
-    return AVRResult(
+def _make_branch(selected_features, d=None):
+    return BranchResult(
+        d=d if d is not None else len(selected_features),
         selected_features=list(selected_features),
         selected_feature_names=[f"f{j}" for j in selected_features],
-        d_star=d_star if d_star is not None else len(selected_features),
-        scenario=Scenario.SCENARIO_A,
-        vir=0.5,
-        l_target=0.5,
-        l_feat=0.0,
-        nmi_full=0.5,
-        xai_message="test",
+        mi=0.5,
+        nmi=0.5,
     )
 
 
@@ -72,7 +72,7 @@ def test_axis_fallback_handles_degenerate_low_feature_count():
     assert idxs[0] == 0
 
 
-def test_prepare_visualization_payload_no_duplicate_axes_when_d_star_1():
+def test_prepare_visualization_payload_no_duplicate_axes_when_d_is_1():
     rng = np.random.default_rng(0)
     n = 200
     n_features = 5
@@ -80,11 +80,11 @@ def test_prepare_visualization_payload_no_duplicate_axes_when_d_star_1():
     Z = rng.integers(0, 2, size=n)
     feature_names = [f"feat_{i}" for i in range(n_features)]
 
-    # Selected feature is literally column 1 — the exact case that used to
+    # Selected feature is literally column 1 -- the exact case that used to
     # duplicate the Y axis onto X.
-    res = _make_result(selected_features=[1])
+    branch = _make_branch(selected_features=[1])
     payload = prepare_visualization_payload(
-        res, X, Z, feature_names=feature_names, target_name="class", sort_Z=Z
+        branch, X, Z, feature_names=feature_names, target_name="class", sort_Z=Z
     )
     names = [payload["axis_names"]["x"], payload["axis_names"]["y"], payload["axis_names"]["z"]]
     assert len(set(names)) == 3, f"expected 3 distinct axes, got {names}"
@@ -98,9 +98,9 @@ def test_build_grid_purity_is_share_of_positive_class_for_binary_target():
     n = 300
     X = rng.integers(0, 3, size=(n, 3))
     Z = rng.integers(0, 2, size=n)
-    res = _make_result(selected_features=[0, 1, 2])
+    branch = _make_branch(selected_features=[0, 1, 2])
     payload = prepare_visualization_payload(
-        res, X, Z, feature_names=["a", "b", "c"], target_name="class", sort_Z=Z
+        branch, X, Z, feature_names=["a", "b", "c"], target_name="class", sort_Z=Z
     )
     for pur in payload["grid_purity"]:
         assert 0.0 <= pur <= 1.0
@@ -122,9 +122,9 @@ def test_build_grid_purity_correct_for_multiclass_middle_class_cell():
     Z = rng.integers(0, 3, size=n)
     Z[mask] = 1
 
-    res = _make_result(selected_features=[0, 1, 2])
+    branch = _make_branch(selected_features=[0, 1, 2])
     payload = prepare_visualization_payload(
-        res, X, Z, feature_names=["a", "b", "c"], target_name="class", sort_Z=Z
+        branch, X, Z, feature_names=["a", "b", "c"], target_name="class", sort_Z=Z
     )
 
     g1 = payload["grids"]["1"]
@@ -142,8 +142,8 @@ def test_build_grid_purity_correct_for_multiclass_middle_class_cell():
 def test_humanize_functions_raw_passthrough_with_no_translations():
     """
     With no `translations` supplied (the default), `vsf.vis` must have zero
-    embedded dataset vocabulary: every label — from the bare helpers up
-    through the full `prepare_visualization_payload` output — falls back to
+    embedded dataset vocabulary: every label -- from the bare helpers up
+    through the full `prepare_visualization_payload` output -- falls back to
     the raw column/value strings exactly as they appear in the input data.
     """
     assert humanize_val("odor", "f") == "f"
@@ -156,9 +156,9 @@ def test_humanize_functions_raw_passthrough_with_no_translations():
     n = 200
     X = rng.integers(0, 4, size=(n, 3))
     Z = rng.integers(0, 2, size=n)
-    res = _make_result(selected_features=[0, 1, 2])
+    branch = _make_branch(selected_features=[0, 1, 2])
     payload = prepare_visualization_payload(
-        res, X, Z, feature_names=["cap-shape", "odor", "habitat"],
+        branch, X, Z, feature_names=["cap-shape", "odor", "habitat"],
         target_name="class", sort_Z=Z,
     )
     assert payload["axis_names"] == {"x": "cap-shape", "y": "odor", "z": "habitat"}
@@ -171,11 +171,12 @@ def test_humanize_functions_raw_passthrough_with_no_translations():
 
 def test_humanize_functions_translations_override_end_to_end():
     """
-    A caller-supplied `translations` table — shaped like
-    `examples.mushroom_demo.MUSHROOM_TRANSLATIONS` — must be threaded all
+    A caller-supplied `translations` table -- shaped like
+    `examples.mushroom_demo.MUSHROOM_TRANSLATIONS` -- must be threaded all
     the way through `prepare_visualization_payload`'s human-readable
-    fields. This is the contract `server.py` relies on to keep showing
-    mushroom-specific labels after the vocabulary moved out of the library.
+    fields. This is the contract `vsf.server`/`vsf.dashboard` rely on to
+    keep showing dataset-specific labels after the vocabulary moved out of
+    the library.
     """
     translations = {
         "columns": {"odor": "Odor", "cap-shape": "Cap Shape"},
@@ -183,7 +184,7 @@ def test_humanize_functions_translations_override_end_to_end():
     }
     assert humanize_val("odor", "f", translations) == "foul"
     assert humanize_col("odor", translations) == "Odor (odor)"
-    # A column/value absent from the table falls back to the raw string —
+    # A column/value absent from the table falls back to the raw string --
     # a partial translation table must not raise or blank out the rest.
     assert humanize_val("habitat", "g", translations) == "g"
     assert humanize_col("habitat", translations) == "habitat"
@@ -196,9 +197,9 @@ def test_humanize_functions_translations_override_end_to_end():
         rng.integers(0, 4, size=n),
     ])
     Z = rng.choice(["f", "n"], size=n)
-    res = _make_result(selected_features=[0, 1, 2])
+    branch = _make_branch(selected_features=[0, 1, 2])
     payload = prepare_visualization_payload(
-        res, X, Z, feature_names=["odor", "cap-shape", "habitat"],
+        branch, X, Z, feature_names=["odor", "cap-shape", "habitat"],
         target_name="odor", sort_Z=Z, translations=translations,
     )
     assert payload["axis_names"]["x"] == "Odor (odor)"
@@ -207,3 +208,61 @@ def test_humanize_functions_translations_override_end_to_end():
     assert payload["axis_names"]["z"] == "habitat"
     assert set(payload["target_labels"]) <= {"foul", "none"}
     assert set(payload["unique_target_classes"]) <= {"foul", "none"}
+
+
+# ---------------------------------------------------------------------------
+# v2.0 metrics shape: {"d", "mi", "nmi"} only -- no scenario/vir/history
+# ---------------------------------------------------------------------------
+
+def test_metrics_shape_is_exactly_d_mi_nmi():
+    rng = np.random.default_rng(5)
+    n = 200
+    X = rng.integers(0, 3, size=(n, 3))
+    Z = rng.integers(0, 2, size=n)
+    branch = BranchResult(
+        d=2,
+        selected_features=[0, 1],
+        selected_feature_names=["a", "b"],
+        mi=0.734,
+        nmi=0.612,
+    )
+    payload = prepare_visualization_payload(
+        branch, X, Z, feature_names=["a", "b", "c"], target_name="class", sort_Z=Z
+    )
+    assert payload["metrics"] == {"d": 2, "mi": pytest.approx(0.734), "nmi": pytest.approx(0.612)}
+    # No leftover v1.0 fields anywhere in the payload.
+    for banned in ("scenario", "vir", "l_target", "l_feat", "xai_message", "history", "d_star"):
+        assert banned not in payload
+        assert banned not in payload["metrics"]
+
+
+def test_prepare_visualization_payload_handles_4d_branch_slice_axis():
+    rng = np.random.default_rng(6)
+    n = 400
+    X = rng.integers(0, 3, size=(n, 4))
+    Z = rng.integers(0, 2, size=n)
+    branch = BranchResult(
+        d=4,
+        selected_features=[0, 1, 2, 3],
+        selected_feature_names=["a", "b", "c", "w"],
+        mi=0.4,
+        nmi=0.3,
+    )
+    payload = prepare_visualization_payload(
+        branch, X, Z, feature_names=["a", "b", "c", "w"], target_name="class", sort_Z=Z
+    )
+    assert payload["slice_axis"] is not None
+    assert payload["slice_axis"]["name"] == "w"
+    assert payload["metrics"] == {"d": 4, "mi": pytest.approx(0.4), "nmi": pytest.approx(0.3)}
+    # Per-slice grids plus the "all" marginal must be present.
+    for sv_idx in range(len(payload["slice_axis"]["ticks"])):
+        assert f"4_{sv_idx}" in payload["grids"]
+    assert "4_all" in payload["grids"]
+
+
+def test_generate_interactive_html_no_longer_exists():
+    # Confirmed dead/no-callers and deleted outright (see vsf/vis.py's
+    # module docstring). Nothing left to test its behavior -- this test
+    # only guards against silent reintroduction.
+    import vsf.vis as vis_mod
+    assert not hasattr(vis_mod, "generate_interactive_html")

@@ -1,12 +1,22 @@
 """
 VSF Visualization Module: Payload Generator & Standalone HTML Exporter
 Prepares 3D visual coordinates, HUD metrics, and generates interactive WebGL scatter plots.
+
+v2.0 note: `prepare_visualization_payload` now takes a single `BranchResult`
+(Project_Master_Document.md Section 4.2) rather than a v1.0 `AVRResult` —
+called once per independently-discovered branch (d in {1,2,3,4}), never once
+per dataset. The grid-building machinery below (`build_grid`, the 1D/2D/3D
+marginals, the 4D film-strip slices) is unchanged: it already operates on
+whatever feature subset `branch.selected_features` names, regardless of
+whether that subset is nested inside another branch's subset — see
+Project_Master_Document.md Section 5.6 for why that distinction matters for
+the collapse/split animation built on top of this payload.
 """
 
 import json
 import numpy as np
 from typing import Dict, List, Optional, Union
-from .avr import AVRResult
+from .avr import BranchResult
 
 # Shape of an optional dataset translation table accepted throughout this
 # module: {"columns": {raw_col_name: display_name},
@@ -145,7 +155,7 @@ def target_conditioned_sort(
 
 
 def prepare_visualization_payload(
-    result: AVRResult,
+    branch: BranchResult,
     X_matrix: np.ndarray,
     Z_target: np.ndarray,
     feature_names: Optional[List[str]] = None,
@@ -156,7 +166,10 @@ def prepare_visualization_payload(
 ) -> Dict:
     """
     Prepares a structured visualization payload with axis titles, category
-    labels, color mappings, and cluster occupancy density counts.
+    labels, color mappings, and cluster occupancy density counts, for ONE
+    independently-discovered branch (`vsf.avr.BranchResult`) — call this
+    once per branch the caller wants to render (typically once per
+    dimensionality 1..4 returned by `vsf.avr.discover_branches`).
 
     `translations` is an optional dataset-specific display table (see the
     `Translations` type alias above) — pass it to get human-readable column
@@ -167,7 +180,7 @@ def prepare_visualization_payload(
     X_arr = np.asarray(X_matrix)
     Z_arr = np.asarray(Z_target).ravel()
     n_samples, n_features = X_arr.shape
-    
+
     if feature_names is None:
         feature_names = [f"Feature_{j+1}" for j in range(n_features)]
 
@@ -186,13 +199,18 @@ def prepare_visualization_payload(
     else:
         sort_Z_sub = Z_sub
 
-    selected_idx = result.selected_features
-    d_star = result.d_star
+    selected_idx = branch.selected_features
+    branch_d = branch.d
 
     x_col_idx, y_col_idx, z_col_idx = _axis_fallback_indices(selected_idx, n_features, 3)
 
-    # 4th dimension (slice axis) — extracted when d* >= 4
-    has_4d = d_star >= 4 and len(selected_idx) >= 4
+    # 4th dimension (slice axis) — extracted when this branch is 4D. Unlike
+    # v1.0's `d_star >= 4` (a variable stopping point of one greedy chain),
+    # `branch.d` is always exactly `len(branch.selected_features)` by
+    # construction (see `discover_branches`), so the two conditions below
+    # are equivalent; the explicit length check is kept as a defensive
+    # invariant check, not because it can diverge in practice.
+    has_4d = branch_d >= 4 and len(selected_idx) >= 4
     w_col_idx = selected_idx[3] if has_4d else None
 
     x_name = feature_names[x_col_idx]
@@ -306,9 +324,10 @@ def prepare_visualization_payload(
             # positive class at index 2) averaged to 1 / 2 = 0.5, reporting
             # "50% positive" for a cell containing ZERO positive-class
             # samples — not a purity measure at all for K > 2, and
-            # incompatible with the frontend's diverging 0..1 "dirty center"
-            # color banding (`getColorIndexForPurity` in static/js/app.js),
-            # which assumes this value IS a positive-class probability.
+            # incompatible with the frontend's discrete 4-zone purity color
+            # banding (`getColorIndexForPurity` in static/js/app.js, see
+            # Project_Master_Document.md Section 5.3), which assumes this
+            # value IS a positive-class probability.
             positive_class_idx = len(unique_targets) - 1
             pur = float(np.mean(c_cols == positive_class_idx)) if N_c > 0 else 0.0
             norm_d = 0.2 + 0.8 * (np.sqrt(N_c) / np.sqrt(m_N))
@@ -425,214 +444,17 @@ def prepare_visualization_payload(
         "total_samples": len(indices),
         "all_feature_names": [humanize_col(fn, translations) for fn in feature_names],
         "raw_feature_names": feature_names,
-        "selected_features": [humanize_col(sfn, translations) for sfn in result.selected_feature_names],
+        "selected_features": [humanize_col(sfn, translations) for sfn in branch.selected_feature_names],
+        # v2.0: no scenario/vir/l_target/l_feat/xai_message/history — this
+        # branch carries only its own raw MI/NMI, with no significance
+        # claim attached (Project_Master_Document.md Section 4.5). `d` is
+        # this branch's dimensionality, not a globally "optimal" d* chosen
+        # by the algorithm — the caller (or user) picked which branch to
+        # render.
         "metrics": {
-            "d_star": result.d_star,
-            "scenario": result.scenario.value,
-            "vir": float(result.vir),
-            "nmi": float(result.nmi_full if result.d_star == 0 else (1.0 - result.l_target)),
-            "l_target": float(result.l_target),
-            "l_feat": float(result.l_feat),
-            "nmi_full": float(result.nmi_full),
-            "xai_message": result.xai_message,
-            "history": [
-                {
-                    **h,
-                    "feature": humanize_col(h["feature"], translations),
-                    "alternatives": [
-                        {
-                            **alt,
-                            "feature": humanize_col(alt["feature"], translations)
-                        } for alt in h.get("alternatives", [])
-                    ]
-                } for h in result.selection_history
-            ] if hasattr(result, 'selection_history') and result.selection_history else [],
+            "d": branch.d,
+            "mi": float(branch.mi),
+            "nmi": float(branch.nmi),
         },
     }
 
-
-def generate_interactive_html(payload: Dict, title: str = "VSF 3D Visualizer") -> str:
-    """
-    Generates a standalone, beautiful glassmorphism dark HTML document with Plotly 3D scatter plot.
-    """
-    payload_json = json.dumps(payload)
-    html_content = f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{title}</title>
-    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&family=Outfit:wght@500;700&display=swap" rel="stylesheet">
-    <style>
-        * {{ box-sizing: border-box; margin: 0; padding: 0; }}
-        body {{
-            font-family: 'Inter', sans-serif;
-            background: #070a12;
-            color: #f3f4f6;
-            overflow: hidden;
-            height: 100vh;
-            display: flex;
-            flex-direction: column;
-        }}
-        header {{
-            padding: 16px 24px;
-            background: rgba(15, 23, 42, 0.8);
-            backdrop-filter: blur(12px);
-            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            z-index: 10;
-        }}
-        h1 {{
-            font-family: 'Outfit', sans-serif;
-            font-size: 20px;
-            font-weight: 700;
-            background: linear-gradient(135deg, #a855f7, #6366f1, #3b82f6);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-        }}
-        .badge {{
-            padding: 6px 14px;
-            border-radius: 20px;
-            font-size: 13px;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }}
-        .SCENARIO_A {{ background: rgba(34, 197, 94, 0.2); color: #4ade80; border: 1px solid rgba(34, 197, 94, 0.4); }}
-        .SCENARIO_B {{ background: rgba(59, 130, 246, 0.2); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.4); }}
-        .SCENARIO_C {{ background: rgba(245, 158, 11, 0.2); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.4); }}
-        .SCENARIO_D {{ background: rgba(239, 68, 68, 0.2); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.4); }}
-        
-        main {{
-            flex: 1;
-            position: relative;
-            display: flex;
-        }}
-        #plot {{
-            width: 100%;
-            height: 100%;
-        }}
-        .hud-panel {{
-            position: absolute;
-            top: 20px;
-            right: 20px;
-            width: 320px;
-            background: rgba(15, 23, 42, 0.75);
-            backdrop-filter: blur(16px);
-            border: 1px solid rgba(255, 255, 255, 0.12);
-            border-radius: 16px;
-            padding: 20px;
-            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5);
-            z-index: 5;
-        }}
-        .metric-card {{
-            margin-bottom: 14px;
-        }}
-        .metric-title {{
-            font-size: 12px;
-            color: #9ca3af;
-            text-transform: uppercase;
-            letter-spacing: 0.8px;
-            margin-bottom: 4px;
-        }}
-        .metric-value {{
-            font-size: 22px;
-            font-family: 'Outfit', sans-serif;
-            font-weight: 700;
-            color: #ffffff;
-        }}
-        .xai-box {{
-            background: rgba(255, 255, 255, 0.05);
-            border-radius: 10px;
-            padding: 12px;
-            font-size: 13px;
-            line-height: 1.5;
-            color: #d1d5db;
-            border-left: 3px solid #8b5cf6;
-            margin-top: 10px;
-        }}
-    </style>
-</head>
-<body>
-    <header>
-        <h1>Visual Sufficiency Framework (VSF) — 3D Visualizer</h1>
-        <span id="scenarioBadge" class="badge">Loading...</span>
-    </header>
-    <main>
-        <div id="plot"></div>
-        <div class="hud-panel">
-            <div class="metric-card">
-                <div class="metric-title">Optimal Dimensionality (d*)</div>
-                <div id="dStarVal" class="metric-value">-</div>
-            </div>
-            <div class="metric-card">
-                <div class="metric-title">Visual Information Ratio (VIR)</div>
-                <div id="virVal" class="metric-value">-</div>
-            </div>
-            <div class="metric-card">
-                <div class="metric-title">Target Projection Loss (L_target)</div>
-                <div id="lTargetVal" class="metric-value">-</div>
-            </div>
-            <div class="metric-card">
-                <div class="metric-title">Selected Visual Axes</div>
-                <div id="axesVal" style="font-size: 14px; color: #c084fc; font-weight: 600; margin-top: 4px;">-</div>
-            </div>
-            <div class="xai-box" id="xaiMsg">-</div>
-        </div>
-    </main>
-
-    <script>
-        const payload = {payload_json};
-        
-        // Populate HUD
-        document.getElementById('dStarVal').innerText = payload.metrics.d_star + " Visual Axes";
-        document.getElementById('virVal').innerText = (payload.metrics.vir * 100).toFixed(1) + "%";
-        document.getElementById('lTargetVal').innerText = (payload.metrics.l_target * 100).toFixed(1) + "%";
-        document.getElementById('axesVal').innerText = payload.selected_features.join(', ');
-        document.getElementById('xaiMsg').innerText = payload.metrics.xai_message;
-        
-        const badge = document.getElementById('scenarioBadge');
-        badge.innerText = payload.metrics.scenario;
-        badge.className = 'badge ' + payload.metrics.scenario;
-        
-        // Plot 3D Scatter
-        const trace = {{
-            x: payload.x,
-            y: payload.y,
-            z: payload.z,
-            mode: 'markers',
-            marker: {{
-                size: 6,
-                color: payload.color,
-                colorscale: 'Viridis',
-                opacity: 0.85,
-                line: {{ color: '#ffffff', width: 0.5 }}
-            }},
-            text: payload.hover_text,
-            hoverinfo: 'text',
-            customdata: payload.customdata,
-            type: 'scatter3d'
-        }};
-        
-        const layout = {{
-            paper_bgcolor: '#070a12',
-            plot_bgcolor: '#070a12',
-            scene: {{
-                xaxis: {{ title: payload.axis_names.x, backgroundcolor: '#0f172a', gridcolor: '#1e293b', zerolinecolor: '#334155' }},
-                yaxis: {{ title: payload.axis_names.y, backgroundcolor: '#0f172a', gridcolor: '#1e293b', zerolinecolor: '#334155' }},
-                zaxis: {{ title: payload.axis_names.z, backgroundcolor: '#0f172a', gridcolor: '#1e293b', zerolinecolor: '#334155' }},
-                camera: {{ eye: {{ x: 1.5, y: 1.5, z: 1.2 }} }}
-            }},
-            margin: {{ l: 0, r: 0, b: 0, t: 0 }},
-            font: {{ family: 'Inter', color: '#94a3b8' }}
-        }};
-        
-        Plotly.newPlot('plot', [trace], layout, {{ responsive: true, displayModeBar: false }});
-    </script>
-</body>
-</html>
-"""
-    return html_content

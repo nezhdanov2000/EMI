@@ -1,25 +1,45 @@
+// VSF v2.0 "Clean Core" frontend — Independent Branch Discovery UI
+// (see Project_Master_Document.md Section 0 for what changed vs v1.0, and
+// UI_Functional_Spec.md for the exact UX this file implements).
+//
+// State model:
+//   currentBranchesResponse — the raw /api/analyze response: { target,
+//     criterion, branches: { "1": payload, "2": payload, ... }, branch_dims,
+//     default_branch }. One fetch per target/criterion selection.
+//   activeBranchDim — which branch (string key into .branches) is currently
+//     shown. Switching this is an INSTANT re-render (Project_Master_Document
+//     .md Section 5.6, case 1) — never animated, since the feature set can
+//     change entirely between branches.
+//   currentPayload — currentBranchesResponse.branches[activeBranchDim], the
+//     single-branch visualization payload (vsf/vis.py's
+//     prepare_visualization_payload shape) the plot is built from.
+//   activeDimensionality — the WITHIN-branch view dimensionality (1..branch
+//     .metrics.d). Changing this animates a collapse/split of the currently
+//     selected branch's own axes (Project_Master_Document.md Section 5.6,
+//     case 2) — it never jumps between branches.
+
+let currentBranchesResponse = null;
+let activeBranchDim = null;
 let currentPayload = null;
 let activeDimensionality = null;
-let activeCritItem = null;
 let allColumnsData = [];
-let activeSliceIndex = null;  // Current 4D slice index (null = show all / no 4D)
+let activeSliceIndex = null;  // Current 4D slice index (null = "All" slice-marginalized view)
 let currentRenderedDim = null;
 let isAnimating = false;
-let currentAnalysisContext = { target: 'class', criterion: null, composite_target: null };
-let _currentClickedCenterPt = null;
 
-// Predefined color palettes for clear class separation
-const CLASS_COLORS = [
-    '#22c55e', // Green (e / Edible)
-    '#ef4444', // Red (p / Poisonous)
-    '#3b82f6', // Blue
-    '#f59e0b', // Amber
-    '#a855f7', // Purple
-    '#06b6d4', // Cyan
-    '#ec4899', // Pink
-    '#84cc16', // Lime
-    '#eab308'  // Yellow
-];
+// Global Pattern Scan (Display Settings sidebar — see vsf/server.py's
+// module docstring for the full algorithm). Scans every (column, value)
+// One-vs-Rest criterion in the dataset in a background job on the server;
+// `scanResultsByColumn` is null until a scan completes (no filter applied,
+// Target Variable shows every column/value as usual), or
+// {colId: [{value, max_nmi, best_d, best_mi, best_features}, ...]} once one
+// has — the catalog is then rebuilt to show ONLY the columns/values that
+// passed. This never touches branch discovery for the currently-analyzed
+// target; it only filters which (column, value) pairs are offered as a
+// NEW target to pick.
+let scanResultsByColumn = null;
+let scanPollTimer = null;
+let currentDefaultTarget = null;
 
 async function init() {
     // Dataset-agnostic default target: resolved from /api/columns' declared
@@ -34,29 +54,244 @@ async function init() {
             const colData = await colRes.json();
             allColumnsData = colData.columns;
             defaultTarget = colData.default_target || (colData.columns[0] && colData.columns[0].id) || 'class';
-            populateCatalog(colData.columns, colData.default_target);
-            // Add default first filter row
-            addFilterRow();
-            populateBlueFeatureDropdowns(colData.columns);
-        }
-
-        // Fetch top insights catalog (NMI >= 75%)
-        const topRes = await fetch('/api/top_columns');
-        if (topRes.ok) {
-            const topData = await topRes.json();
-            populateTopCatalog(topData.columns);
+            currentDefaultTarget = defaultTarget;
+            // Pick up a scan that was already running/finished before this
+            // page load (e.g. a reload mid-scan) rather than losing it.
+            await checkExistingScanOnLoad();
+            renderCatalog();
+        } else {
+            showAnalysisError(`Failed to load dataset catalog (HTTP ${colRes.status}).`);
         }
 
         await runAnalysis(defaultTarget, null);
     } catch (err) {
         console.error("Initialization error:", err);
+        showAnalysisError('Initialization failed: ' + err.message);
         await runAnalysis(defaultTarget, null);
+    }
+}
+
+// Rebuilds allColumnsData into a catalog containing only the columns/
+// values a completed scan kept (a no-op copy when no scan filter is
+// active). Surviving criteria get their max NMI/dimensionality appended to
+// their label so the filtered list still carries that information.
+function buildScanFilteredCatalog() {
+    if (!scanResultsByColumn) return allColumnsData;
+    const filtered = [];
+    allColumnsData.forEach(col => {
+        const passing = scanResultsByColumn[col.id];
+        if (!passing || passing.length === 0) return;
+        const passingByValue = {};
+        passing.forEach(p => { passingByValue[p.value] = p; });
+        const criteria = col.criteria
+            .filter(c => Object.prototype.hasOwnProperty.call(passingByValue, c.id))
+            .map(c => {
+                const info = passingByValue[c.id];
+                return {
+                    id: c.id,
+                    label: `${c.label} · NMI ${(info.max_nmi * 100).toFixed(1)}% (${info.best_d}D)`,
+                };
+            });
+        if (criteria.length > 0) {
+            filtered.push({ id: col.id, label: col.label, criteria });
+        }
+    });
+    return filtered;
+}
+
+function renderCatalog() {
+    populateCatalog(buildScanFilteredCatalog(), currentDefaultTarget);
+}
+
+// ---------------------------------------------------------------------
+// Global Pattern Scan controls
+
+function setScanControlsRunning(running) {
+    const startBtn = document.getElementById('btnStartScan');
+    const cancelBtn = document.getElementById('btnCancelScan');
+    const thresholdInput = document.getElementById('scanNmiThreshold');
+    if (startBtn) startBtn.style.display = running ? 'none' : '';
+    if (cancelBtn) cancelBtn.style.display = running ? '' : 'none';
+    if (thresholdInput) thresholdInput.disabled = running;
+}
+
+function showScanStatusMsg(text, kind) {
+    const el = document.getElementById('scanStatusMsg');
+    if (!el) return;
+    if (!text) {
+        el.style.display = 'none';
+        el.className = 'scan-status-msg';
+        return;
+    }
+    el.textContent = text;
+    el.className = 'scan-status-msg' + (kind ? ' scan-status-' + kind : '');
+    el.style.display = 'block';
+}
+
+async function startDatasetScan() {
+    const thresholdInput = document.getElementById('scanNmiThreshold');
+    const threshold = thresholdInput ? Number(thresholdInput.value) : 80;
+    showScanStatusMsg(null);
+
+    if (!Number.isFinite(threshold) || threshold < 0 || threshold >= 100) {
+        showScanStatusMsg('NMI threshold must be a number in [0, 100).', 'error');
+        return;
+    }
+
+    try {
+        const res = await fetch('/api/scan/start', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ nmi_threshold: threshold }),
+        });
+        if (!res.ok) {
+            let detail = `HTTP ${res.status}`;
+            try {
+                const body = await res.json();
+                if (body && body.error) detail = body.error;
+            } catch (_) { /* body wasn't JSON */ }
+            showScanStatusMsg('Failed to start scan: ' + detail, 'error');
+            return;
+        }
+        setScanControlsRunning(true);
+        const progressWrap = document.getElementById('scanProgressWrap');
+        if (progressWrap) progressWrap.style.display = 'flex';
+        startScanPolling();
+    } catch (err) {
+        console.error('Failed to start scan:', err);
+        showScanStatusMsg('Failed to start scan: ' + err.message, 'error');
+    }
+}
+
+async function cancelDatasetScan() {
+    try {
+        await fetch('/api/scan/cancel', { method: 'POST' });
+    } catch (err) {
+        console.error('Failed to cancel scan:', err);
+    }
+}
+
+function clearDatasetScan() {
+    scanResultsByColumn = null;
+    renderCatalog();
+    showScanStatusMsg(null);
+    const clearBtn = document.getElementById('btnClearScan');
+    if (clearBtn) clearBtn.style.display = 'none';
+    const progressWrap = document.getElementById('scanProgressWrap');
+    if (progressWrap) progressWrap.style.display = 'none';
+}
+
+function startScanPolling() {
+    stopScanPolling();
+    pollScanStatusOnce();
+    scanPollTimer = setInterval(pollScanStatusOnce, 800);
+}
+
+function stopScanPolling() {
+    if (scanPollTimer !== null) {
+        clearInterval(scanPollTimer);
+        scanPollTimer = null;
+    }
+}
+
+async function pollScanStatusOnce() {
+    try {
+        const res = await fetch('/api/scan/status');
+        if (!res.ok) return;
+        const status = await res.json();
+        handleScanStatus(status);
+    } catch (err) {
+        console.error('Scan status poll failed:', err);
+    }
+}
+
+// Applies a completed/cancelled scan's results as the active catalog
+// filter and updates the status message — does NOT re-render the catalog
+// itself, so callers that already know they'll render afterward (init's
+// checkExistingScanOnLoad) don't render twice.
+function applyScanResults(results, thresholdPct, wasCancelled) {
+    scanResultsByColumn = {};
+    results.forEach(r => {
+        if (!scanResultsByColumn[r.column]) scanResultsByColumn[r.column] = [];
+        scanResultsByColumn[r.column].push(r);
+    });
+
+    const clearBtn = document.getElementById('btnClearScan');
+    if (clearBtn) clearBtn.style.display = 'block';
+
+    const nCols = Object.keys(scanResultsByColumn).length;
+    const nVals = results.length;
+    const prefix = wasCancelled ? 'Scan cancelled — ' : '';
+    if (nVals === 0) {
+        showScanStatusMsg(`${prefix}No column/value exceeded NMI > ${thresholdPct}%.`, 'empty');
+    } else {
+        showScanStatusMsg(
+            `${prefix}${nVals} value(s) across ${nCols} column(s) exceed NMI > ${thresholdPct}% — Target Variable filtered.`,
+            'ok'
+        );
+    }
+}
+
+function handleScanStatus(status) {
+    if (status.status === 'idle') {
+        stopScanPolling();
+        setScanControlsRunning(false);
+        return;
+    }
+
+    if (status.status === 'running') {
+        setScanControlsRunning(true);
+        const progressWrap = document.getElementById('scanProgressWrap');
+        if (progressWrap) progressWrap.style.display = 'flex';
+        const p = status.progress || { current: 0, total: 0, label: '' };
+        const pct = p.total > 0 ? Math.round((p.current / p.total) * 100) : 0;
+        const fill = document.getElementById('scanProgressFill');
+        if (fill) fill.style.width = pct + '%';
+        const label = document.getElementById('scanProgressLabel');
+        if (label) label.textContent = `${p.current} / ${p.total}` + (p.label ? ' — ' + p.label : '');
+        return;
+    }
+
+    // Terminal states: done / cancelled / error
+    stopScanPolling();
+    setScanControlsRunning(false);
+
+    if (status.status === 'error') {
+        showScanStatusMsg('Scan failed: ' + (status.error || 'unknown error'), 'error');
+        return;
+    }
+
+    applyScanResults(status.results || [], status.threshold_pct, status.status === 'cancelled');
+    renderCatalog();
+}
+
+// Called once from init(), before the first renderCatalog() — picks up a
+// scan that was already running or had already finished before this page
+// load (e.g. the page was reloaded mid-scan), so a reload never loses a
+// scan's progress or result.
+async function checkExistingScanOnLoad() {
+    try {
+        const res = await fetch('/api/scan/status');
+        if (!res.ok) return;
+        const status = await res.json();
+        if (status.status === 'running') {
+            setScanControlsRunning(true);
+            const progressWrap = document.getElementById('scanProgressWrap');
+            if (progressWrap) progressWrap.style.display = 'flex';
+            startScanPolling();
+        } else if (status.status === 'done' && status.results && status.results.length > 0) {
+            applyScanResults(status.results, status.threshold_pct, false);
+        }
+        // status === 'idle' -> nothing to restore, defaults already correct.
+    } catch (err) {
+        console.error('Failed to check existing scan status:', err);
     }
 }
 
 function populateCatalog(cols, defaultTarget) {
     const accordion = document.getElementById('catalogAccordion');
     accordion.innerHTML = '';
+    let activeCritItem = null;
 
     cols.forEach(col => {
         const charItem = document.createElement('div');
@@ -84,33 +319,17 @@ function populateCatalog(cols, defaultTarget) {
             critHeader.className = 'crit-header';
             critHeader.innerHTML = `<span>${crit.label}</span>`;
 
-            const critContent = document.createElement('div');
-            critContent.className = 'crit-content';
-            // Unique ID for the history container
-            const historyListId = `history-${col.id}-${crit.id.replace(/[^a-zA-Z0-9]/g, '_')}`;
-            critContent.id = historyListId;
-
             critHeader.onclick = async (e) => {
                 e.stopPropagation();
                 if (activeCritItem && activeCritItem !== critItem) {
                     activeCritItem.classList.remove('active');
-                    activeCritItem.classList.remove('open');
                 }
-
-                const isActive = critItem.classList.contains('active');
-                if (!isActive) {
-                    critItem.classList.add('active');
-                    activeCritItem = critItem;
-                    critContent.innerHTML = '<div style="color:var(--text-dim);font-size:0.8rem;padding:4px;">Analyzing Pareto-front...</div>';
-                    critItem.classList.add('open');
-                    await runAnalysis(col.id, crit.id, historyListId);
-                } else {
-                    critItem.classList.toggle('open');
-                }
+                critItem.classList.add('active');
+                activeCritItem = critItem;
+                await runAnalysis(col.id, crit.id);
             };
 
             critItem.appendChild(critHeader);
-            critItem.appendChild(critContent);
             charContent.appendChild(critItem);
         });
 
@@ -124,88 +343,21 @@ function populateCatalog(cols, defaultTarget) {
     });
 }
 
-function populateTopCatalog(cols) {
-    const accordion = document.getElementById('topCatalogAccordion');
-    if (!accordion) return;
-    accordion.innerHTML = '';
-
-    if (!cols || cols.length === 0) {
-        accordion.innerHTML = '<div style="color: var(--text-dim); font-size: 0.85rem; padding: 1rem;">No insights found with NMI ≥ 75%</div>';
-        return;
+function showAnalysisError(message) {
+    const el = document.getElementById('analysisError');
+    if (!el) return;
+    if (message) {
+        el.textContent = message;
+        el.style.display = 'block';
+    } else {
+        el.textContent = '';
+        el.style.display = 'none';
     }
-
-    cols.forEach(col => {
-        const charItem = document.createElement('div');
-        charItem.className = 'char-item';
-
-        const charHeader = document.createElement('div');
-        charHeader.className = 'char-header';
-        const colMaxNmiPct = (col.max_nmi * 100).toFixed(1);
-        charHeader.innerHTML = `
-            <span class="char-title">${col.label}</span>
-            <div style="display:flex; align-items:center; gap:8px;">
-                <span class="top-nmi-badge">${colMaxNmiPct}%</span>
-                <span class="char-icon">▶</span>
-            </div>
-        `;
-
-        const charContent = document.createElement('div');
-        charContent.className = 'char-content';
-
-        charHeader.onclick = () => {
-            charItem.classList.toggle('open');
-        };
-
-        col.criteria.forEach(crit => {
-            const critItem = document.createElement('div');
-            critItem.className = 'crit-item';
-
-            const critHeader = document.createElement('div');
-            critHeader.className = 'crit-header';
-            const critNmiPct = (crit.max_nmi * 100).toFixed(1);
-            critHeader.innerHTML = `
-                <span>${crit.label}</span>
-                <span class="top-crit-nmi">${critNmiPct}%</span>
-            `;
-
-            const critContent = document.createElement('div');
-            critContent.className = 'crit-content';
-            const historyListId = `top-history-${col.id}-${crit.id.replace(/[^a-zA-Z0-9]/g, '_')}`;
-            critContent.id = historyListId;
-
-            critHeader.onclick = async (e) => {
-                e.stopPropagation();
-                if (activeCritItem && activeCritItem !== critItem) {
-                    activeCritItem.classList.remove('active');
-                    activeCritItem.classList.remove('open');
-                }
-
-                const isActive = critItem.classList.contains('active');
-                if (!isActive) {
-                    critItem.classList.add('active');
-                    activeCritItem = critItem;
-                    critContent.innerHTML = '<div style="color:var(--text-dim);font-size:0.8rem;padding:4px;">Analyzing Pareto-front...</div>';
-                    critItem.classList.add('open');
-                    await runAnalysis(col.id, crit.id, historyListId);
-                } else {
-                    critItem.classList.toggle('open');
-                }
-            };
-
-            critItem.appendChild(critHeader);
-            critItem.appendChild(critContent);
-            charContent.appendChild(critItem);
-        });
-
-        charItem.appendChild(charHeader);
-        charItem.appendChild(charContent);
-        accordion.appendChild(charItem);
-    });
 }
 
-async function runAnalysis(targetCol, criterion = null, targetHistoryContainerId = null) {
-    currentAnalysisContext = { target: targetCol, criterion: criterion, composite_target: null };
+async function runAnalysis(targetCol, criterion = null) {
     showLoader(true);
+    showAnalysisError(null);
     try {
         const reqBody = { target: targetCol };
         if (criterion !== null) {
@@ -219,17 +371,133 @@ async function runAnalysis(targetCol, criterion = null, targetHistoryContainerId
         });
 
         if (response.ok) {
-            currentPayload = await response.json();
-            activeDimensionality = null; // Reset on new analysis
-            updateDashboard(currentPayload, targetHistoryContainerId);
+            const data = await response.json();
+            loadBranchesResponse(data);
         } else {
-            console.error("Error fetching analysis", response.status);
+            let detail = `HTTP ${response.status}`;
+            try {
+                const errBody = await response.json();
+                if (errBody && errBody.error) detail = errBody.error;
+            } catch (_) { /* body wasn't JSON, keep status-only detail */ }
+            console.error("Error fetching analysis:", detail);
+            showAnalysisError(`Analysis failed: ${detail}`);
         }
     } catch (err) {
         console.error("API POST failed:", err);
+        showAnalysisError('Analysis request failed: ' + err.message);
     } finally {
         showLoader(false);
     }
+}
+
+// (Re-)renders the branch list for the ALREADY-FETCHED
+// currentBranchesResponse (no new /api/analyze request) and picks which
+// branch becomes active. Called right after a fresh analysis
+// (preserveActiveIfPossible=false — always pick the server's own default)
+// — there is no client-side branch filter, every discovered branch is
+// always shown.
+function selectDefaultBranchAndRender(preserveActiveIfPossible) {
+    if (!currentBranchesResponse) return;
+    const data = currentBranchesResponse;
+    const allDims = (data.branch_dims || []).map(String);
+    if (allDims.length === 0) return; // handled by loadBranchesResponse's own early return
+
+    renderBranchSelector(data);
+    showAnalysisError(null);
+
+    if (preserveActiveIfPossible && activeBranchDim && allDims.includes(activeBranchDim)) {
+        return; // still valid — leave the current view exactly as-is
+    }
+
+    // Prefer the server's own default_branch (its highest-d branch), else
+    // fall back to the highest-d branch available.
+    const preferredDefault = data.default_branch != null ? String(data.default_branch) : null;
+    const nextDim = (preferredDefault && allDims.includes(preferredDefault))
+        ? preferredDefault
+        : allDims[allDims.length - 1];
+    selectBranch(nextDim, /* fromInitialLoad */ true);
+}
+
+// Loads a fresh /api/analyze response: resets ALL per-analysis state (branch
+// selection, within-branch dimensionality, 4D slice), then renders the
+// branch list and selects the server's default branch.
+function loadBranchesResponse(data) {
+    currentBranchesResponse = data;
+    stopSlicePlayback();
+    activeSliceIndex = null;
+    currentRenderedDim = null;
+
+    const dims = data.branch_dims || [];
+    if (dims.length === 0) {
+        currentPayload = null;
+        activeBranchDim = null;
+        renderBranchSelector(data);
+        showAnalysisError('No branches found — this dataset has no usable feature columns for the chosen target.');
+        return;
+    }
+
+    selectDefaultBranchAndRender(/* preserveActiveIfPossible */ false);
+}
+
+function renderBranchSelector(response) {
+    const container = document.getElementById('branchList');
+    const caption = document.getElementById('branchCaption');
+    if (!container) return;
+    container.innerHTML = '';
+
+    const allDims = response.branch_dims || [];
+    if (allDims.length === 0) {
+        container.innerHTML = '<div style="color: var(--text-dim); font-size: 0.85rem; padding: 1rem;">No branches available.</div>';
+        if (caption) caption.style.display = 'none';
+        return;
+    }
+    if (caption) caption.style.display = 'block';
+
+    allDims.forEach(dRaw => {
+        const dKey = String(dRaw);
+        const branch = response.branches ? response.branches[dKey] : null;
+        if (!branch || !branch.metrics) return;
+        const m = branch.metrics;
+        const features = (branch.selected_features || []).join(' + ');
+
+        const card = document.createElement('div');
+        card.className = 'branch-card' + (dKey === activeBranchDim ? ' active' : '');
+        card.dataset.dim = dKey;
+        card.innerHTML = `
+            <div class="branch-card-head">
+                <span class="branch-dim-badge">${dKey}D</span>
+                <span class="branch-mi" title="Raw mutual information I(Z;X_S) — not normalized, no significance test">I = ${m.mi.toFixed(3)}</span>
+                <span class="branch-nmi" title="Normalized mutual information of this branch">NMI = ${(m.nmi * 100).toFixed(1)}%</span>
+            </div>
+            <div class="branch-features">${features || '—'}</div>
+        `;
+        card.onclick = () => selectBranch(dKey);
+        container.appendChild(card);
+    });
+}
+
+// Branch switch: an INSTANT re-render of the whole scene against a
+// DIFFERENT independently-discovered feature set. Never animated — see
+// Project_Master_Document.md Section 5.6, case 1. Distinct from
+// setDimensionality(), which animates within one already-selected branch.
+function selectBranch(dKey, fromInitialLoad = false) {
+    dKey = String(dKey);
+    if (!currentBranchesResponse || !currentBranchesResponse.branches[dKey]) return;
+    if (!fromInitialLoad && dKey === activeBranchDim) return;
+    if (isAnimating) return; // don't interrupt an in-flight within-branch collapse/split animation
+
+    stopSlicePlayback();
+    activeBranchDim = dKey;
+    currentPayload = currentBranchesResponse.branches[dKey];
+    activeDimensionality = currentPayload.metrics.d; // start fully expanded to the branch's own dimensionality
+    activeSliceIndex = null;
+    currentRenderedDim = null; // forces renderPlot() (no-animation path) in setDimensionality()
+
+    document.querySelectorAll('#branchList .branch-card').forEach(card => {
+        card.classList.toggle('active', card.dataset.dim === dKey);
+    });
+
+    updateDashboard(currentPayload);
 }
 
 function showLoader(show) {
@@ -238,58 +506,32 @@ function showLoader(show) {
     else loader.classList.remove('active');
 }
 
-
-
-function populateBlueFeatureDropdowns(cols) {
-    const colSelect = document.getElementById('blueFeatureCol');
-    if (!colSelect) return;
-
-    cols.forEach(col => {
-        const option = document.createElement('option');
-        option.value = col.id;
-        option.innerText = col.label;
-        colSelect.appendChild(option);
-    });
-}
-
-// 5-bin Probability Scale
+// 4-zone Purity Color Scale (Project_Master_Document.md Section 5.3).
+// Exhaustive, non-overlapping partition of [0, 1]:
+//   [0, 0.25)    -> Red    ("Alternative": target class virtually absent)
+//   [0.25, 0.75] -> Brown  ("Murky Zone": classes physically mixed)
+//   (0.75, 0.85] -> Yellow ("High": target dominant, but with visible admixture)
+//   (0.85, 1.0]  -> Green  ("Target": target class confidently dominant)
 const PROB_COLORS = [
-    '#f44336', // Red (0-15%) - Non-target
-    '#ff9800', // Orange (15-30%)
-    '#57463a', // Dark Brown (30-70%) - Murky Zone
-    '#ffeb3b', // Yellow (70-85%)
-    '#53ea4c'  // Green (85-100%) - Target
+    '#ef4444', // Red
+    '#92572e', // Brown
+    '#eab308', // Yellow
+    '#22c55e'  // Green
 ];
 const PALETTE_COUNT = PROB_COLORS.length;
 
-function buildDiscreteColorscale() {
-    const scale = [];
-    for (let i = 0; i < PALETTE_COUNT; i++) {
-        const lo = i / PALETTE_COUNT;
-        const hi = (i + 1) / PALETTE_COUNT;
-        scale.push([lo, PROB_COLORS[i]]);
-        scale.push([hi, PROB_COLORS[i]]);
-    }
-    return scale;
-}
-const DISCRETE_COLORSCALE = buildDiscreteColorscale();
-
 function getColorIndexForPurity(purity) {
-    if (purity < 0.15) return 0;
-    if (purity < 0.30) return 1;
-    if (purity < 0.70) return 2;
-    if (purity < 0.85) return 3;
-    return 4;
+    if (purity < 0.25) return 0;   // Red:    [0, 0.25)
+    if (purity <= 0.75) return 1;  // Brown:  [0.25, 0.75]
+    if (purity <= 0.85) return 2;  // Yellow: (0.75, 0.85]
+    return 3;                      // Green:  (0.85, 1.0]
 }
 
-function updateDashboard(payload, targetHistoryContainerId) {
+function updateDashboard(payload) {
     currentPayload = payload;
     const m = payload.metrics;
 
     currentRenderedDim = null; // Force full plot re-render with new axis titles
-    if (activeDimensionality === null) {
-        activeDimensionality = (m && m.d_star) ? m.d_star : 3;
-    }
 
     // Handle 4D slice controller setup
     if (payload.slice_axis) {
@@ -299,52 +541,21 @@ function updateDashboard(payload, targetHistoryContainerId) {
         renderSliceTabs(payload);
     } else {
         activeSliceIndex = null;
+        stopSlicePlayback();
         const sliceCtrl = document.getElementById('slice-controller');
         if (sliceCtrl) sliceCtrl.style.display = 'none';
     }
 
-    document.getElementById('val-pval').innerText = 'p < 0.001';
     document.getElementById('totalSamplesVal').innerText = (payload.total_samples || (payload.x ? payload.x.length : 0)).toLocaleString();
 
-    const xaiBanner = document.getElementById('xaiBanner');
-    if (xaiBanner) xaiBanner.innerHTML = `💡 <b>XAI Insight:</b> ${m.xai_message}`;
-
-    // Render Dimension Switcher toggle buttons
+    // Render Dimension Switcher toggle buttons (within-branch collapse/split, 1..branch.metrics.d)
     renderDimensionButtons(payload);
-
-    // Update Color Legend
-    const legendTargetName = document.getElementById('legendTargetName');
-    if (legendTargetName) legendTargetName.innerText = payload.target_name || 'Target Variable';
-
-    const legendItems = document.getElementById('legendItems');
-    const uniqueClasses = payload.unique_target_classes || [];
-    if (legendItems) {
-        legendItems.innerHTML = '';
-        uniqueClasses.forEach((cls, idx) => {
-            const colorHex = CLASS_COLORS[idx % CLASS_COLORS.length];
-            const legItem = document.createElement('div');
-            legItem.className = 'legend-item';
-            legItem.innerHTML = `
-                        <span class="color-dot" style="background-color: ${colorHex};"></span>
-                        <span style="font-weight: 500;">${cls}</span>
-                    `;
-            legendItems.appendChild(legItem);
-        });
-    }
-
-    // Update Bivariate Map Labels (Concentration Map)
-    const bivLabelX = document.getElementById('bivLabelX');
-    const bivLabelY = document.getElementById('bivLabelY');
-    if (bivLabelX && bivLabelY && uniqueClasses.length > 0) {
-        bivLabelX.innerText = '100% ' + uniqueClasses[0];
-        bivLabelY.innerText = '100% ' + uniqueClasses[uniqueClasses.length - 1];
-    }
 
     // Populate Exact Values for Stroke settings
     const exactSelect = document.getElementById('strokeExactVal');
     if (exactSelect) {
         exactSelect.innerHTML = '<option value="">-- Select --</option>';
-        let dimStr = (activeDimensionality || 3).toString();
+        let dimStr = (activeDimensionality || m.d).toString();
         let g = payload.grids ? payload.grids[dimStr] : null;
         let purities = g ? g.purity : payload.grid_purity;
         if (purities) {
@@ -356,60 +567,7 @@ function updateDashboard(payload, targetHistoryContainerId) {
         }
     }
 
-    // Selection History List (Pareto Systems)
-    if (targetHistoryContainerId && m.history) {
-        const historyContainer = document.getElementById(targetHistoryContainerId);
-        if (historyContainer) {
-            historyContainer.innerHTML = '';
-            m.history.forEach((step, idx) => {
-                const item = document.createElement('div');
-                item.className = 'history-item' + (step.step === activeDimensionality ? ' active' : '');
-                item.dataset.step = step.step;
-
-                const virPct = (step.vir * 100).toFixed(1);
-                const nmiStepVal = (step.nmi !== undefined) ? step.nmi : (step.step === m.d_star ? (1.0 - m.l_target) : 0);
-                const nmiPct = (nmiStepVal * 100).toFixed(1);
-                const deltaPct = step.step === 1 ? '' : `(+${(step.delta_mi * 100).toFixed(1)}%)`;
-
-                let altsHtml = '';
-                if (step.alternatives && step.alternatives.length > 0) {
-                    altsHtml = '<div style="margin-top: 8px; padding-top: 6px; border-top: 1px solid rgba(255,255,255,0.05); font-size: 0.75rem; color: var(--text-dim);">';
-                    altsHtml += '<div style="margin-bottom: 3px; font-weight: 600;">Alternatives:</div>';
-                    step.alternatives.forEach(a => {
-                        const altVir = (a.vir * 100).toFixed(1);
-                        const altNmi = a.nmi !== undefined ? `NMI: ${(a.nmi * 100).toFixed(1)}%` : `VIR: ${altVir}%`;
-                        const extraVir = a.nmi !== undefined ? ` (VIR: ${altVir}%)` : '';
-                        altsHtml += `<div>• ${a.feature} (${altNmi}${extraVir})</div>`;
-                    });
-                    altsHtml += '</div>';
-                }
-
-                item.innerHTML = `
-                            <div style="width: 100%;">
-                                <div style="display: flex; justify-content: space-between; align-items: center;">
-                                    <div>
-                                        <div class="history-step">${step.step}D System</div>
-                                        <div class="history-feature">${step.feature}</div>
-                                    </div>
-                                    <div class="history-stats">
-                                        <div class="history-nmi" title="Normalized Mutual Information (NMI): predictive power of centers relative to target">NMI: ${nmiPct}%</div>
-                                        <div class="history-vir" title="Visual Information Ratio (VIR): axis coverage relative to dataset">VIR: ${virPct}%</div>
-                                        <div class="history-delta">${deltaPct}</div>
-                                    </div>
-                                </div>
-                                ${altsHtml}
-                            </div>
-                        `;
-                item.onclick = (e) => {
-                    e.stopPropagation();
-                    setDimensionality(step.step);
-                };
-                historyContainer.appendChild(item);
-            });
-        }
-    }
-
-    setDimensionality(activeDimensionality);
+    setDimensionality(activeDimensionality || m.d);
 }
 
 function renderDimensionButtons(payload) {
@@ -417,69 +575,36 @@ function renderDimensionButtons(payload) {
     if (!container) return;
     container.innerHTML = '';
 
-    const availableDims = [];
-    if (payload.metrics && payload.metrics.history && payload.metrics.history.length > 0) {
-        payload.metrics.history.forEach(h => {
-            if (!availableDims.includes(h.step)) availableDims.push(h.step);
-        });
-    } else {
-        const maxD = (payload.metrics && payload.metrics.d_star) ? payload.metrics.d_star : 3;
-        for (let d = 1; d <= Math.max(maxD, 1); d++) availableDims.push(d);
-    }
-
-    availableDims.sort((a, b) => a - b).forEach(d => {
+    const branchD = (payload.metrics && payload.metrics.d) ? payload.metrics.d : 1;
+    for (let d = 1; d <= branchD; d++) {
         const btn = document.createElement('button');
         btn.className = 'toggle-btn dim-btn' + (d === activeDimensionality ? ' active' : '');
         btn.dataset.dim = d;
         btn.innerText = `${d}D`;
-        btn.title = `Switch dimensionality to ${d}D`;
+        btn.title = d === branchD
+            ? `This branch's full dimensionality (${d}D)`
+            : `Collapse this branch to a ${d}D view (animated, same features)`;
         btn.onclick = () => setDimensionality(d);
         container.appendChild(btn);
-    });
+    }
 }
 
 function updateHUDForDimension(d) {
     if (!currentPayload || !currentPayload.metrics) return;
     const m = currentPayload.metrics;
 
-    let stepData = null;
-    if (m.history && m.history.length > 0) {
-        stepData = m.history.find(h => h.step === d);
-    }
-
-    let nmiVal = stepData && stepData.nmi !== undefined ? stepData.nmi : (d === m.d_star ? (1.0 - m.l_target) : 0.0);
-    let virVal = stepData && stepData.vir !== undefined ? stepData.vir : (d === m.d_star ? m.vir : 1.0);
-    let lossVal = Math.max(0.0, 1.0 - nmiVal);
+    // MI/NMI are the BRANCH's own aggregate statistics (computed once, for
+    // its full dimensionality m.d) — not recomputed per within-branch
+    // collapsed view, so they stay fixed as `d` changes via setDimensionality().
+    const miEl = document.getElementById('val-mi');
+    if (miEl) miEl.innerText = `${m.mi.toFixed(3)} bits`;
 
     const nmiEl = document.getElementById('val-nmi');
-    if (nmiEl) nmiEl.innerText = `${(nmiVal * 100).toFixed(1)}%`;
+    if (nmiEl) nmiEl.innerText = `${(m.nmi * 100).toFixed(1)}%`;
 
-    const lossEl = document.getElementById('val-loss');
-    if (lossEl) lossEl.innerText = `${(lossVal * 100).toFixed(1)}%`;
-
-    const virEl = document.getElementById('val-vir');
-    if (virEl) virEl.innerText = `${(virVal * 100).toFixed(1)}%`;
-
-    const dstarEl = document.getElementById('val-dstar');
-    if (dstarEl) {
-        if (d === m.d_star) {
-            dstarEl.innerText = `${d}D`;
-        } else {
-            dstarEl.innerText = `${d}D (optimal: ${m.d_star}D)`;
-        }
-    }
-
-    const pill = document.getElementById('scenarioPill');
-    const scenarioText = document.getElementById('scenarioText');
-    if (pill && scenarioText) {
-        let scenarioClass = d <= 3 ? 'SCENARIO_A' : 'SCENARIO_B';
-        let scenarioLabel = d <= 3 ? 'Scenario A: Minimalist' : 'Scenario B: Full Load';
-        if (d === m.d_star && m.scenario) {
-            scenarioClass = m.scenario;
-            scenarioLabel = m.scenario;
-        }
-        pill.className = 'scenario-pill ' + scenarioClass;
-        scenarioText.innerText = scenarioLabel;
+    const viewEl = document.getElementById('val-viewdim');
+    if (viewEl) {
+        viewEl.innerText = (d === m.d) ? `${d}D (full branch)` : `${d}D (collapsed from ${m.d}D)`;
     }
 
     updateAxesList(d);
@@ -489,7 +614,7 @@ function updateAxesList(d) {
     const axesContainer = document.getElementById('axesListContainer');
     if (!axesContainer || !currentPayload || !currentPayload.selected_features) return;
     axesContainer.innerHTML = '';
-    const labels = ['X-Axis (1D)', 'Y-Axis (2D)', 'Z-Axis (3D)', '4D Slice (Tabs)', 'Channel 5', 'Channel 6', 'Channel 7'];
+    const labels = ['X-Axis (1D)', 'Y-Axis (2D)', 'Z-Axis (3D)', '4D Slice (Tabs)'];
     const maxFeatures = Math.min(d, currentPayload.selected_features.length);
     for (let idx = 0; idx < maxFeatures; idx++) {
         const feat = currentPayload.selected_features[idx];
@@ -503,6 +628,10 @@ function updateAxesList(d) {
     }
 }
 
+// WITHIN-branch dimensionality collapse/split (Project_Master_Document.md
+// Section 5.6, case 2): animates the CURRENTLY selected branch's own axes
+// between 1D/2D/3D/4D. Never switches feature sets — see selectBranch()
+// for the (unanimated) cross-branch switch.
 function setDimensionality(d) {
     if (d === currentRenderedDim && d === activeDimensionality) return;
     if (isAnimating) return;
@@ -514,20 +643,6 @@ function setDimensionality(d) {
         btn.classList.toggle('active', parseInt(btn.dataset.dim) === d);
     });
 
-    document.querySelectorAll('.history-item').forEach(item => {
-        const stepNum = parseInt(item.dataset.step);
-        if (stepNum === d) {
-            item.classList.add('active');
-        } else {
-            const stepEl = item.querySelector('.history-step');
-            if (stepEl && stepEl.innerText.startsWith(`${d}D`)) {
-                item.classList.add('active');
-            } else {
-                item.classList.remove('active');
-            }
-        }
-    });
-
     updateHUDForDimension(d);
 
     const sliceCtrl = document.getElementById('slice-controller');
@@ -536,6 +651,7 @@ function setDimensionality(d) {
             sliceCtrl.style.display = 'flex';
         } else {
             sliceCtrl.style.display = 'none';
+            stopSlicePlayback();
         }
     }
 
@@ -552,30 +668,30 @@ function renderSliceTabs(payload) {
     const sliceCtrl = document.getElementById('slice-controller');
     const sliceName = document.getElementById('slice-axis-name');
     const sliceTabsContainer = document.getElementById('slice-tabs');
-    
+
     if (!sliceCtrl || !payload.slice_axis) return;
-    
+
     sliceName.textContent = payload.slice_axis.name;
-    
+
     let tabsHtml = '';
-    // "All" tab
+    // "All" tab (marginalizes over the 4th dimension — Project_Master_Document.md Section 5.5)
     const allActiveClass = (activeSliceIndex === null) ? ' active' : '';
     tabsHtml += `<button class="slice-tab${allActiveClass}" onclick="selectSlice(null)" data-slice="all">All<span class="slice-count">(${payload.total_samples})</span></button>`;
-    
+
     // Per-category tabs
     payload.slice_axis.ticks.forEach((label, idx) => {
         const count = payload.slice_axis.counts[idx];
         const activeClass = (idx === activeSliceIndex) ? ' active' : '';
         tabsHtml += `<button class="slice-tab${activeClass}" onclick="selectSlice(${idx})" data-slice="${idx}">${label}<span class="slice-count">(n=${count})</span></button>`;
     });
-    
+
     sliceTabsContainer.innerHTML = tabsHtml;
 }
 
 function selectSlice(idx) {
     window._lastActiveSliceIndex = activeSliceIndex;
     activeSliceIndex = idx;
-    
+
     const tabs = document.querySelectorAll('#slice-tabs .slice-tab');
     tabs.forEach(tab => {
         const tabSlice = tab.getAttribute('data-slice');
@@ -588,25 +704,81 @@ function selectSlice(idx) {
         }
     });
 
-    if (activeDimensionality !== 4) {
-        activeDimensionality = 4;
+    const branchD = (currentPayload && currentPayload.metrics) ? currentPayload.metrics.d : 4;
+    if (activeDimensionality !== branchD) {
+        activeDimensionality = branchD;
         document.querySelectorAll('#dimButtonsGroup .dim-btn').forEach(btn => {
-            btn.classList.toggle('active', parseInt(btn.dataset.dim) === 4);
+            btn.classList.toggle('active', parseInt(btn.dataset.dim) === branchD);
         });
-        updateHUDForDimension(4);
+        updateHUDForDimension(branchD);
     }
-    
+
     if (currentPayload) {
         if (currentRenderedDim === null) {
             renderPlot(currentPayload);
         } else {
-            transitionDimensionality(currentRenderedDim, 4, window._lastActiveSliceIndex);
+            transitionDimensionality(currentRenderedDim, branchD, window._lastActiveSliceIndex);
         }
     }
 }
+
+// --- 4D slice auto-play (Project_Master_Document.md Section 5.5: "Optional
+// autoplay (play/pause/speed) available on top of discrete slices") ---
+let _sliceIntervalId = null;
+let _sliceIsPlaying = false;
+
+function toggleSlicePlayback() {
+    if (_sliceIsPlaying) {
+        stopSlicePlayback();
+    } else {
+        startSlicePlayback();
+    }
+}
+
+function startSlicePlayback() {
+    if (!currentPayload || !currentPayload.slice_axis) return;
+    const ticks = currentPayload.slice_axis.ticks;
+    if (!ticks || ticks.length === 0) return;
+
+    _sliceIsPlaying = true;
+    const btn = document.getElementById('slicePlayBtn');
+    if (btn) { btn.textContent = '⏸'; btn.title = 'Pause auto-advance'; }
+
+    const speedSelect = document.getElementById('slicePlaySpeed');
+    const intervalMs = speedSelect ? parseInt(speedSelect.value, 10) : 1200;
+
+    if (_sliceIntervalId) clearInterval(_sliceIntervalId);
+    _sliceIntervalId = setInterval(() => {
+        if (isAnimating) return; // skip a beat rather than overlap the in-flight transition
+        const count = ticks.length;
+        let next = (activeSliceIndex === null) ? 0 : activeSliceIndex + 1;
+        if (next >= count) next = 0;
+        selectSlice(next);
+    }, intervalMs);
+}
+
+function stopSlicePlayback() {
+    _sliceIsPlaying = false;
+    const btn = document.getElementById('slicePlayBtn');
+    if (btn) { btn.textContent = '▶'; btn.title = 'Play/Pause auto-advance through slices'; }
+    if (_sliceIntervalId) {
+        clearInterval(_sliceIntervalId);
+        _sliceIntervalId = null;
+    }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    const speedSelect = document.getElementById('slicePlaySpeed');
+    if (speedSelect) {
+        speedSelect.addEventListener('change', () => {
+            if (_sliceIsPlaying) startSlicePlayback(); // restart timer at new interval
+        });
+    }
+});
+
 function buildPlotData(payload, dim, sliceIndex) {
     let dimStr = dim.toString();
-    
+
     let gridKey = dimStr;
     if (dim >= 4 && payload.slice_axis) {
         if (sliceIndex !== null) {
@@ -756,25 +928,22 @@ function buildPlotData(payload, dim, sliceIndex) {
     if (cameraConfig) {
         layout.scene.camera = cameraConfig;
     }
-    
+
     return { traces: [cellBoundaryTrace, scatterTrace], layout: layout, fPurity, fOpacity, fSizes };
 }
 
 function renderPlot(payload) {
-    const dim = activeDimensionality || 3;
+    const dim = activeDimensionality || (payload.metrics ? payload.metrics.d : 3);
     const data = buildPlotData(payload, dim, activeSliceIndex);
-    
+
     window._lastFilteredData = {
         purity: data.fPurity,
         opacity: data.fOpacity,
         baseSizes: data.fSizes
     };
 
-    const bivLegend = document.getElementById('bivariateLegend');
-    if (bivLegend) bivLegend.classList.add('active');
-
     Plotly.newPlot('plot-container', data.traces, data.layout, { responsive: true, displayModeBar: false });
-    
+
     currentRenderedDim = dim;
 
     // Default camera distance is ~2.608 (sqrt(1.6^2 + 1.6^2 + 1.3^2))
@@ -803,72 +972,6 @@ function renderPlot(payload) {
                 window._currentCameraScale = scale;
                 applyStroke(window._isStrokeActive || false);
             }
-        }
-    });
-
-    plotDiv.on('plotly_click', async function (data) {
-        try {
-            if (!data.points || data.points.length === 0) return;
-            
-            // In Plotly, the scatter trace is at curveNumber 1 or named 'Data'
-            let pt = data.points.find(p => p.curveNumber === 1);
-            if (!pt) {
-                pt = data.points.find(p => {
-                    const trace = plotDiv.data && plotDiv.data[p.curveNumber];
-                    return trace && trace.name === 'Data';
-                });
-            }
-            if (!pt) pt = data.points[0];
-            
-            const trace = (plotDiv.data && plotDiv.data[pt.curveNumber]) ? plotDiv.data[pt.curveNumber] : null;
-            const cdata = pt.customdata || (trace && trace.customdata ? trace.customdata[pt.pointNumber] : null);
-            
-            if (!cdata || !cdata.coords) {
-                console.warn("Click on non-data or missing customdata:", pt);
-                return;
-            }
-            
-            // Only trigger for dirty centers (e.g. 0.3 <= purity <= 0.7)
-            if (cdata.pur < 0.3 || cdata.pur > 0.7) {
-                console.log("Center purity is", cdata.pur, "- skipping XAI panel");
-                return;
-            }
-
-            _currentClickedCenterPt = {
-                x: pt.x,
-                y: pt.y,
-                z: pt.z,
-                cdata: cdata
-            };
-
-            const i_z_x_f = (currentPayload && currentPayload.metrics) ? (currentPayload.metrics.nmi || 1.0) : 1.0;
-            
-            showLoader(true);
-            try {
-                const reqBody = {
-                    target: currentAnalysisContext.target,
-                    criterion: currentAnalysisContext.criterion,
-                    composite_target: currentAnalysisContext.composite_target,
-                    center_coords: cdata.coords,
-                    i_z_x_f: i_z_x_f
-                };
-
-                const res = await fetch('/api/mine_center', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(reqBody)
-                });
-                if (res.ok) {
-                    const results = await res.json();
-                    renderXaiPanel(cdata, results.results);
-                }
-            } catch (e) {
-                console.error("Error mining center:", e);
-            } finally {
-                showLoader(false);
-            }
-        } catch (eOuter) {
-            console.error("Crash in click handler: ", eOuter);
         }
     });
 }
@@ -971,38 +1074,38 @@ function parseRGBString(c) {
 function animateScatter3d(startX, startY, startZ, startSizes, startColors, endX, endY, endZ, endSizes, endColors, duration, onComplete) {
     const startTime = performance.now();
     const plotDiv = document.getElementById('plot-container');
-    
+
     function easeInOutCubic(t) {
         return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
     }
-    
+
     const startRGB = startColors.map(parseRGBString);
     const endRGB = endColors.map(parseRGBString);
     const len = startX.length;
-    
+
     function update(time) {
         let elapsed = time - startTime;
         let progress = Math.min(elapsed / duration, 1.0);
         let eased = easeInOutCubic(progress);
-        
+
         let curX = [], curY = [], curZ = [], curSizes = [], curColors = [];
         for (let i = 0; i < len; i++) {
             curX.push(startX[i] + (endX[i] - startX[i]) * eased);
             curY.push(startY[i] + (endY[i] - startY[i]) * eased);
             curZ.push(startZ[i] + (endZ[i] - startZ[i]) * eased);
             curSizes.push(startSizes[i] + (endSizes[i] - startSizes[i]) * eased);
-            
+
             const r = Math.round(startRGB[i][0] + (endRGB[i][0] - startRGB[i][0]) * eased);
             const g = Math.round(startRGB[i][1] + (endRGB[i][1] - startRGB[i][1]) * eased);
             const b = Math.round(startRGB[i][2] + (endRGB[i][2] - startRGB[i][2]) * eased);
             curColors.push(`rgb(${r}, ${g}, ${b})`);
         }
-        
+
         Plotly.restyle(plotDiv, {
             'x': [curX], 'y': [curY], 'z': [curZ],
             'marker.size': [curSizes], 'marker.color': [curColors]
         }, 1);
-        
+
         if (progress < 1.0) {
             requestAnimationFrame(update);
         } else {
@@ -1034,36 +1137,36 @@ function buildAnimationArrays(startData, endData, payload, refSlice) {
     const startTrace = startData.traces[1];
     const endTrace = endData.traces[1];
     const sliceMap = getSliceMap(payload);
-    
+
     const startX = [], startY = [], startZ = [], startSizes = [], startColors = [], startHover = [];
     const endX = [], endY = [], endZ = [], endSizes = [], endColors = [], endHover = [];
-    
+
     const startDict = {};
     for (let i = 0; i < startTrace.x.length; i++) {
         const key = `${startTrace.x[i]}_${startTrace.y[i]}_${startTrace.z[i]}`;
         startDict[key] = i;
     }
-    
+
     const endDict = {};
     for (let i = 0; i < endTrace.x.length; i++) {
         const key = `${endTrace.x[i]}_${endTrace.y[i]}_${endTrace.z[i]}`;
         endDict[key] = i;
     }
-    
+
     const unionKeys = new Set([...Object.keys(startDict), ...Object.keys(endDict)]);
     if (refSlice === undefined || refSlice === null) refSlice = 0;
-    
+
     unionKeys.forEach(key => {
         const sIdx = startDict[key];
         const eIdx = endDict[key];
         let pointSlice = sliceMap[key];
         if (pointSlice === undefined) pointSlice = 0;
-        
+
         let xOffset = 0;
         if (pointSlice < refSlice) xOffset = -25;
         else if (pointSlice > refSlice) xOffset = 25;
         else xOffset = (Math.random() > 0.5 ? 25 : -25);
-        
+
         let cx, cy, cz;
         if (sIdx !== undefined && eIdx !== undefined) {
             cx = startTrace.x[sIdx]; cy = startTrace.y[sIdx]; cz = startTrace.z[sIdx];
@@ -1071,7 +1174,7 @@ function buildAnimationArrays(startData, endData, payload, refSlice) {
             startSizes.push(startTrace.marker.size[sIdx]);
             startColors.push(startTrace.marker.color[sIdx]);
             startHover.push(startTrace.hovertext[sIdx]);
-            
+
             endX.push(endTrace.x[eIdx]); endY.push(endTrace.y[eIdx]); endZ.push(endTrace.z[eIdx]);
             endSizes.push(endTrace.marker.size[eIdx]);
             endColors.push(endTrace.marker.color[eIdx]);
@@ -1082,7 +1185,7 @@ function buildAnimationArrays(startData, endData, payload, refSlice) {
             startSizes.push(startTrace.marker.size[sIdx]);
             startColors.push(startTrace.marker.color[sIdx]);
             startHover.push(startTrace.hovertext[sIdx]);
-            
+
             endX.push(cx + xOffset); endY.push(cy); endZ.push(cz);
             endSizes.push(0.1);
             endColors.push(startTrace.marker.color[sIdx]);
@@ -1093,42 +1196,45 @@ function buildAnimationArrays(startData, endData, payload, refSlice) {
             startSizes.push(0.1);
             startColors.push(endTrace.marker.color[eIdx]);
             startHover.push(endTrace.hovertext[eIdx]);
-            
+
             endX.push(cx); endY.push(cy); endZ.push(cz);
             endSizes.push(endTrace.marker.size[eIdx]);
             endColors.push(endTrace.marker.color[eIdx]);
             endHover.push(endTrace.hovertext[eIdx]);
         }
     });
-    
+
     return { startX, startY, startZ, startSizes, startColors, startHover, endX, endY, endZ, endSizes, endColors, endHover };
 }
 
+// Animated within-branch collapse (SPLIT/COLLAPSE) or 4D film-strip
+// transition — see setDimensionality()'s doc comment for the branch-switch
+// vs. within-branch distinction this implements.
 function transitionDimensionality(fromDim, toDim, oldSliceIndex = null) {
     if (fromDim === toDim && toDim !== 4) return;
     if (fromDim === 4 && toDim === 4 && oldSliceIndex === activeSliceIndex) return;
-    
+
     isAnimating = true;
     const wasStrokeActive = window._isStrokeActive;
     if (wasStrokeActive) applyStroke(false);
-    
+
     const duration = 600;
-    
+
     if (fromDim === 4 || toDim === 4) {
         // Film Strip / 4D Transition
         let refSlice = toDim === 4 ? activeSliceIndex : oldSliceIndex;
         if (refSlice === undefined || refSlice === null) refSlice = 0;
-        
+
         let actualFromSlice = fromDim === 4 ? (toDim === 4 ? oldSliceIndex : activeSliceIndex) : null;
         const startData = buildPlotData(currentPayload, fromDim, actualFromSlice);
         const targetData = buildPlotData(currentPayload, toDim, activeSliceIndex);
-        
+
         const anim = buildAnimationArrays(startData, targetData, currentPayload, refSlice);
-        
+
         window._lastFilteredData = {
             purity: targetData.fPurity, opacity: targetData.fOpacity, baseSizes: targetData.fSizes
         };
-        
+
         Plotly.restyle('plot-container', {
             'x': [anim.startX], 'y': [anim.startY], 'z': [anim.startZ],
             'marker.size': [anim.startSizes], 'marker.color': [anim.startColors], 'hovertext': [anim.startHover],
@@ -1156,12 +1262,12 @@ function transitionDimensionality(fromDim, toDim, oldSliceIndex = null) {
         const targetData = buildPlotData(currentPayload, toDim, activeSliceIndex);
         const traceToAnimate = targetData.traces[1];
         const flatStart = flattenCoordinates(traceToAnimate.x, traceToAnimate.y, traceToAnimate.z, fromDim);
-        
+
         const origX = traceToAnimate.x, origY = traceToAnimate.y, origZ = traceToAnimate.z;
         const origSizes = traceToAnimate.marker.size, origColors = traceToAnimate.marker.color, origHover = traceToAnimate.hovertext;
-        
+
         window._lastFilteredData = { purity: targetData.fPurity, opacity: targetData.fOpacity, baseSizes: targetData.fSizes };
-        
+
         Plotly.restyle('plot-container', {
             'x': [flatStart.x], 'y': [flatStart.y], 'z': [flatStart.z],
             'marker.size': [origSizes], 'marker.color': [origColors], 'hovertext': [origHover],
@@ -1188,14 +1294,14 @@ function transitionDimensionality(fromDim, toDim, oldSliceIndex = null) {
         const traceToAnimate = startData.traces[1];
         const flatEnd = flattenCoordinates(traceToAnimate.x, traceToAnimate.y, traceToAnimate.z, toDim);
         const targetData = buildPlotData(currentPayload, toDim, activeSliceIndex);
-        
+
         const origX = traceToAnimate.x, origY = traceToAnimate.y, origZ = traceToAnimate.z;
         const origSizes = traceToAnimate.marker.size, origColors = traceToAnimate.marker.color;
-        
+
         const targetSizes = targetData.traces[1].marker.size;
         const targetColors = targetData.traces[1].marker.color;
         const targetHover = targetData.traces[1].hovertext;
-        
+
         animateScatter3d(
             origX, origY, origZ, origSizes, origColors,
             flatEnd.x, flatEnd.y, flatEnd.z, origSizes, origColors,
@@ -1218,17 +1324,14 @@ function transitionDimensionality(fromDim, toDim, oldSliceIndex = null) {
 function toggleMainAcc(id) {
     let headerId = 'headerCatalog';
     let contentId = 'contentCatalog';
-    if (id === 'search') {
-        headerId = 'headerSearch';
-        contentId = 'contentSearch';
-    } else if (id === 'top') {
-        headerId = 'headerTop';
-        contentId = 'contentTop';
+    if (id === 'branches') {
+        headerId = 'headerBranches';
+        contentId = 'contentBranches';
     }
     const header = document.getElementById(headerId);
     const content = document.getElementById(contentId);
     if (!header || !content) return;
-    
+
     if (header.classList.contains('open')) {
         header.classList.remove('open');
         content.classList.remove('open');
@@ -1238,485 +1341,4 @@ function toggleMainAcc(id) {
     }
 }
 
-function addFilterRow() {
-    const container = document.getElementById('filterRowsContainer');
-    const row = document.createElement('div');
-    row.className = 'filter-row';
-
-    const colSelect = document.createElement('select');
-    colSelect.className = 'filter-select';
-    let colOptions = '<option value="">-- Feature --</option>';
-    allColumnsData.forEach(c => {
-        colOptions += `<option value="${c.id}">${c.label}</option>`;
-    });
-    colSelect.innerHTML = colOptions;
-
-    const valSelect = document.createElement('select');
-    valSelect.className = 'filter-select';
-    valSelect.innerHTML = '<option value="">-- Value --</option>';
-
-    colSelect.onchange = () => {
-        const colId = colSelect.value;
-        const col = allColumnsData.find(c => c.id === colId);
-        valSelect.innerHTML = '<option value="">-- Value --</option>';
-        if (col) {
-            col.criteria.forEach(crit => {
-                valSelect.innerHTML += `<option value="${crit.id}">${crit.label}</option>`;
-            });
-        }
-    };
-
-    const removeBtn = document.createElement('button');
-    removeBtn.className = 'filter-remove';
-    removeBtn.innerHTML = '×';
-    removeBtn.title = 'Remove';
-    removeBtn.onclick = () => row.remove();
-
-    row.appendChild(colSelect);
-    row.appendChild(valSelect);
-    row.appendChild(removeBtn);
-    container.appendChild(row);
-}
-
-async function runCompositeAnalysis() {
-    const container = document.getElementById('filterRowsContainer');
-    const rows = container.querySelectorAll('.filter-row');
-
-    const compositeTarget = [];
-    rows.forEach(row => {
-        const selects = row.querySelectorAll('select');
-        const col = selects[0].value;
-        const val = selects[1].value;
-        if (col && val) {
-            compositeTarget.push({ col: col, val: val });
-        }
-    });
-
-    if (compositeTarget.length === 0) {
-        alert("Please add at least one complete condition (Feature + Value).");
-        return;
-    }
-
-    currentAnalysisContext = { target: null, criterion: null, composite_target: compositeTarget };
-
-    showLoader(true);
-    try {
-        const reqBody = { composite_target: compositeTarget };
-
-        const response = await fetch('/api/analyze', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(reqBody)
-        });
-
-        if (response.ok) {
-            currentPayload = await response.json();
-            activeDimensionality = null;
-            if (activeCritItem) {
-                activeCritItem.classList.remove('active');
-                activeCritItem.classList.remove('open');
-                activeCritItem = null;
-            }
-            updateDashboard(currentPayload, 'compositeHistoryContainer');
-        } else {
-            console.error("Error fetching composite analysis", response.status);
-        }
-    } catch (err) {
-        console.error("API POST failed:", err);
-    } finally {
-        showLoader(false);
-    }
-}
-
 window.addEventListener('DOMContentLoaded', init);
-
-// --- XAI Panel Logic & Mitosis Canvas Engine ---
-
-const MitosisEngine = {
-    canvas: null,
-    ctx: null,
-    animId: null,
-    t: 0,
-    targetT: 0,
-    startT: 0,
-    startTime: 0,
-    duration: 650,
-    centerData: null,
-    activeRule: null,
-
-    init(canvasId) {
-        this.canvas = document.getElementById(canvasId);
-        if (!this.canvas) return;
-        this.ctx = this.canvas.getContext('2d');
-        const dpr = window.devicePixelRatio || 1;
-        const rect = this.canvas.getBoundingClientRect();
-        this.canvas.width = (rect.width || 440) * dpr;
-        this.canvas.height = 150 * dpr;
-        this.ctx.scale(dpr, dpr);
-    },
-
-    setCenter(cdata) {
-        this.centerData = cdata;
-        this.activeRule = null;
-        this.t = 0;
-        this.targetT = 0;
-        this.startT = 0;
-        if (this.animId) cancelAnimationFrame(this.animId);
-        this.draw(0);
-    },
-
-    animateToRule(rule) {
-        this.activeRule = rule;
-        this.startT = this.t;
-        this.targetT = 1.0;
-        this.startTime = performance.now();
-        if (this.animId) cancelAnimationFrame(this.animId);
-        this.loop();
-    },
-
-    resetToUnified() {
-        this.activeRule = null;
-        this.startT = this.t;
-        this.targetT = 0.0;
-        this.startTime = performance.now();
-        if (this.animId) cancelAnimationFrame(this.animId);
-        this.loop();
-    },
-
-    easeInOutCubic(x) {
-        return x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2;
-    },
-
-    loop() {
-        const now = performance.now();
-        const elapsed = now - this.startTime;
-        const progress = Math.min(1.0, elapsed / this.duration);
-        const ease = this.easeInOutCubic(progress);
-        
-        this.t = this.startT + (this.targetT - this.startT) * ease;
-        this.draw(this.t);
-
-        if (progress < 1.0) {
-            this.animId = requestAnimationFrame(() => this.loop());
-        }
-    },
-
-    draw(t) {
-        if (!this.ctx || !this.centerData) return;
-        const ctx = this.ctx;
-        const dpr = window.devicePixelRatio || 1;
-        const w = this.canvas.width / dpr;
-        const h = this.canvas.height / dpr;
-        
-        ctx.clearRect(0, 0, w, h);
-        
-        const centerX = w / 2;
-        const centerY = h / 2 - 8;
-        
-        // Base sphere parameters
-        const baseN = this.centerData.N;
-        const basePur = this.centerData.pur;
-        const baseColorIndex = getColorIndexForPurity(basePur);
-        const baseColor = PROB_COLORS[baseColorIndex];
-        const baseRadius = 36;
-
-        if (t <= 0.01 || !this.activeRule) {
-            // Single unified dirty sphere
-            this.draw3DSphere(ctx, centerX, centerY, baseRadius, baseColor, `${(basePur*100).toFixed(1)}%`, `Initial Cluster (N = ${baseN} pcs.)`);
-            return;
-        }
-
-        const r = this.activeRule;
-        const fracPos = Math.max(0.15, r.n_pos / baseN);
-        const fracNeg = Math.max(0.15, r.n_neg / baseN);
-        
-        // Target radii proportional to sqrt(N)
-        const radPos = Math.max(18, Math.min(38, baseRadius * Math.sqrt(fracPos) * 1.3));
-        const radNeg = Math.max(18, Math.min(38, baseRadius * Math.sqrt(fracNeg) * 1.3));
-        
-        const colPos = PROB_COLORS[getColorIndexForPurity(r.purity_pos)];
-        const colNeg = PROB_COLORS[getColorIndexForPurity(r.purity_neg)];
-
-        // Separation distance
-        const maxOffset = 110;
-        const currentOffset = maxOffset * t;
-        
-        const xPos = centerX - currentOffset;
-        const xNeg = centerX + currentOffset;
-        
-        // Mitosis Bridge (Metaball Waist) during division
-        if (t > 0.02 && t < 0.65) {
-            const bridgeProgress = t / 0.65;
-            const waistWidth = Math.max(0, (1 - bridgeProgress) * baseRadius * 1.2);
-            if (waistWidth > 2) {
-                ctx.save();
-                ctx.beginPath();
-                ctx.moveTo(xPos, centerY - radPos * (1 - bridgeProgress * 0.4));
-                ctx.quadraticCurveTo(centerX, centerY - waistWidth * 0.4, xNeg, centerY - radNeg * (1 - bridgeProgress * 0.4));
-                ctx.lineTo(xNeg, centerY + radNeg * (1 - bridgeProgress * 0.4));
-                ctx.quadraticCurveTo(centerX, centerY + waistWidth * 0.4, xPos, centerY + radPos * (1 - bridgeProgress * 0.4));
-                ctx.closePath();
-                
-                const bridgeGrad = ctx.createLinearGradient(xPos, centerY, xNeg, centerY);
-                bridgeGrad.addColorStop(0, colPos);
-                bridgeGrad.addColorStop(0.5, baseColor);
-                bridgeGrad.addColorStop(1, colNeg);
-                ctx.fillStyle = bridgeGrad;
-                ctx.globalAlpha = 1 - bridgeProgress;
-                ctx.fill();
-                ctx.restore();
-            }
-        }
-        
-        // Child Sphere 1: Positive subgroup
-        const curColorPos = this.interpolateColor(baseColor, colPos, t);
-        const curRadPos = baseRadius + (radPos - baseRadius) * t;
-        const labelPosTop = t > 0.5 ? `${(r.purity_pos * 100).toFixed(1)}%` : '';
-        const labelPosSub = t > 0.5 ? `Subgroup (n = ${r.n_pos})` : '';
-        this.draw3DSphere(ctx, xPos, centerY, curRadPos, curColorPos, labelPosTop, labelPosSub, t > 0.5 ? '#22c55e' : null);
-
-        // Child Sphere 2: Remainder
-        const curColorNeg = this.interpolateColor(baseColor, colNeg, t);
-        const curRadNeg = baseRadius + (radNeg - baseRadius) * t;
-        const labelNegTop = t > 0.5 ? `${(r.purity_neg * 100).toFixed(1)}%` : '';
-        const labelNegSub = t > 0.5 ? `Remainder (n = ${r.n_neg})` : '';
-        this.draw3DSphere(ctx, xNeg, centerY, curRadNeg, curColorNeg, labelNegTop, labelNegSub, t > 0.5 ? '#ef4444' : null);
-        
-        // Center Metrics Badge between separated spheres
-        if (t > 0.6) {
-            const badgeAlpha = Math.min(1.0, (t - 0.6) / 0.4);
-            ctx.save();
-            ctx.globalAlpha = badgeAlpha;
-            
-            ctx.fillStyle = 'rgba(15, 23, 42, 0.9)';
-            ctx.strokeStyle = 'rgba(99, 102, 241, 0.4)';
-            ctx.lineWidth = 1;
-            
-            const bw = 84, bh = 32, bx = centerX - bw / 2, by = centerY - bh / 2;
-            this.roundRect(ctx, bx, by, bw, bh, 6);
-            ctx.fill();
-            ctx.stroke();
-            
-            ctx.fillStyle = '#a5b4fc';
-            ctx.font = '600 10px Inter, sans-serif';
-            ctx.textAlign = 'center';
-            ctx.fillText(`NMI: ${r.nmi_local.toFixed(2)}`, centerX, by + 13);
-            ctx.fillStyle = '#4ade80';
-            ctx.fillText(`ΔVIR: +${(r.delta_vir*100).toFixed(1)}%`, centerX, by + 25);
-            ctx.restore();
-        }
-    },
-
-    draw3DSphere(ctx, x, y, radius, hexColor, labelTop, labelBottom, glowColor = null) {
-        ctx.save();
-        
-        // Soft drop shadow
-        ctx.beginPath();
-        ctx.ellipse(x, y + radius + 6, radius * 0.75, 4, 0, 0, Math.PI * 2);
-        ctx.fillStyle = 'rgba(0, 0, 0, 0.4)';
-        ctx.filter = 'blur(4px)';
-        ctx.fill();
-        ctx.filter = 'none';
-
-        // Outer glow
-        if (glowColor) {
-            ctx.beginPath();
-            ctx.arc(x, y, radius + 2, 0, Math.PI * 2);
-            ctx.strokeStyle = glowColor;
-            ctx.lineWidth = 2;
-            ctx.shadowColor = glowColor;
-            ctx.shadowBlur = 8;
-            ctx.stroke();
-            ctx.shadowBlur = 0;
-        }
-
-        // Radial gradient for 3D sphere volume
-        ctx.beginPath();
-        ctx.arc(x, y, radius, 0, Math.PI * 2);
-        
-        const grad = ctx.createRadialGradient(
-            x - radius * 0.32, y - radius * 0.32, radius * 0.08,
-            x, y, radius
-        );
-        
-        const rgb = this.hexToRgb(hexColor);
-        grad.addColorStop(0, '#ffffff');
-        grad.addColorStop(0.2, `rgba(${Math.min(255, rgb.r + 45)}, ${Math.min(255, rgb.g + 45)}, ${Math.min(255, rgb.b + 45)}, 1)`);
-        grad.addColorStop(0.7, hexColor);
-        grad.addColorStop(1, `rgba(${Math.max(0, rgb.r - 55)}, ${Math.max(0, rgb.g - 55)}, ${Math.max(0, rgb.b - 55)}, 1)`);
-        
-        ctx.fillStyle = grad;
-        ctx.fill();
-
-        // Labels
-        if (labelTop) {
-            ctx.font = '700 11px Inter, sans-serif';
-            ctx.textAlign = 'center';
-            ctx.fillStyle = '#ffffff';
-            ctx.shadowColor = 'rgba(0,0,0,0.85)';
-            ctx.shadowBlur = 4;
-            ctx.fillText(labelTop, x, y + 4);
-            ctx.shadowBlur = 0;
-        }
-        
-        if (labelBottom) {
-            ctx.font = '500 10px Inter, sans-serif';
-            ctx.textAlign = 'center';
-            ctx.fillStyle = '#cbd5e1';
-            ctx.fillText(labelBottom, x, y + radius + 16);
-        }
-
-        ctx.restore();
-    },
-
-    hexToRgb(hex) {
-        if (!hex || typeof hex !== 'string') return { r: 150, g: 120, b: 80 };
-        if (hex.startsWith('rgb')) {
-            const m = hex.match(/\d+/g);
-            if (m && m.length >= 3) return { r: parseInt(m[0]), g: parseInt(m[1]), b: parseInt(m[2]) };
-        }
-        const clean = hex.replace('#', '');
-        return {
-            r: parseInt(clean.substring(0, 2), 16) || 150,
-            g: parseInt(clean.substring(2, 4), 16) || 120,
-            b: parseInt(clean.substring(4, 6), 16) || 80
-        };
-    },
-
-    interpolateColor(hex1, hex2, factor) {
-        const rgb1 = this.hexToRgb(hex1);
-        const rgb2 = this.hexToRgb(hex2);
-        const r = Math.round(rgb1.r + (rgb2.r - rgb1.r) * factor);
-        const g = Math.round(rgb1.g + (rgb2.g - rgb1.g) * factor);
-        const b = Math.round(rgb1.b + (rgb2.b - rgb1.b) * factor);
-        return `rgb(${r}, ${g}, ${b})`;
-    },
-
-    roundRect(ctx, x, y, width, height, radius) {
-        ctx.beginPath();
-        ctx.moveTo(x + radius, y);
-        ctx.lineTo(x + width - radius, y);
-        ctx.quadraticCurveTo(x + width, y, x + width, y + radius);
-        ctx.lineTo(x + width, y + height - radius);
-        ctx.quadraticCurveTo(x + width, y + height, x + width - radius, y + height);
-        ctx.lineTo(x + radius, y + height);
-        ctx.quadraticCurveTo(x, y + height, x, y + height - radius);
-        ctx.lineTo(x, y + radius);
-        ctx.quadraticCurveTo(x, y, x + radius, y);
-        ctx.closePath();
-    }
-};
-
-let _currentXaiFilterIdx = -1;
-let _xaiResultsCache = null;
-
-function renderXaiPanel(cdata, results) {
-    const panel = document.getElementById('xaiPanel');
-    const info = document.getElementById('xaiPanelInfo');
-    const list = document.getElementById('xaiFilterList');
-    
-    _xaiResultsCache = results;
-    _currentXaiFilterIdx = -1;
-    
-    // Format human-friendly coordinates
-    let coordsText = Object.entries(cdata.coords).map(([k, v]) => {
-        const colObj = allColumnsData ? allColumnsData.find(c => c.id === k) : null;
-        const colLabel = colObj ? colObj.label : k;
-        let valLabel = v;
-        if (colObj && colObj.criteria) {
-            const critObj = colObj.criteria.find(cr => cr.id === v);
-            if (critObj) valLabel = critObj.label;
-        }
-        return `<b>${colLabel}:</b> ${valLabel}`;
-    }).join(' &nbsp;|&nbsp; ');
-    
-    info.innerHTML = `
-        <div style="font-weight:600; color:#f1f5f9; margin-bottom:4px;">📍 Discrete Center:</div>
-        <div style="color:#cbd5e1; margin-bottom:8px; font-size:0.85rem;">${coordsText}</div>
-        <div style="display:flex; gap:16px; font-size:0.82rem; color:var(--text-muted); background:rgba(255,255,255,0.04); padding:6px 10px; border-radius:6px;">
-            <span>📦 Objects: <b style="color:#f8fafc;">${cdata.N} pcs.</b></span>
-            <span>🎯 Initial Purity: <b style="color:#f8fafc;">${(cdata.pur*100).toFixed(1)}%</b></span>
-        </div>
-    `;
-    
-    list.innerHTML = '';
-    if (!results || results.length === 0) {
-        list.innerHTML = '<div style="color:var(--text-dim); padding: 16px; text-align:center; font-size:0.85rem;">No statistically reliable split candidates found for this center.</div>';
-    } else {
-        results.forEach((r, idx) => {
-            const condsText = r.human_text || r.conditions.map(c => `${c.human_col || c.col} = ${c.human_val || c.val}`).join(' ∧ ');
-            const nmi = r.nmi_local.toFixed(3);
-            const vir = (r.delta_vir * 100).toFixed(1);
-            const pPos = (r.purity_pos * 100).toFixed(1);
-            const pNeg = (r.purity_neg * 100).toFixed(1);
-            
-            const html = `
-                <div class="xai-filter-item" id="xai-filter-card-${idx}">
-                    <div class="xai-filter-header">
-                        <div class="xai-filter-conds">${r.reliability} ${condsText}</div>
-                    </div>
-                    <div class="xai-filter-stats">
-                        <span class="xai-stat-badge pos">✨ Subgroup: <b>${pPos}%</b> (n=${r.n_pos})</span>
-                        <span class="xai-stat-badge neg">Remainder: <b>${pNeg}%</b> (n=${r.n_neg})</span>
-                        <span class="xai-stat-badge metric">NMI: <b>${nmi}</b></span>
-                        <span class="xai-stat-badge metric">ΔVIR: <b>+${vir}%</b></span>
-                    </div>
-                    <div class="xai-filter-actions">
-                        <button class="xai-btn" id="btn-highlight-${idx}" onclick="highlightXaiFilter(${idx})">⚡ Split</button>
-                    </div>
-                </div>
-            `;
-            list.innerHTML += html;
-        });
-    }
-    
-    panel.style.display = 'flex';
-    
-    // Initialize Mitosis Canvas Engine
-    MitosisEngine.init('xaiMitosisCanvas');
-    MitosisEngine.setCenter(cdata);
-}
-
-function closeXaiPanel() {
-    document.getElementById('xaiPanel').style.display = 'none';
-    _currentXaiFilterIdx = -1;
-    if (MitosisEngine.animId) cancelAnimationFrame(MitosisEngine.animId);
-}
-
-function highlightXaiFilter(idx) {
-    if (!_xaiResultsCache || !_xaiResultsCache[idx]) return;
-    
-    const cards = document.querySelectorAll('.xai-filter-item');
-    const r = _xaiResultsCache[idx];
-    
-    if (_currentXaiFilterIdx === idx) {
-        // Toggle off - return to unified sphere
-        _currentXaiFilterIdx = -1;
-        cards.forEach(c => c.classList.remove('active-highlight'));
-        const btn = document.getElementById(`btn-highlight-${idx}`);
-        if (btn) {
-            btn.classList.remove('active');
-            btn.innerHTML = '⚡ Split';
-        }
-        MitosisEngine.resetToUnified();
-        return;
-    }
-    
-    _currentXaiFilterIdx = idx;
-    cards.forEach((c, i) => {
-        c.classList.toggle('active-highlight', i === idx);
-        const btn = document.getElementById(`btn-highlight-${i}`);
-        if (btn) {
-            if (i === idx) {
-                btn.classList.add('active');
-                btn.innerHTML = '✖ Collapse';
-            } else {
-                btn.classList.remove('active');
-                btn.innerHTML = '⚡ Split';
-            }
-        }
-    });
-
-    // Run Mitosis Animation in the dedicated canvas
-    MitosisEngine.animateToRule(r);
-}

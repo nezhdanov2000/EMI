@@ -3,16 +3,17 @@ Dataset-specific display metadata for the demo bundled with this repository
 (UCI Mushroom dataset, data/mushrooms.csv).
 
 This file — not the `vsf` package — is where dataset vocabulary belongs.
-`vsf.vis`, `vsf.mining`, `vsf.graph_miner`, and `vsf.graph_inference` accept
-an optional `translations` argument shaped like `MUSHROOM_TRANSLATIONS`
-below (see `vsf.vis.Translations`); pass it to get human-readable column
-and value labels for this specific dataset. Every one of those functions
-works perfectly well with no `translations` at all — they fall back to the
+`vsf.vis`, `vsf.dashboard`, and `vsf.server` accept an optional
+`translations` argument shaped like `MUSHROOM_TRANSLATIONS` below (see
+`vsf.vis.Translations`); pass it to get human-readable column and value
+labels for this specific dataset. Every one of those functions works
+perfectly well with no `translations` at all — they fall back to the
 dataset's own raw column/value strings — so a different dataset needs its
 own small file like this one, not a change to the library.
 
-`server.py` (the demo web app in this repository) imports
-`MUSHROOM_TRANSLATIONS` from here and threads it through every call into
+`vsf.serve(df, translations=MUSHROOM_TRANSLATIONS)` and
+`export_dashboard.py` (both in this repository) import
+`MUSHROOM_TRANSLATIONS` from here and thread it through every call into
 `vsf` that renders a label for the end user.
 """
 

@@ -16,8 +16,8 @@
     <!-- Plotly.js -->
     <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
 
-    <link rel="stylesheet" href="/static/css/styles.css?v=4240">
-    <script src="/static/js/app.js?v=4240" defer></script>
+    <link rel="stylesheet" href="/static/css/styles.css?v=5001">
+    <script src="/static/js/app.js?v=5001" defer></script>
 </head>
 
 <body>
@@ -27,64 +27,44 @@
             <div class="badge-logo">VSF</div>
             <div class="brand-title">Visual Sufficiency Framework</div>
         </div>
-        <div class="header-status" style="display: flex; gap: 16px; align-items: center;">
-            <a href="/graph.html" style="color: #e2e2e8; text-decoration: none; font-size: 0.9rem; padding: 6px 12px; background: rgba(255,255,255,0.05); border-radius: 6px; border: 1px solid rgba(255,255,255,0.1); transition: background 0.2s;">🕸️ Граф рассуждений</a>
-            <div id="scenarioPill" class="scenario-pill SCENARIO_A">
-                <span id="scenarioText">Scenario A: Minimalist</span>
-            </div>
+        <div class="header-status">
+            <span class="header-subtitle">Independent Branch Discovery — Clean Core v2.0</span>
         </div>
     </header>
 
     <main>
-        <!-- Master Panel: Insights Catalog -->
+        <!-- Master Panel: Target Selector + Branch Selector -->
         <aside class="catalog-sidebar">
 
-            <!-- Main Accordion Header for Search -->
-            <div class="main-acc-header" id="headerSearch" onclick="toggleMainAcc('search')">
-                <div class="main-acc-title">🔍 Filter Search</div>
-                <div class="main-acc-icon">▶</div>
-            </div>
-            <!-- Main Accordion Content for Search -->
-            <div class="main-acc-content" id="contentSearch">
-                <div class="filter-ui-container">
-                    <div style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 12px;">
-                        Create a combination of conditions (AND) for analysis.
-                    </div>
-                    <div id="filterRowsContainer" style="display: flex; flex-direction: column; gap: 8px;">
-                        <!-- Filter rows injected by JS -->
-                    </div>
-                    <div style="display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap;">
-                        <button class="filter-btn add-btn" onclick="addFilterRow()">+ Condition</button>
-                        <button class="filter-btn run-btn" onclick="runCompositeAnalysis()">Analyze</button>
-                    </div>
-                    <!-- Place for history to render for composite -->
-                    <div id="compositeHistoryContainer" class="history-list" style="margin-top: 16px;"></div>
-                </div>
-            </div>
-
-            <!-- Main Accordion Header for Catalog -->
+            <!-- Target Selector -->
             <div class="main-acc-header open" id="headerCatalog" onclick="toggleMainAcc('catalog')">
-                <div class="main-acc-title">📚 Insights Catalog</div>
+                <div class="main-acc-title">🎯 Target Variable</div>
                 <div class="main-acc-icon">▶</div>
             </div>
-            <!-- Main Accordion Content for Catalog -->
             <div class="main-acc-content open" id="contentCatalog">
-                <div class="catalog-subtitle" style="padding: 0 1.5rem 0.5rem 1.5rem;">Auto-Discovery (Propositionalization)</div>
+                <div class="catalog-subtitle" style="padding: 0 1.5rem 0.5rem 1.5rem;">Pick a column, then optionally a
+                    criterion value</div>
                 <div id="catalogAccordion" class="catalog-accordion">
-                    <div style="color: var(--text-dim); font-size: 0.85rem; padding: 1rem;">Loading dataset structure...</div>
+                    <div style="color: var(--text-dim); font-size: 0.85rem; padding: 1rem;">Loading dataset
+                        structure...</div>
                 </div>
             </div>
 
-            <!-- Main Accordion Header for Top Insights -->
-            <div class="main-acc-header" id="headerTop" onclick="toggleMainAcc('top')">
-                <div class="main-acc-title">🏆 Top Insights (NMI ≥ 75%)</div>
+            <!-- Branch Selector -->
+            <div class="main-acc-header open" id="headerBranches" onclick="toggleMainAcc('branches')">
+                <div class="main-acc-title">🌿 Branches</div>
                 <div class="main-acc-icon">▶</div>
             </div>
-            <!-- Main Accordion Content for Top Insights -->
-            <div class="main-acc-content" id="contentTop">
-                <div class="catalog-subtitle" style="padding: 0 1.5rem 0.5rem 1.5rem;">Deterministic Laws (NMI ≥ 75%)</div>
-                <div id="topCatalogAccordion" class="catalog-accordion">
-                    <div style="color: var(--text-dim); font-size: 0.85rem; padding: 1rem;">Loading top insights...</div>
+            <div class="main-acc-content open" id="contentBranches">
+                <div class="branch-caption" id="branchCaption" style="display: none;">
+                    Ranked by raw mutual information only — no significance test is applied, so a winning branch
+                    carries no statistical guarantee (Project_Master_Document.md §4.5).
+                </div>
+
+                <div id="analysisError" class="analysis-error" style="display: none;"></div>
+                <div id="branchList" class="branch-list">
+                    <div style="color: var(--text-dim); font-size: 0.85rem; padding: 1rem;">Select a target to
+                        discover branches...</div>
                 </div>
             </div>
         </aside>
@@ -93,50 +73,43 @@
         <section class="viz-viewport">
             <div id="loader" class="loader-overlay active">
                 <div class="spinner"></div>
-                <div style="font-size: 0.9rem; color: #94a3b8;">Computing Mutual Information & Permutations...</div>
+                <div style="font-size: 0.9rem; color: #94a3b8;">Running Independent Branch Discovery...</div>
             </div>
 
             <div class="viewport-toolbar">
                 <div style="display: flex; gap: 1.25rem; align-items: center; width: 100%; flex-wrap: wrap;">
                     <div
                         style="font-weight: 600; font-size: 0.9rem; color: #f8fafc; border-right: 1px solid var(--border-color); padding-right: 1.25rem;">
-                        📊 VSF Metrics</div>
+                        📊 Branch Metrics</div>
                     <div style="display: flex; gap: 1.25rem; flex: 1; flex-wrap: wrap;">
                         <div style="display: flex; align-items: baseline; gap: 6px;"
-                            title="Normalized Mutual Information (NMI) — predictive power of discrete centers relative to target (0% = chaos, 100% = exact separation)">
-                            <span style="font-size: 0.75rem; color: var(--text-dim);">NMI (Association):</span>
-                            <strong id="val-nmi" style="color: var(--accent-cyan); font-size: 1rem;">-</strong>
+                            title="Raw (unnormalized) mutual information of this branch's selected feature set with the target — see honest caption in the Branches panel">
+                            <span style="font-size: 0.75rem; color: var(--text-dim);">MI (raw):</span>
+                            <strong id="val-mi" style="color: var(--accent-cyan); font-size: 1rem;">-</strong>
                         </div>
                         <div style="display: flex; align-items: baseline; gap: 6px;"
-                            title="Target Loss (100% - NMI) — loss of target information. Higher values indicate mixed classes in centers">
-                            <span style="font-size: 0.75rem; color: var(--text-dim);">Target Loss:</span>
-                            <strong id="val-loss" style="color: var(--amber); font-size: 1rem;">-</strong>
+                            title="Normalized Mutual Information (NMI) of this branch, 0% = chaos, 100% = exact separation">
+                            <span style="font-size: 0.75rem; color: var(--text-dim);">NMI:</span>
+                            <strong id="val-nmi" style="color: var(--accent-purple); font-size: 1rem;">-</strong>
                         </div>
                         <div style="display: flex; align-items: baseline; gap: 6px;"
-                            title="Visual Information Ratio (VIR) — fraction of dataset information captured by this projection">
-                            <span style="font-size: 0.75rem; color: var(--text-dim);">VIR (Axis Coverage):</span>
-                            <strong id="val-vir" style="color: var(--green); font-size: 1rem;">-</strong>
-                        </div>
-                        <div style="display: flex; align-items: baseline; gap: 6px;"
-                            title="Optimal number of visual axes (dimension d*)">
-                            <span style="font-size: 0.75rem; color: var(--text-dim);">Optimal Axes (d*):</span>
-                            <strong id="val-dstar" style="color: var(--accent-purple); font-size: 1rem;">-</strong>
-                        </div>
-                        <div style="display: flex; align-items: baseline; gap: 6px;"
-                            title="Statistical significance of association (permutation test)">
-                            <span style="font-size: 0.75rem; color: var(--text-dim);">p-value:</span>
-                            <strong id="val-pval" style="color: var(--text-muted); font-size: 1rem;">-</strong>
+                            title="Current view — either the branch's full dimensionality, or a within-branch collapse/split of it">
+                            <span style="font-size: 0.75rem; color: var(--text-dim);">Viewing:</span>
+                            <strong id="val-viewdim" style="color: var(--green); font-size: 1rem;">-</strong>
                         </div>
                     </div>
                     <div style="display: flex; align-items: center; gap: 8px; border-left: 1px solid var(--border-color); padding-left: 1rem;">
-                        <span style="font-size: 0.75rem; color: var(--text-dim); font-weight: 500;">Dimensionality:</span>
+                        <span style="font-size: 0.75rem; color: var(--text-dim); font-weight: 500;"
+                            title="Collapse/split the CURRENT branch's own axes (animated) — this never switches to a different branch">Dimensionality:</span>
                         <div id="dimButtonsGroup" class="view-toggle-group" style="padding: 2px;"></div>
                     </div>
                     <div style="font-size: 0.85rem; color: var(--text-dim);">
-                        Total Samples: <strong id="totalSamplesVal" style="color: #fff;">8,124</strong>
+                        Total Samples: <strong id="totalSamplesVal" style="color: #fff;">-</strong>
                     </div>
                 </div>
             </div>
+
+            <div id="axesListContainer" class="axes-list-bar"></div>
 
             <div id="plot-container"></div>
 
@@ -148,6 +121,16 @@
                 </div>
                 <div id="slice-tabs" class="slice-tabs">
                     <!-- Tabs injected by JS -->
+                </div>
+                <div class="slice-play-controls" id="slicePlayControls">
+                    <button class="slice-play-btn" id="slicePlayBtn" onclick="toggleSlicePlayback()"
+                        title="Play/Pause auto-advance through slices">▶</button>
+                    <select id="slicePlaySpeed" class="slice-speed-select" title="Auto-advance speed">
+                        <option value="2000">0.5x</option>
+                        <option value="1200" selected>1x</option>
+                        <option value="600">2x</option>
+                        <option value="300">4x</option>
+                    </select>
                 </div>
             </div>
         </section>
@@ -164,6 +147,21 @@
                 <div style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 8px;">Space Representation</div>
                 <div class="view-toggle-group">
                     <button class="toggle-btn active" id="btn-grid" style="width: 100%;">📐 Discrete Centers</button>
+                </div>
+            </div>
+
+            <!-- Purity Legend -->
+            <div>
+                <div style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 8px;">🎨 Purity Color Scale</div>
+                <div class="purity-legend" id="purityLegend">
+                    <div class="purity-legend-item"><span class="purity-dot" style="background:#22c55e;"></span>Green
+                        · &gt; 85%</div>
+                    <div class="purity-legend-item"><span class="purity-dot" style="background:#eab308;"></span>Yellow
+                        · 75–85%</div>
+                    <div class="purity-legend-item"><span class="purity-dot" style="background:#92572e;"></span>Brown
+                        · 25–75% (mixed)</div>
+                    <div class="purity-legend-item"><span class="purity-dot" style="background:#ef4444;"></span>Red ·
+                        &lt; 25%</div>
                 </div>
             </div>
 
@@ -247,32 +245,50 @@
                     </div>
                 </div>
             </div>
+
+            <!-- Global Pattern Scan: scans every (column, value) One-vs-Rest
+                 criterion in the dataset, keeps only those whose best 1D-4D
+                 branch exceeds the chosen NMI threshold, and filters the
+                 Target Variable catalog down to the survivors. Genuinely
+                 expensive (one honest exhaustive discover_branches call per
+                 pair — see vsf/server.py's module docstring) so it runs as a
+                 polled background job with a cancel button, not a blocking
+                 request. -->
+            <div>
+                <div style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 8px;">🔍 Global Pattern Scan</div>
+                <div class="scan-panel">
+                    <div class="scan-note">
+                        Scans every column/value in the dataset for a strong pattern (best NMI across its 1D-4D
+                        branches). Wide datasets can take from minutes to tens of minutes — this runs in the
+                        background and can be cancelled.
+                    </div>
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <label style="color: var(--text-muted);">NMI threshold:</label>
+                        <div style="display: flex; align-items: center; gap: 4px;">
+                            <input type="number" id="scanNmiThreshold" min="0" max="99" step="1" value="80"
+                                style="background: rgba(15, 23, 42, 0.8); color: white; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 2px 6px; width: 55px;">
+                            <span style="color: var(--text-muted);">%</span>
+                        </div>
+                    </div>
+                    <div style="display: flex; gap: 8px; margin-top: 4px;">
+                        <button id="btnStartScan" class="filter-btn run-btn" style="flex:1; padding: 6px;"
+                            onclick="startDatasetScan()">Scan Dataset</button>
+                        <button id="btnCancelScan" class="filter-btn add-btn" style="flex:1; padding: 6px; display: none;"
+                            onclick="cancelDatasetScan()">Cancel</button>
+                    </div>
+                    <div id="scanProgressWrap" class="scan-progress-wrap" style="display: none;">
+                        <div class="scan-progress-track">
+                            <div class="scan-progress-fill" id="scanProgressFill"></div>
+                        </div>
+                        <div class="scan-progress-label" id="scanProgressLabel">—</div>
+                    </div>
+                    <div id="scanStatusMsg" class="scan-status-msg" style="display: none;"></div>
+                    <button id="btnClearScan" class="filter-btn add-btn" style="width: 100%; padding: 6px; margin-top: 4px; display: none;"
+                        onclick="clearDatasetScan()">Show All Columns/Values</button>
+                </div>
+            </div>
         </aside>
     </main>
-
-    <!-- XAI Floating Panel -->
-    <div id="xaiPanel" class="xai-panel">
-        <div class="xai-panel-header">
-            <div class="xai-panel-title">
-                <span>🔬 Conjunctive Explorer</span>
-            </div>
-            <div class="xai-panel-close" onclick="closeXaiPanel()">×</div>
-        </div>
-        <div class="xai-panel-body">
-            <div id="xaiPanelInfo" class="xai-panel-info">
-                <!-- Center info injected here -->
-            </div>
-
-            <!-- Dedicated Mitosis Animation Stage -->
-            <div id="xaiMitosisContainer" class="xai-mitosis-container">
-                <canvas id="xaiMitosisCanvas" width="418" height="150"></canvas>
-            </div>
-
-            <div id="xaiFilterList" style="display: flex; flex-direction: column; gap: 8px;">
-                <!-- Filter candidates injected here -->
-            </div>
-        </div>
-    </div>
 
 </body>
 </html>

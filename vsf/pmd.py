@@ -80,7 +80,7 @@ def discretize_feature(
 
     arr = np.asarray(raw_arr, dtype=float)
     l_v = CHANNEL_LIMITS.get(channel_name, CHANNEL_LIMITS["default"])
-    
+
     # Human-in-the-loop custom user bins
     if user_bins is not None:
         bins = np.sort(np.unique(user_bins))
@@ -90,6 +90,29 @@ def discretize_feature(
             )
         discrete_x = np.digitize(arr, bins) - 1
         k_actual = len(bins) - 1
+    elif len(np.unique(arr)) <= l_v:
+        # Low-cardinality numeric feature (e.g. a binary 0/1 indicator, or a
+        # small integer count taking few distinct values): map directly to
+        # its own distinct values rather than approximating via
+        # percentile-based quantile bins.
+        #
+        # This is not just a simplification, it fixes a real correctness
+        # bug the quantile path below has for exactly this case: for a
+        # feature with few unique values (e.g. 2), `np.percentile` at
+        # `k_actual + 1` evenly-spaced quantile points routinely returns
+        # only those 2 endpoint values for MOST of the requested quantiles
+        # once k_actual+1 > (number of unique values), so
+        # `np.unique(bins)` collapses to length 2 — which passes the
+        # `len(bins) < 2` guard below unmodified, yet `bins[1:-1]` (the
+        # digitize inner-edge array) comes out EMPTY, so every sample digitizes
+        # into bin 0 and a fully informative binary feature silently
+        # becomes a CONSTANT (k_actual=1, zero downstream signal). Direct
+        # unique-value mapping has no such failure mode: it is exact, not
+        # an approximation, whenever the raw cardinality already fits
+        # within this channel's capacity `l_v`.
+        unique_vals = np.unique(arr)
+        discrete_x = np.searchsorted(unique_vals, arr)
+        k_actual = len(unique_vals)
     else:
         if n_bins is None:
             k_target = freedman_diaconis_bins(arr, max_bins=l_v)
