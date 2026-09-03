@@ -101,13 +101,15 @@ def test_exhaustive_search_finds_xor_synergy_a_greedy_chain_would_miss():
     # requires genuinely re-examining combinations that don't contain `c`.
     assert set(branches[2].selected_feature_names) == {"a", "b"}
 
-    # {a, b} recovers Z almost perfectly (H(Z) = 1 bit): its MI/NMI must
-    # both be close to the ceiling, and strictly higher than the d=1 winner
-    # could ever reach on its own.
+    # {a, b} recovers Z almost perfectly (H(Z) = 1 bit): its MI and its
+    # bias-corrected share of the target's entropy must both be close to the
+    # ceiling, and strictly higher than the d=1 winner could ever reach on
+    # its own.
     assert branches[2].mi == pytest.approx(1.0, abs=0.15)
-    assert branches[2].nmi == pytest.approx(1.0, abs=0.15)
+    assert branches[2].u_adj == pytest.approx(1.0, abs=0.15)
     assert branches[2].mi > 0.8
     assert branches[2].mi > branches[1].mi
+    assert branches[2].mi_adj > branches[1].mi_adj
 
 
 def test_branch_d1_winner_is_not_a_subset_of_branch_d2_winner():
@@ -123,45 +125,84 @@ def test_branch_d1_winner_is_not_a_subset_of_branch_d2_winner():
 
 
 # ---------------------------------------------------------------------------
-# Ranking is by RAW MI, not NMI (Section 4.2 / 4.5)
+# Ranking is by BIAS-CORRECTED MI (Section 4.2 / 4.5)
+#
+# v2.0 ranked by raw plug-in MI and documented the missing degrees-of-freedom
+# correction as an accepted trade-off. It is not one: the plug-in estimator's
+# bias grows with the candidate's cell count, so `argmax` over raw MI selects
+# on cardinality rather than on association. These two tests pin the fix from
+# both sides -- that the biased choice is actually rejected, and that a real
+# signal is still found.
 # ---------------------------------------------------------------------------
 
-def test_ranking_within_one_d_uses_raw_mi_not_nmi():
-    # Constructed so raw-MI and NMI rankings actively DISAGREE:
-    #   Feature A: binary, moderate raw MI, but H(A) <= 1 bit caps its own
-    #     denominator -> high NMI.
-    #   Feature B: high-cardinality (matches Z's 8 classes), higher raw MI,
-    #     but Z's entropy (3 bits) dominates the NMI denominator -> lower NMI.
+def test_ranking_rejects_a_high_cardinality_noise_feature_that_raw_mi_prefers():
+    # Two features, NEITHER carrying any information about Z:
+    #   A: binary noise         -> tiny plug-in MI, tiny bias
+    #   B: 200-category noise   -> much larger plug-in MI, entirely bias
+    # Raw-MI ranking (v2.0) must prefer B; MI_adj ranking must not prefer it,
+    # and the winner's corrected effect size must be ~0 either way.
     rng = np.random.default_rng(7)
-    n = 8000
-    K = 8
-    Z = rng.integers(0, K, size=n)  # 8-class uniform target, H(Z) = 3 bits
-
-    half = (Z < K // 2).astype(int)
-    noise_a = rng.random(n) < 0.20
-    a_int = np.where(noise_a, 1 - half, half)
-    A = np.array(["hi" if v == 1 else "lo" for v in a_int])
-
-    noise_b = rng.random(n) < 0.55
-    b_int = np.where(noise_b, rng.integers(0, K, size=n), Z)
-    B = np.array([f"cat{v}" for v in b_int])
-
-    from vsf.math import mutual_information, normalized_mutual_information
-
-    mi_a, nmi_a = mutual_information(Z, A), normalized_mutual_information(Z, A)
-    mi_b, nmi_b = mutual_information(Z, B), normalized_mutual_information(Z, B)
-    # Sanity-check the constructed disagreement actually holds before
-    # trusting it as a regression fixture.
-    assert mi_b > mi_a, "fixture must have raw MI favoring B"
-    assert nmi_a > nmi_b, "fixture must have NMI favoring A"
-
+    n = 6000
+    Z = (rng.random(n) < 0.3).astype(int)
+    A = rng.integers(0, 2, size=n)
+    B = rng.integers(0, 200, size=n)
     X = np.column_stack([A, B])
-    branches = discover_branches(X, Z, feature_names=["A", "B"], max_d=1)
 
-    # discover_branches must follow raw MI (picks B), NOT NMI (which would
-    # have picked A).
-    assert branches[1].selected_feature_names == ["B"]
-    assert branches[1].mi == pytest.approx(mi_b)
+    from vsf.math import mutual_information
+
+    mi_a = mutual_information(Z, A)
+    mi_b = mutual_information(Z, B)
+    assert mi_b > mi_a, "fixture must have raw MI favoring the noisy 200-category feature"
+
+    # v2.2: `objective` must be pinned to "mi_adj" in this test. The default
+    # is now "auto", which selects the COVERAGE objective for a binary target
+    # -- a different ranking entirely, and not the one this test is about.
+    legacy = discover_branches(X, Z, feature_names=["A", "B"], max_d=1,
+                               null="none", n_permutations=0, objective="mi_adj")
+    assert legacy[1].selected_feature_names == ["B"], "null='none' must reproduce v2.0 behaviour"
+
+    corrected = discover_branches(X, Z, feature_names=["A", "B"], max_d=1,
+                                  n_permutations=199, objective="mi_adj")
+    # The corrected search must not report a finding on data with no signal:
+    # whichever feature it picks, the excess over the null is ~0 and the
+    # branch is not significant.
+    assert corrected[1].mi_adj < 0.01
+    assert corrected[1].u_adj < 0.05
+    assert corrected[1].p_value > 0.01
+    assert not corrected[1].is_significant()
+
+
+def test_ranking_still_finds_a_real_signal_and_prefers_it_over_noisy_cardinality():
+    # Same shape as above, but now the LOW-cardinality feature genuinely
+    # predicts Z. Raw MI is close between the two (the 200-category noise
+    # feature's bias nearly matches the real signal); MI_adj must separate
+    # them decisively and pick the real one.
+    rng = np.random.default_rng(11)
+    n = 6000
+    Z = (rng.random(n) < 0.3).astype(int)
+    A = np.where(rng.random(n) < 0.85, Z, 1 - Z)   # noisy but real copy of Z
+    B = rng.integers(0, 200, size=n)               # pure noise, high cardinality
+    X = np.column_stack([A, B])
+
+    branches = discover_branches(X, Z, feature_names=["A", "B"], max_d=1,
+                                 n_permutations=199)
+    assert branches[1].selected_feature_names == ["A"]
+    assert branches[1].mi_adj > 0.1
+    assert branches[1].u_adj > 0.2
+    assert branches[1].p_value <= 0.01
+    assert branches[1].is_significant()
+
+
+def test_mi_adj_equals_mi_minus_null_and_u_adj_is_its_normalized_form():
+    rng = np.random.default_rng(13)
+    n = 2000
+    X = rng.integers(0, 5, size=(n, 3))
+    Z = rng.integers(0, 3, size=n)
+    for branch in discover_branches(X, Z, max_d=3, n_permutations=0).values():
+        assert branch.mi_adj == pytest.approx(branch.mi - branch.mi_null)
+        denom = branch.h_target - branch.mi_null
+        expected_u = min(1.0, max(0.0, branch.mi_adj / denom))
+        assert branch.u_adj == pytest.approx(expected_u)
 
 
 # ---------------------------------------------------------------------------
@@ -337,7 +378,76 @@ def test_branch_result_fields_are_internally_consistent():
         assert len(branch.selected_features) == d
         assert len(branch.selected_feature_names) == d
         assert branch.mi >= 0.0
-        assert 0.0 <= branch.nmi <= 1.0 + 1e-9
+        assert branch.mi_null >= 0.0
+        assert branch.mi_adj == pytest.approx(branch.mi - branch.mi_null)
+        assert 0.0 <= branch.u_adj <= 1.0 + 1e-9
+
+
+# ---------------------------------------------------------------------------
+# `mi_by_prefix_d`/`mi_adj_by_prefix_d`/`u_adj_by_prefix_d` — regression
+# coverage for the within-branch dimensionality-collapse HUD bug (the frontend
+# was reading the branch's fixed full-d values for every collapsed view
+# instead of the marginals of the actually-visible axes).
+# ---------------------------------------------------------------------------
+
+def test_prefix_metrics_length_matches_branch_d_and_last_entry_matches_scalars():
+    rng = np.random.default_rng(11)
+    n = 500
+    X = rng.integers(0, 4, size=(n, 5))
+    Z = rng.integers(0, 3, size=n)
+    branches = discover_branches(X, Z, max_d=4)
+    for d, branch in branches.items():
+        assert len(branch.mi_by_prefix_d) == d
+        assert len(branch.mi_adj_by_prefix_d) == d
+        assert len(branch.u_adj_by_prefix_d) == d
+        # The last (full-d) prefix entry must reproduce the branch's own
+        # reported scalars exactly -- both go through `_subset_codes` and
+        # `_score_candidate` (see `_prefix_metric_series`), not two separate
+        # calls that can silently diverge on a coarsened combination.
+        assert branch.mi_by_prefix_d[-1] == pytest.approx(branch.mi)
+        assert branch.mi_adj_by_prefix_d[-1] == pytest.approx(branch.mi_adj)
+        assert branch.u_adj_by_prefix_d[-1] == pytest.approx(branch.u_adj)
+
+
+def test_prefix_metrics_are_monotone_non_decreasing_in_prefix_length():
+    # I(Z; X_{S[:k+1]}) >= I(Z; X_{S[:k]}) always holds for exact discrete MI
+    # (I(Z; X, Y) = I(Z; X) + I(Z; Y|X) >= I(Z; X), and I(Z; Y|X) >= 0) --
+    # adding an axis to a fixed prefix can never *reduce* the information
+    # that prefix's own axes carry about Z. Uses a low-cardinality, ample-N
+    # combination well inside the Grid Capacity Limit so no coarsening
+    # perturbs this monotonicity.
+    rng = np.random.default_rng(12)
+    n = 3000
+    X = rng.integers(0, 3, size=(n, 4))
+    Z = rng.integers(0, 2, size=n)
+    branches = discover_branches(X, Z, max_d=4)
+    branch = branches[4]
+    mi_series = branch.mi_by_prefix_d
+    for k in range(1, len(mi_series)):
+        assert mi_series[k] >= mi_series[k - 1] - 1e-9
+
+
+def test_prefix_metrics_are_a_projection_not_the_independent_per_d_branch():
+    # `mi_by_prefix_d` answers "what would THIS branch's own axes read if
+    # collapsed to k of them" -- a DIFFERENT question from
+    # `discover_branches`'s own per-d search, which independently
+    # re-optimizes and need not select the same features (branches are not
+    # required to be nested; see the XOR-synergy tests above). Reusing the
+    # XOR-synergy fixture: the d=3 branch's first-2-feature projection must
+    # not be assumed to equal the independently-discovered d=2 branch's mi,
+    # and in this fixture the d=1 winner ({c}) is disjoint from the d=2/d=3
+    # winners ({a, b, ...}), so the d=3 branch's OWN 1-axis prefix (its
+    # first selected feature, from {a, b}) is a materially weaker predictor
+    # than the independently-optimal d=1 branch ({c}).
+    X, Z, feature_names = _xor_synergy_dataset()
+    branches = discover_branches(X, Z, feature_names=feature_names, max_d=2)
+    branch_d1 = branches[1]
+    branch_d2 = branches[2]
+    assert set(branch_d2.selected_feature_names) == {"a", "b"}
+    assert branch_d1.selected_feature_names == ["c"]
+    # The d=2 branch's own 1-axis prefix (first of {a, b}) is near-useless
+    # in isolation (XOR secret sharing), unlike the independent d=1 winner.
+    assert branch_d2.mi_by_prefix_d[0] < branch_d1.mi
 
 
 def test_max_branch_d_constant_is_4():
@@ -392,7 +502,32 @@ def test_v1_api_symbols_are_gone():
 
 def test_branch_result_has_no_v1_fields():
     fields = {f for f in BranchResult.__dataclass_fields__}
-    assert fields == {"d", "selected_features", "selected_feature_names", "mi", "nmi"}
+    # v1.0 fields (scenario/vir/l_target/l_feat/xai_message/selection_history/
+    # n_significant_features) must never come back.
+    v1_fields = {
+        "scenario", "vir", "l_target", "l_feat", "xai_message",
+        "selection_history", "n_significant_features",
+    }
+    assert fields.isdisjoint(v1_fields)
+    # `nmi` is likewise gone for good, and its absence is pinned as hard as
+    # the v1.0 symbols': it reads ~66 % on data that is provably independent
+    # of the target whenever that target is a rare class, so no consumer may
+    # be able to reach it through a BranchResult.
+    assert "nmi" not in fields
+    assert "nmi_by_prefix_d" not in fields
+    # Current v2.2 "Certified Centers" field set. The v2.1 fields are all
+    # still present: v2.2 DEMOTES u_adj from headline to diagnostic, it does
+    # not remove it -- MI_adj remains the default ranking statistic and the
+    # correct answer to "does an association exist", which is a question the
+    # centre layer does not answer.
+    assert fields == {
+        "d", "selected_features", "selected_feature_names",
+        "mi", "mi_null", "mi_adj", "u_adj", "h_target",
+        "mi_by_prefix_d", "mi_adj_by_prefix_d", "u_adj_by_prefix_d",
+        "p_value", "p_value_familywise", "per_class",
+        "centers", "coverage_by_prefix_d", "n_centers_by_prefix_d",
+        "purity_by_prefix_d", "coverage_p_value_familywise",
+    }
 
 
 if __name__ == "__main__":

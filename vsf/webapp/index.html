@@ -16,8 +16,8 @@
     <!-- Plotly.js -->
     <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
 
-    <link rel="stylesheet" href="/static/css/styles.css?v=5001">
-    <script src="/static/js/app.js?v=5001" defer></script>
+    <link rel="stylesheet" href="/static/css/styles.css?v=5009">
+    <script src="/static/js/app.js?v=5009" defer></script>
 </head>
 
 <body>
@@ -42,8 +42,7 @@
                 <div class="main-acc-icon">▶</div>
             </div>
             <div class="main-acc-content open" id="contentCatalog">
-                <div class="catalog-subtitle" style="padding: 0 1.5rem 0.5rem 1.5rem;">Pick a column, then optionally a
-                    criterion value</div>
+
                 <div id="catalogAccordion" class="catalog-accordion">
                     <div style="color: var(--text-dim); font-size: 0.85rem; padding: 1rem;">Loading dataset
                         structure...</div>
@@ -56,15 +55,16 @@
                 <div class="main-acc-icon">▶</div>
             </div>
             <div class="main-acc-content open" id="contentBranches">
-                <div class="branch-caption" id="branchCaption" style="display: none;">
-                    Ranked by raw mutual information only — no significance test is applied, so a winning branch
-                    carries no statistical guarantee (Project_Master_Document.md §4.5).
-                </div>
+                <!-- Populated by renderBranchSelector() in app.js from the
+                     response's own `objective_used`, so this can never say
+                     something the server didn't actually do (the old static
+                     text here kept claiming "raw mutual information" long
+                     after coverage became the default search objective). -->
+                <div class="branch-caption" id="branchCaption" style="display: none;"></div>
 
                 <div id="analysisError" class="analysis-error" style="display: none;"></div>
                 <div id="branchList" class="branch-list">
-                    <div style="color: var(--text-dim); font-size: 0.85rem; padding: 1rem;">Select a target to
-                        discover branches...</div>
+
                 </div>
             </div>
         </aside>
@@ -83,19 +83,14 @@
                         📊 Branch Metrics</div>
                     <div style="display: flex; gap: 1.25rem; flex: 1; flex-wrap: wrap;">
                         <div style="display: flex; align-items: baseline; gap: 6px;"
-                            title="Raw (unnormalized) mutual information of this branch's selected feature set with the target — see honest caption in the Branches panel">
-                            <span style="font-size: 0.75rem; color: var(--text-dim);">MI (raw):</span>
-                            <strong id="val-mi" style="color: var(--accent-cyan); font-size: 1rem;">-</strong>
+                            title="Coverage: the share of ALL target-value samples that fall inside certified discrete centres. This is what the display delivers. It is 0% whenever no cell can be certified, however strong the underlying association is.">
+                            <span style="font-size: 0.75rem; color: var(--text-dim);">Coverage:</span>
+                            <strong id="val-coverage" style="color: var(--green); font-size: 1.05rem;">-</strong>
                         </div>
                         <div style="display: flex; align-items: baseline; gap: 6px;"
-                            title="Normalized Mutual Information (NMI) of this branch, 0% = chaos, 100% = exact separation">
-                            <span style="font-size: 0.75rem; color: var(--text-dim);">NMI:</span>
-                            <strong id="val-nmi" style="color: var(--accent-purple); font-size: 1rem;">-</strong>
-                        </div>
-                        <div style="display: flex; align-items: baseline; gap: 6px;"
-                            title="Current view — either the branch's full dimensionality, or a within-branch collapse/split of it">
-                            <span style="font-size: 0.75rem; color: var(--text-dim);">Viewing:</span>
-                            <strong id="val-viewdim" style="color: var(--green); font-size: 1rem;">-</strong>
+                            title="Number of certified centres. At equal coverage, fewer is better: the deliverable is a small set of cells an analyst can read.">
+                            <span style="font-size: 0.75rem; color: var(--text-dim);">Centres:</span>
+                            <strong id="val-centers" style="color: var(--green); font-size: 1.05rem;">-</strong>
                         </div>
                     </div>
                     <div style="display: flex; align-items: center; gap: 8px; border-left: 1px solid var(--border-color); padding-left: 1rem;">
@@ -103,8 +98,9 @@
                             title="Collapse/split the CURRENT branch's own axes (animated) — this never switches to a different branch">Dimensionality:</span>
                         <div id="dimButtonsGroup" class="view-toggle-group" style="padding: 2px;"></div>
                     </div>
-                    <div style="font-size: 0.85rem; color: var(--text-dim);">
-                        Total Samples: <strong id="totalSamplesVal" style="color: #fff;">-</strong>
+                    <div style="font-size: 0.85rem; color: var(--text-dim);"
+                        title="Rows every statistic and every cell colour is computed on. When the plot subsamples for rendering, the number actually drawn is shown in brackets.">
+                        Samples (statistics): <strong id="totalSamplesVal" style="color: #fff;">-</strong>
                     </div>
                 </div>
             </div>
@@ -142,26 +138,139 @@
                 Display Settings
             </div>
 
-            <!-- Display Mode -->
-            <div>
-                <div style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 8px;">Space Representation</div>
-                <div class="view-toggle-group">
-                    <button class="toggle-btn active" id="btn-grid" style="width: 100%;">📐 Discrete Centers</button>
-                </div>
-            </div>
 
-            <!-- Purity Legend -->
+
+
+
+            <!-- Global Pattern Scan (absorbed "Centres & Colour" by request: tau
+                 and redTo are the SAME parameters the scan itself
+                 certifies against -- startDatasetScan sends
+                 tau: readCertTau(), alpha: readCertAlpha() -- and the same
+                 ones the currently-viewed branch is coloured with, so one
+                 shared panel was the honest layout rather than two that
+                 silently drove each other. There is no more "Recompute
+                 centres" button: dragging the green handle to release, its
+                 arrow-key nudge, and now #certTau's own change event (typing
+                 a value + blur/Enter) all call applyCertificate() directly,
+                 so the explicit button added no capability the three
+                 existing commit paths didn't already have.
+
+                 Scan mechanics: keeps a (column, value) pair when its best
+                 1D-4D branch's coverage is >= the coverage threshold (inclusive,
+                 so a pair certifying exactly 100% coverage clears a 100%
+                 threshold) AND every occupied cell in it holds at least
+                 Min. objects samples. #scanCoverageThreshold starts EMPTY on
+                 purpose (no implicit default), and #btnStartScan stays disabled
+                 (see updateScanStartButtonState() in app.js) until a value is
+                 typed -- running the full-dataset scan with no threshold would
+                 just reproduce the unfiltered catalog at real compute cost.
+                 Clearing the field back out does NOT itself revert an
+                 already-applied filter; that is what "Show All Columns/Values"
+                 is for, by explicit product decision (the field's live value and
+                 the catalog's active filter are deliberately decoupled state).
+                 No FDR/significance filtering is applied here BY CHOICE
+                 (app.js's startDatasetScan sends fdr_q=1.0, a verified
+                 no-op -- see metrics.py::benjamini_hochberg): the pre-v2.1
+                 filter (max NMI) saturated toward 100% on exactly the rare
+                 One-vs-Rest criteria this scan manufactures in bulk, and a
+                 sweep of k targets with no significance test at all will
+                 clear a coverage threshold on some of them by chance alone
+                 -- Min. objects is the only guard against that once FDR is
+                 off. Genuinely expensive regardless (one honest exhaustive
+                 discover_branches call plus a permutation null per pair --
+                 see vsf/server.py's module docstring) so it runs as a
+                 polled background job with a cancel button, not a blocking
+                 request. -->
             <div>
-                <div style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 8px;">🎨 Purity Color Scale</div>
-                <div class="purity-legend" id="purityLegend">
-                    <div class="purity-legend-item"><span class="purity-dot" style="background:#22c55e;"></span>Green
-                        · &gt; 85%</div>
-                    <div class="purity-legend-item"><span class="purity-dot" style="background:#eab308;"></span>Yellow
-                        · 75–85%</div>
-                    <div class="purity-legend-item"><span class="purity-dot" style="background:#92572e;"></span>Brown
-                        · 25–75% (mixed)</div>
-                    <div class="purity-legend-item"><span class="purity-dot" style="background:#ef4444;"></span>Red ·
-                        &lt; 25%</div>
+                <div style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 8px;">🔍 Global Pattern Scan</div>
+                <div class="scan-panel">
+
+
+                    <!-- Colour-boundary line: the gradient IS the legend (it is
+                         drawn from the live tau / redTo values, so it can
+                         never drift out of sync with the cell colours it
+                         describes) and its two handles are the primary way to
+                         move the boundaries. Dragging the red handle
+                         re-colours live; dragging the green handle (tau) only
+                         commits — and re-runs the currently-viewed branch's
+                         analysis — on release, because tau changes the
+                         reported metric server-side (and is what the scan
+                         above certifies against too). The number inputs below
+                         stay wired to the same certTau / colorRedTo ids
+                         and remain the precise, reproducible way to set an
+                         exact value; they and the slider are kept in sync in
+                         both directions. -->
+                    <div class="color-scale"
+                        title="Drag to set the colour boundaries. Green (tau) defines a discrete centre and re-runs the analysis on release. Red is cosmetic and re-colours instantly.">
+                        <div class="color-scale-track" id="colorScaleTrack">
+                            <div class="color-scale-handle color-scale-handle--red" id="handleRed" role="slider"
+                                aria-label="Red boundary (cosmetic)" aria-valuemin="0" aria-valuemax="99"
+                                aria-valuenow="40" tabindex="0">
+                                <span class="color-scale-handle-value" id="handleRedValue">40%</span>
+                            </div>
+                            <div class="color-scale-handle color-scale-handle--green" id="handleGreen" role="slider"
+                                aria-label="Green boundary (tau)" aria-valuemin="1" aria-valuemax="100"
+                                aria-valuenow="90" tabindex="0">
+                                <span class="color-scale-handle-value" id="handleGreenValue">90%</span>
+                            </div>
+                        </div>
+                        <div class="color-scale-ticks"><span>0%</span><span>50%</span><span>100%</span></div>
+                    </div>
+
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <label style="color: var(--green);"
+                            title="A cell is a discrete centre — and is drawn green — when its share of the target value reaches this. Coverage is computed from exactly these cells, so moving this re-runs the analysis. 100% is allowed and means 'only cells that are entirely the target value'.">🟢 Green from:</label>
+                        <div style="display: flex; align-items: center; gap: 4px;">
+                            <input type="number" id="certTau" min="1" max="100" step="1" value="90"
+                                oninput="syncColorScaleFromInputs()" onchange="applyCertificate()"
+                                style="background: rgba(15, 23, 42, 0.8); color: white; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 2px 6px; width: 55px;">
+                            <span style="color: var(--text-muted);">%</span>
+                        </div>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <label style="color: #ef4444;"
+                            title="Purely a colour boundary: cells below it are drawn red; between it and the green boundary, brown. Changing it re-colours immediately and does not affect any reported number.">🔴 Red up to:</label>
+                        <div style="display: flex; align-items: center; gap: 4px;">
+                            <input type="number" id="colorRedTo" min="0" max="99" step="1" value="40"
+                                oninput="applyColorBoundary(); syncColorScaleFromInputs();"
+                                style="background: rgba(15, 23, 42, 0.8); color: white; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 2px 6px; width: 55px;">
+                            <span style="color: var(--text-muted);">%</span>
+                        </div>
+                    </div>
+                    <div id="certSummary" style="font-size: 0.72rem; color: var(--text-dim); line-height: 1.45;"></div>
+
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <label style="color: var(--text-muted);"
+                            title="Minimum share of the criterion's own target-value samples that must fall inside certified centres (>=, so 100% is achievable). This is a coverage, not an entropy share: 40% means two fifths of the value's occurrences are localised in cells certified at the current tau and alpha. Empty = no filter — the scan cannot be started until a value is entered; to go back to an unfiltered catalog after a scan has run, use “Show All Columns/Values” below rather than clearing this field.">Coverage threshold:</label>
+                        <div style="display: flex; align-items: center; gap: 4px;">
+                            <input type="number" id="scanCoverageThreshold" min="0" max="100" step="1" value="" placeholder="—"
+                                oninput="updateScanStartButtonState()"
+                                style="background: rgba(15, 23, 42, 0.8); color: white; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 2px 6px; width: 55px;">
+                            <span style="color: var(--text-muted);">%</span>
+                        </div>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <label style="color: var(--text-muted);"
+                            title="Minimum number of objects a cell must hold to count as a centre in THIS scan. 1 = no restriction, which means a single lucky target-value object anywhere in the dataset can read as a 100%-pure centre and clear the coverage threshold above on its own. Independent of the Green/Red sliders' own certTau/colorRedTo (tau/alpha are shared with the scan; min_samples is not) — with no FDR control on this scan (see the note above), this is the only guard against a pair clearing the threshold on a handful of objects.">Min. objects:</label>
+                        <input type="number" id="scanMinSamples" min="1" max="10000" step="1" value="1"
+                            style="background: rgba(15, 23, 42, 0.8); color: white; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 2px 6px; width: 55px;">
+                    </div>
+                    <div style="display: flex; gap: 8px; margin-top: 4px;">
+                        <button id="btnStartScan" class="filter-btn run-btn" style="flex:1; padding: 6px;" disabled
+                            title="Enter a coverage threshold above to start a scan."
+                            onclick="startDatasetScan()">Scan Dataset</button>
+                        <button id="btnCancelScan" class="filter-btn add-btn" style="flex:1; padding: 6px; display: none;"
+                            onclick="cancelDatasetScan()">Cancel</button>
+                    </div>
+                    <div id="scanProgressWrap" class="scan-progress-wrap" style="display: none;">
+                        <div class="scan-progress-track">
+                            <div class="scan-progress-fill" id="scanProgressFill"></div>
+                        </div>
+                        <div class="scan-progress-label" id="scanProgressLabel">—</div>
+                    </div>
+                    <div id="scanStatusMsg" class="scan-status-msg" style="display: none;"></div>
+                    <button id="btnClearScan" class="filter-btn add-btn" style="width: 100%; padding: 6px; margin-top: 4px; display: none;"
+                        onclick="clearDatasetScan()">Show All Columns/Values</button>
                 </div>
             </div>
 
@@ -215,76 +324,6 @@
                         <button class="filter-btn run-btn" style="flex:1; padding: 6px;"
                             onclick="applyStroke(true)">Apply</button>
                     </div>
-                </div>
-            </div>
-
-            <!-- Noise Reduction -->
-            <div>
-                <div style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 8px;">🧹 Noise Reduction (Outliers)</div>
-                <div
-                    style="display: flex; flex-direction: column; gap: 10px; font-size: 0.85rem; background: rgba(15, 23, 42, 0.4); padding: 12px; border-radius: 12px; border: 1px solid var(--border-color);">
-                    <div style="display: flex; justify-content: space-between; align-items: center;">
-                        <label style="color: var(--text-muted);">Threshold (min. samples):</label>
-                        <input type="number" id="noiseThreshold" min="0" max="1000" value="5"
-                            style="background: rgba(15, 23, 42, 0.8); color: white; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 2px 6px; width: 60px;">
-                    </div>
-
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 4px;">
-                        <label style="color: var(--text-muted);">Noise Opacity:</label>
-                        <input type="range" id="noiseOpacity" min="0" max="1" step="0.1" value="0.2"
-                            style="width: 100px;">
-                    </div>
-
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 4px;">
-                        <label style="color: var(--text-muted);">Outlier Shape:</label>
-                        <select id="noiseShape"
-                            style="background: rgba(15, 23, 42, 0.8); color: white; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 2px 6px;">
-                            <option value="circle-open">⭕ Open Circle</option>
-                            <option value="x">❌ Cross</option>
-                        </select>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Global Pattern Scan: scans every (column, value) One-vs-Rest
-                 criterion in the dataset, keeps only those whose best 1D-4D
-                 branch exceeds the chosen NMI threshold, and filters the
-                 Target Variable catalog down to the survivors. Genuinely
-                 expensive (one honest exhaustive discover_branches call per
-                 pair — see vsf/server.py's module docstring) so it runs as a
-                 polled background job with a cancel button, not a blocking
-                 request. -->
-            <div>
-                <div style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 8px;">🔍 Global Pattern Scan</div>
-                <div class="scan-panel">
-                    <div class="scan-note">
-                        Scans every column/value in the dataset for a strong pattern (best NMI across its 1D-4D
-                        branches). Wide datasets can take from minutes to tens of minutes — this runs in the
-                        background and can be cancelled.
-                    </div>
-                    <div style="display: flex; justify-content: space-between; align-items: center;">
-                        <label style="color: var(--text-muted);">NMI threshold:</label>
-                        <div style="display: flex; align-items: center; gap: 4px;">
-                            <input type="number" id="scanNmiThreshold" min="0" max="99" step="1" value="80"
-                                style="background: rgba(15, 23, 42, 0.8); color: white; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 2px 6px; width: 55px;">
-                            <span style="color: var(--text-muted);">%</span>
-                        </div>
-                    </div>
-                    <div style="display: flex; gap: 8px; margin-top: 4px;">
-                        <button id="btnStartScan" class="filter-btn run-btn" style="flex:1; padding: 6px;"
-                            onclick="startDatasetScan()">Scan Dataset</button>
-                        <button id="btnCancelScan" class="filter-btn add-btn" style="flex:1; padding: 6px; display: none;"
-                            onclick="cancelDatasetScan()">Cancel</button>
-                    </div>
-                    <div id="scanProgressWrap" class="scan-progress-wrap" style="display: none;">
-                        <div class="scan-progress-track">
-                            <div class="scan-progress-fill" id="scanProgressFill"></div>
-                        </div>
-                        <div class="scan-progress-label" id="scanProgressLabel">—</div>
-                    </div>
-                    <div id="scanStatusMsg" class="scan-status-msg" style="display: none;"></div>
-                    <button id="btnClearScan" class="filter-btn add-btn" style="width: 100%; padding: 6px; margin-top: 4px; display: none;"
-                        onclick="clearDatasetScan()">Show All Columns/Values</button>
                 </div>
             </div>
         </aside>

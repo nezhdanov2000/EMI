@@ -15,8 +15,9 @@ the collapse/split animation built on top of this payload.
 
 import json
 import numpy as np
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional, Sequence, Tuple, Union
 from .avr import BranchResult
+from .centers import CenterSpec, purity_bounds, select_centers
 
 # Shape of an optional dataset translation table accepted throughout this
 # module: {"columns": {raw_col_name: display_name},
@@ -154,6 +155,153 @@ def target_conditioned_sort(
     return x_num, x_labels
 
 
+def target_class_labels(
+    unique_values: np.ndarray,
+    col_name: str,
+    display_name: str,
+    translations: Optional[Translations] = None,
+    indicator: bool = False,
+) -> List[str]:
+    """
+    Human-readable labels for a target's distinct values.
+
+    `col_name` is the RAW column name, used to look the values up in
+    `translations`; `display_name` is its already-humanized form, used only
+    for the indicator special-case below.
+
+    `indicator=True` marks the One-vs-Rest case produced by `/api/analyze`'s
+    `criterion` path, where the target vector is literally 0/1 and
+    `display_name` already reads "Column = value". Running those through
+    `humanize_val` yields the labels "0" and "1" -- which is what the legend
+    showed, and what the v2.1 per-class breakdown would otherwise have shown
+    too; they are relabelled as the criterion and its negation instead. The
+    flag is passed explicitly by the caller that BUILT the indicator rather
+    than sniffed from the values, because a genuine 0/1 data column is
+    indistinguishable from a derived indicator by inspection and must keep
+    its own labels.
+    """
+    arr = np.asarray(unique_values)
+    is_indicator = (
+        indicator
+        and arr.dtype.kind in ("b", "i", "u")
+        and set(int(v) for v in arr.tolist()) <= {0, 1}
+    )
+    if is_indicator:
+        return [display_name if int(v) == 1 else f"not {display_name}" for v in arr.tolist()]
+    return [humanize_val(col_name, v, translations) for v in arr.tolist()]
+
+
+def _cell_keys(columns: Sequence[np.ndarray]) -> List[tuple]:
+    """Row-wise hashable cell keys from a list of equal-length raw columns."""
+    as_str = [np.asarray(c).astype(str) for c in columns]
+    return list(zip(*as_str))
+
+
+class _FullCellStatistics:
+    """
+    Per-cell (n, k) counts over the FULL dataset, plus the certificate.
+
+    Why the full dataset and not the rendered subsample: `build_grid` groups
+    the up-to-`max_display_samples` rows that survive subsampling, so before
+    v2.2 the panel's "Total Samples: 10 000" sat next to statistics computed
+    by `vsf.avr` on all 32 561 rows, and the cell purities drawn on screen
+    were computed on a 30 % sample of each cell. Both numbers were defensible
+    in isolation and their combination was not reproducible: on
+    `data/adult_census.csv` with target `occupation = Armed-Forces`, three of
+    the nine positives are absent from the default subsample entirely, so the
+    displayed purity of the cell holding them is a different quantity from
+    the one behind the reported metric.
+
+    The scatter points still come from the subsample (drawing 32 561 spheres
+    is a rendering decision), but every NUMBER attached to a cell - its count,
+    its purity, its confidence bound, whether it is certified - is computed
+    here on all rows.
+    """
+
+    def __init__(
+        self,
+        columns: Sequence[np.ndarray],
+        positive_mask: np.ndarray,
+        spec: CenterSpec,
+        row_mask: Optional[np.ndarray] = None,
+    ) -> None:
+        # Cell coding is done by `np.unique(..., axis=0)` on the stacked string
+        # columns rather than by building N Python tuples: this runs once per
+        # view dimensionality per branch, plus once per 4-D slice, on the FULL
+        # table, and the tuple-and-dict version spent most of a click's
+        # latency there. The lookup dict is built from the DISTINCT rows only
+        # (hundreds) instead of from all N of them.
+        pos = np.asarray(positive_mask).astype(bool)
+        matrix = np.stack([np.asarray(c).astype(str) for c in columns], axis=1)
+        if row_mask is not None:
+            keep = np.asarray(row_mask).astype(bool)
+            matrix = matrix[keep]
+            pos = pos[keep]
+        if matrix.shape[0] == 0:
+            uniq = matrix[:0]
+            codes = np.zeros(0, dtype=np.int64)
+        else:
+            uniq, codes = np.unique(matrix, axis=0, return_inverse=True)
+            codes = np.asarray(codes, dtype=np.int64).ravel()
+        index: Dict[tuple, int] = {
+            tuple(row): i for i, row in enumerate(uniq.tolist())
+        }
+        n_cells = len(index)
+        self.index = index
+        self.n_per_cell = np.bincount(codes, minlength=n_cells).astype(np.int64)
+        self.k_per_cell = np.rint(
+            np.bincount(codes, weights=pos.astype(np.float64), minlength=n_cells)
+        ).astype(np.int64)
+        self.n_samples = int(self.n_per_cell.sum())
+        self.n_positive = int(self.k_per_cell.sum())
+        self.spec = spec
+        self.certified, self.alpha_effective = select_centers(
+            self.k_per_cell, self.n_per_cell, spec
+        )
+        self.lower, self.upper = purity_bounds(
+            self.k_per_cell, self.n_per_cell, self.alpha_effective, spec.method
+        )
+
+    def lookup(self, key: tuple) -> Dict[str, float]:
+        """Full-data statistics for one displayed cell, by its raw-value key."""
+        i = self.index.get(key)
+        if i is None:  # a cell that exists only in the render subsample
+            return {
+                "n": 0, "k": 0, "purity": 0.0, "purity_lower": 0.0,
+                "purity_upper": 1.0, "certified": False,
+            }
+        n = int(self.n_per_cell[i])
+        k = int(self.k_per_cell[i])
+        return {
+            "n": n,
+            "k": k,
+            "purity": (k / n) if n > 0 else 0.0,
+            "purity_lower": float(self.lower[i]),
+            "purity_upper": float(self.upper[i]),
+            "certified": bool(self.certified[i]),
+        }
+
+    def summary(self) -> Dict[str, float]:
+        """Coverage / K / pooled purity for this partition, over all rows."""
+        mask = self.certified
+        k_sel = int(self.k_per_cell[mask].sum())
+        n_sel = int(self.n_per_cell[mask].sum())
+        prevalence = self.n_positive / self.n_samples if self.n_samples else 0.0
+        purity = (k_sel / n_sel) if n_sel else 0.0
+        return {
+            "n_centers": int(mask.sum()),
+            "coverage": (k_sel / self.n_positive) if self.n_positive else 0.0,
+            "purity_pooled": purity,
+            "mass": (n_sel / self.n_samples) if self.n_samples else 0.0,
+            "lift": (purity / prevalence) if prevalence > 0 else 0.0,
+            "n_cells_occupied": int(np.count_nonzero(self.n_per_cell > 0)),
+            "max_purity_point": float(
+                np.max(self.k_per_cell / np.maximum(self.n_per_cell, 1))
+            ) if self.n_per_cell.size else 0.0,
+            "max_purity_lower": float(self.lower.max()) if self.lower.size else 0.0,
+        }
+
+
 def prepare_visualization_payload(
     branch: BranchResult,
     X_matrix: np.ndarray,
@@ -161,8 +309,11 @@ def prepare_visualization_payload(
     feature_names: Optional[List[str]] = None,
     max_display_samples: int = 10000,
     target_name: str = "class",
+    target_is_indicator: bool = False,
     sort_Z: Optional[np.ndarray] = None,
     translations: Optional[Translations] = None,
+    positive_value: Optional[object] = None,
+    center_spec: Optional[CenterSpec] = None,
 ) -> Dict:
     """
     Prepares a structured visualization payload with axis titles, category
@@ -176,6 +327,31 @@ def prepare_visualization_payload(
     and value labels; with no `translations`, every label in the payload is
     the raw column/value string as it appears in the input data. This
     function has no built-in knowledge of any particular dataset.
+
+    `positive_value` is the target value that cell purity is measured
+    against. Defaults to `np.unique(Z_target)[-1]`, which is the literal 1 of
+    `/api/analyze`'s One-vs-Rest `criterion` path and the class this module
+    has always labelled as positive; pass it explicitly for a K-class target,
+    where the highest `np.unique` code is positive only by accident of
+    ordering.
+
+    `center_spec` is the certificate (`vsf.centers.CenterSpec`) applied to
+    every displayed cell: the purity floor `tau`, the simultaneous error rate
+    `alpha`, and the multiplicity policy. It drives the `certified` flag the
+    frontend colours by, and the coverage / K / purity triple the panel
+    reports. Defaults to tau = 0.90, alpha = 0.05, Bonferroni across the
+    displayed partition's occupied cells.
+
+    NOTE on which partition is certified: the certificate here is computed on
+    the DISPLAYED partition — the cells the user can see and click — over ALL
+    rows of `X_matrix`, not the render subsample. `vsf.avr` certifies the
+    SEARCH partition, which is the PMD-discretised one. The two coincide
+    whenever no displayed feature was binned or adaptively coarsened (i.e.
+    for any all-categorical dataset); when they do not, `metrics.centers`
+    carries the search-partition numbers alongside and
+    `metrics.certificate.partition_matches_search` is False. The panel shows
+    the displayed-partition numbers, because those describe the object on
+    screen.
     """
     X_arr = np.asarray(X_matrix)
     Z_arr = np.asarray(Z_target).ravel()
@@ -228,7 +404,24 @@ def prepare_visualization_payload(
     y_human = [humanize_val(y_name, v, translations) for v in y_vals]
     z_human = [humanize_val(z_name, v, translations) for v in z_vals]
     w_human = [humanize_val(w_name, v, translations) for v in w_vals] if has_4d else None
-    z_target_human = [humanize_val(target_name, v, translations) for v in Z_sub]
+    # One label map, built from the FULL target vector and reused for the
+    # per-sample labels, the legend and the per-class breakdown, so the three
+    # can never disagree.
+    _target_display = humanize_col(target_name, translations)
+    _all_target_values = np.unique(np.asarray(Z_target).ravel())
+    _target_label_map = dict(zip(
+        [_v.item() if hasattr(_v, "item") else _v for _v in _all_target_values],
+        target_class_labels(
+            _all_target_values, target_name, _target_display, translations,
+            indicator=target_is_indicator,
+        ),
+    ))
+
+    def _label_of(value) -> str:
+        key = value.item() if hasattr(value, "item") else value
+        return _target_label_map.get(key, humanize_val(target_name, value, translations))
+
+    z_target_human = [_label_of(v) for v in Z_sub]
 
     # Target-Conditioned Categorical Ordering using canonical sort_Z_sub
     x_num, x_ticks = target_conditioned_sort(x_vals, sort_Z_sub, col_name=x_name, translations=translations)
@@ -240,7 +433,7 @@ def prepare_visualization_payload(
         w_num, w_ticks = None, None
 
     unique_targets, color_num = np.unique(Z_sub, return_inverse=True)
-    unique_target_labels = [humanize_val(target_name, t, translations) for t in unique_targets]
+    unique_target_labels = [_label_of(t) for t in unique_targets]
 
     # Group sample indices by cell for 3D Voxel Crystal Lattice Packing
     from collections import defaultdict, Counter
@@ -294,8 +487,43 @@ def prepare_visualization_payload(
         for i, idx in enumerate(indices)
     ]
 
-    def build_grid(dim, slice_mask=None):
-        """Build discrete center grid. If slice_mask is provided, only include samples where slice_mask[i] is True."""
+    # ---- full-data cell statistics (v2.2) --------------------------------
+    # Computed on every row of X_matrix, independently of the render
+    # subsample; see `_FullCellStatistics` for why the previous
+    # subsample-based purities were not reproducible against the reported
+    # metrics.
+    spec = center_spec if center_spec is not None else CenterSpec()
+    _all_targets_sorted = np.unique(Z_arr)
+    if positive_value is None:
+        positive_value = (
+            _all_targets_sorted[-1] if _all_targets_sorted.size else None
+        )
+    positive_mask_full = (
+        np.asarray(Z_arr).astype(str) == str(positive_value)
+        if positive_value is not None
+        else np.zeros(n_samples, dtype=bool)
+    )
+    x_full = X_arr[:, x_col_idx]
+    y_full = X_arr[:, y_col_idx]
+    z_full = X_arr[:, z_col_idx]
+    w_full = X_arr[:, w_col_idx] if has_4d else None
+    _full_cols = {1: [x_full], 2: [x_full, y_full], 3: [x_full, y_full, z_full]}
+    cell_stats: Dict[str, _FullCellStatistics] = {
+        str(dim): _FullCellStatistics(cols, positive_mask_full, spec)
+        for dim, cols in _full_cols.items()
+    }
+
+    def build_grid(dim, slice_mask=None, stats_key=None):
+        """
+        Build discrete center grid. If slice_mask is provided, only include
+        samples where slice_mask[i] is True (subsample indexing).
+
+        `stats_key` names the entry of `cell_stats` whose FULL-DATA counts,
+        bounds and certification decorate each cell. Geometry and the drawn
+        point cloud come from the subsample; every reported number comes from
+        `cell_stats`.
+        """
+        stats = cell_stats[stats_key if stats_key is not None else str(dim)]
         g_groups = defaultdict(list)
         for idx_in_sub, (cx, cy, cz) in enumerate(zip(x_num, y_num, z_num)):
             if slice_mask is not None and not slice_mask[idx_in_sub]:
@@ -305,16 +533,31 @@ def prepare_visualization_payload(
             g_groups[(cx, _cy, _cz)].append(idx_in_sub)
             
         gx, gy, gz, gop, gpur, gsz, ghov, gdata = [], [], [], [], [], [], [], []
-        m_N = max([len(lst) for lst in g_groups.values()]) if g_groups else 1
+        glow, gup, gcert, gk = [], [], [], []
+        cell_keys = {}
+        for (cx, cy, cz), c_idx in g_groups.items():
+            i0 = c_idx[0]
+            key = [str(x_vals[i0])]
+            if dim >= 2:
+                key.append(str(y_vals[i0]))
+            if dim >= 3:
+                key.append(str(z_vals[i0]))
+            cell_keys[(cx, cy, cz)] = tuple(key)
+        m_N = max(
+            [stats.lookup(cell_keys[k])["n"] for k in g_groups] or [1]
+        ) or 1
         
         for (cx, cy, cz), c_idx in g_groups.items():
-            N_c = len(c_idx)
-            c_cols = color_num[c_idx]
+            cell = stats.lookup(cell_keys[(cx, cy, cz)])
+            N_c = cell["n"]
+            n_rendered = len(c_idx)
             # Share of the designated "positive" class (the highest-index
-            # class, `unique_targets[-1]` — see `target_pos_label` below,
-            # which this value is displayed against) among this cell's
-            # samples: exactly what the "Share of {target_pos_label}" hover
-            # label promises, for any number of target classes K.
+            # class, `unique_targets[-1]`) among this cell's samples -- this
+            # is what the hover's Confidence bound is a bound ON (the point
+            # estimate itself is no longer shown in the hover text, 2026-09
+            # trim, but this value still drives `gpur`/cell colour and the
+            # certification decision below), for any number of target
+            # classes K.
             #
             # The prior formula, `mean(c_cols) / max(K - 1, 1)`, is the
             # cell's AVERAGE class INDEX normalized to [0, 1] — that only
@@ -328,38 +571,49 @@ def prepare_visualization_payload(
             # banding (`getColorIndexForPurity` in static/js/app.js, see
             # Project_Master_Document.md Section 5.3), which assumes this
             # value IS a positive-class probability.
-            positive_class_idx = len(unique_targets) - 1
-            pur = float(np.mean(c_cols == positive_class_idx)) if N_c > 0 else 0.0
-            norm_d = 0.2 + 0.8 * (np.sqrt(N_c) / np.sqrt(m_N))
-            
+            #
+            # v2.2: `pur` is now the FULL-DATA share of `positive_value`, and
+            # is accompanied by its simultaneous confidence bounds and the
+            # certification flag the renderer colours by. The point estimate
+            # alone is what made a cell holding one sample of one class draw
+            # as a 100 %-pure "green centre"; the lower bound of that cell is
+            # `alpha_effective`, so it can never be certified, and the
+            # "minimum samples" slider that used to hide it is redundant.
+            pur = float(cell["purity"])
+            norm_d = 0.2 + 0.8 * (np.sqrt(N_c) / np.sqrt(m_N)) if N_c > 0 else 0.2
+
             gx.append(float(cx))
             gy.append(float(cy))
             gz.append(float(cz))
             gop.append(float(norm_d))
             gpur.append(float(pur))
-            gsz.append(N_c)
+            gsz.append(int(N_c))
+            glow.append(float(cell["purity_lower"]))
+            gup.append(float(cell["purity_upper"]))
+            gcert.append(bool(cell["certified"]))
+            gk.append(int(cell["k"]))
 
             
-            hx = x_human[c_idx[0]]
-            hy = y_human[c_idx[0]] if dim >= 2 else "Collapsed"
-            hz = z_human[c_idx[0]] if dim >= 3 else "Collapsed"
-            
-            # Include 4D slice label in hover if applicable
-            hw = w_human[c_idx[0]] if (has_4d and w_human and slice_mask is not None) else None
-            
-            target_pos_label = unique_target_labels[-1] if unique_target_labels else "Positive Class"
-            
-            dim_label = "4D Slice" if (slice_mask is not None and has_4d) else f"{dim}D"
+            # v2.2 hover trim (2026-09, user request): title, the point-estimate
+            # Share line, the CERTIFIED verdict, and X/Y/Z/4D-slice were all
+            # dropped as redundant with information already on screen when
+            # this box is open -- cell colour already encodes
+            # certified/mixed/low, and the axis labels plus the currently
+            # selected slice tab already identify which cell this is. Only
+            # the confidence bound (the actual statistical claim behind the
+            # colour) and the sample count behind it survive. `n_rendered`
+            # is appended only when the plot is subsampling for render (it
+            # then differs from `N_c`, the full-data count everything else
+            # here is computed on) -- in the common unsampled case the two
+            # are equal and repeating both is exactly the kind of
+            # duplication this trim removes.
             hov = (
-                f"<b>📍 Discrete Center ({dim_label})</b><br>"
-                f"🎯 <b>Share of {target_pos_label}:</b> {pur*100:.1f}%<br>"
-                f"📦 <b>Objects:</b> {N_c} pcs.<br>"
-                f"💠 <b>X:</b> {hx}<br>"
-                f"💠 <b>Y:</b> {hy}<br>"
-                f"💠 <b>Z:</b> {hz}"
+                f"📏 <b>Confidence bound:</b> [{cell['purity_lower']*100:.1f}%, "
+                f"{cell['purity_upper']*100:.1f}%]<br>"
+                f"📦 <b>Objects:</b> {N_c} pcs."
             )
-            if hw is not None:
-                hov += f"<br>🎞️ <b>{humanize_col(w_name, translations)}:</b> {hw}"
+            if n_rendered != N_c:
+                hov += f" ({n_rendered} drawn)"
             ghov.append(hov)
             
             # Use raw values for API queries so filtering works, cast to standard types for JSON
@@ -372,40 +626,122 @@ def prepare_visualization_payload(
             rz = _cast(z_vals[c_idx[0]]) if dim >= 3 else None
             rw = _cast(w_vals[c_idx[0]]) if (has_4d and w_vals is not None and slice_mask is not None) else None
             
-            cdata = {"N": N_c, "pur": float(pur), "coords": {x_name: rx}}
+            cdata = {
+                "N": int(N_c),
+                "k": int(cell["k"]),
+                "pur": float(pur),
+                "lower": float(cell["purity_lower"]),
+                "upper": float(cell["purity_upper"]),
+                "certified": bool(cell["certified"]),
+                "coords": {x_name: rx},
+            }
             if dim >= 2: cdata["coords"][y_name] = ry
             if dim >= 3: cdata["coords"][z_name] = rz
             if rw is not None: cdata["coords"][w_name] = rw
             gdata.append(cdata)
             
-        return {"x": gx, "y": gy, "z": gz, "opacity": gop, "purity": gpur, "sizes": gsz, "hover_text": ghov, "customdata": gdata}
+        return {
+            "x": gx, "y": gy, "z": gz, "opacity": gop, "purity": gpur,
+            "purity_lower": glow, "purity_upper": gup, "certified": gcert,
+            "positives": gk, "sizes": gsz, "hover_text": ghov,
+            "customdata": gdata, "summary": stats.summary(),
+        }
 
-    # Calculate global max points per cell based on 1D view for consistent scaling
-    g_groups_1d = {}
-    for cx in x_num:
-        g_groups_1d[cx] = g_groups_1d.get(cx, 0) + 1
-    global_max_n = max(g_groups_1d.values()) if g_groups_1d else 1
+    # Global max points per cell, from the 1-D FULL-data counts, so marker
+    # scaling is a property of the dataset rather than of which rows the
+    # renderer happened to sample.
+    global_max_n = (
+        int(cell_stats["1"].n_per_cell.max())
+        if cell_stats["1"].n_per_cell.size
+        else 1
+    )
 
     grids = {
         "1": build_grid(1),
         "2": build_grid(2),
-        "3": build_grid(3)
+        "3": build_grid(3),
     }
 
     # Generate per-slice grids for 4D visualization
     slice_axis_info = None
-    if has_4d and w_num is not None and w_ticks is not None:
+    if has_4d and w_num is not None and w_ticks is not None and w_full is not None:
+        # Map the raw 4th-axis value onto its slice index using the
+        # subsample's own ordering, then apply that map to the FULL column so
+        # each slice's certificate is computed over every row in that slice,
+        # not over the sampled ones. A raw value absent from the subsample has
+        # no slice tab and is therefore in no slice, which is the same set the
+        # user can navigate.
+        slice_of_value = {
+            str(v): int(i) for v, i in zip(w_vals, w_num)
+        }
+        w_full_str = np.asarray(w_full).astype(str)
+        slice_index_full = np.array(
+            [slice_of_value.get(v, -1) for v in w_full_str.tolist()], dtype=np.int64
+        )
         slice_counts = []
         for sv_idx in range(len(w_ticks)):
             mask = (w_num == sv_idx)
-            grids[f"4_{sv_idx}"] = build_grid(3, slice_mask=mask)
-            slice_counts.append(int(np.sum(mask)))
-        grids["4_all"] = build_grid(3)
+            key = f"4_{sv_idx}"
+            cell_stats[key] = _FullCellStatistics(
+                [x_full, y_full, z_full],
+                positive_mask_full,
+                spec,
+                row_mask=(slice_index_full == sv_idx),
+            )
+            grids[key] = build_grid(3, slice_mask=mask, stats_key=key)
+            slice_counts.append(int(np.sum(slice_index_full == sv_idx)))
+        cell_stats["4_all"] = cell_stats["3"]
+        grids["4_all"] = build_grid(3, stats_key="4_all")
+        # The genuine 4-D partition: (x, y, z, w) jointly. This is what the
+        # branch's own centres are counted over when d = 4 -- the per-slice
+        # grids ARE this partition, split for display, and `4_all` is its
+        # 3-D marginal. Reporting the marginal as "the branch's coverage"
+        # would describe a coarser partition than the one on screen: on
+        # `relationship = Husband` at tau = 1.0 the 3-D marginal reads
+        # K = 25, coverage 1.3 %, while the 4-D partition the slices actually
+        # show reads K = 75, coverage 19.2 %.
+        cell_stats["4"] = _FullCellStatistics(
+            [x_full, y_full, z_full, w_full], positive_mask_full, spec
+        )
         slice_axis_info = {
             "name": humanize_col(w_name, translations),
             "ticks": w_ticks,
-            "counts": slice_counts
+            "counts": slice_counts,
         }
+
+    # Map `BranchResult.per_class` code indices back onto observed target
+    # values. `vsf.avr._discretize_target` integer-codes categorical and
+    # low-cardinality targets in `np.unique` order over the FULL vector, so
+    # the mapping is exact whenever the code count matches the number of
+    # distinct raw values; it does not when the target was PMD-binned, and
+    # the label is then omitted rather than guessed.
+    # Which partition the panel's headline describes: the branch's own, i.e.
+    # the joint partition over all `branch.d` displayed axes. `_headline_grid_key`
+    # is the grid whose cell list backs the "top centres" listing; for a 4-D
+    # branch that listing is taken from the 3-D marginal because the per-slice
+    # grids are separate objects, while the COUNTS come from the joint
+    # partition -- the listing is illustrative, the counts are the report.
+    _headline_key = "4" if ("4" in cell_stats and branch.d >= 4) else str(min(branch.d, 3))
+    _headline_grid_key = str(min(branch.d, 3))
+
+    full_unique_targets = np.unique(Z_arr)
+    labels_align = len(full_unique_targets) == len(branch.per_class)
+    full_target_labels = [_label_of(t) for t in full_unique_targets] if labels_align else []
+    class_breakdown = [
+        {
+            "label_index": ci.label_index,
+            "label": (
+                full_target_labels[ci.label_index] if labels_align
+                else f"class {ci.label_index}"
+            ),
+            "count": int(ci.count),
+            "prevalence": float(ci.prevalence),
+            "contribution_bits": float(ci.contribution_bits),
+            "contribution_share": float(ci.contribution_share),
+            "u_adj_one_vs_rest": float(ci.u_adj_one_vs_rest),
+        }
+        for ci in branch.per_class
+    ]
 
     return {
         "x": x_num.tolist(),
@@ -422,6 +758,8 @@ def prepare_visualization_payload(
         "grid_z": grids["3"]["z"],
         "grid_opacity": grids["3"]["opacity"],
         "grid_purity": grids["3"]["purity"],
+        "grid_purity_lower": grids["3"]["purity_lower"],
+        "grid_certified": grids["3"]["certified"],
         "grid_hover_text": grids["3"]["hover_text"],
         "grid_customdata": grids["3"].get("customdata", []),
         "color": color_num.tolist(),
@@ -441,20 +779,187 @@ def prepare_visualization_payload(
             "z": {"vals": list(range(len(z_ticks))), "text": z_ticks},
         },
         "slice_axis": slice_axis_info,
-        "total_samples": len(indices),
+        # v2.2: `total_samples` is the number of rows every reported STATISTIC
+        # is computed on. `rendered_samples` is how many of them are drawn as
+        # individual spheres. Before v2.2 this key held the latter while the
+        # panel beside it displayed metrics computed on the former, and the
+        # two were 10 000 and 32 561 on the reference dataset.
+        "total_samples": int(n_samples),
+        "rendered_samples": int(len(indices)),
         "all_feature_names": [humanize_col(fn, translations) for fn in feature_names],
         "raw_feature_names": feature_names,
         "selected_features": [humanize_col(sfn, translations) for sfn in branch.selected_feature_names],
-        # v2.0: no scenario/vir/l_target/l_feat/xai_message/history — this
-        # branch carries only its own raw MI/NMI, with no significance
-        # claim attached (Project_Master_Document.md Section 4.5). `d` is
-        # this branch's dimensionality, not a globally "optimal" d* chosen
-        # by the algorithm — the caller (or user) picked which branch to
-        # render.
+        # No scenario/vir/l_target/l_feat/xai_message/history. `d` is this
+        # branch's dimensionality, not a globally "optimal" d* chosen by the
+        # algorithm — the caller (or user) picked which branch to render.
+        #
+        # v2.1 replaced the reported `nmi` (= MI / min(H(Z), H(X_S))) with
+        # `u_adj`. NMI_min is not a reportable quantity: it divides a
+        # positively-biased numerator by a denominator that collapses toward
+        # zero for a rare target, so it reads ~66 % on a target that is
+        # provably independent of the features. `u_adj` subtracts the exact
+        # permutation expectation `mi_null` from both numerator and
+        # denominator and is 0 % on that same input. `mi` is retained
+        # alongside `mi_null` precisely so the frontend can show the raw
+        # number against the noise floor it has to clear.
+        #
+        # The frontend's WITHIN-branch dimensionality collapse (Section 5.6,
+        # case 2) must NOT read this dict for a view dimensionality other
+        # than `branch.d` itself; see `view_metrics` below for that.
         "metrics": {
             "d": branch.d,
             "mi": float(branch.mi),
-            "nmi": float(branch.nmi),
+            "mi_null": float(branch.mi_null),
+            "mi_adj": float(branch.mi_adj),
+            "u_adj": float(branch.u_adj),
+            "h_target": float(branch.h_target),
+            "p_value": None if branch.p_value is None else float(branch.p_value),
+            "p_value_familywise": (
+                None if branch.p_value_familywise is None
+                else float(branch.p_value_familywise)
+            ),
+            "significant": bool(branch.is_significant()),
+        },
+        # v2.2 headline. `certificate` describes the rule; `centers` is what
+        # it produced on the DISPLAYED partition over all rows;
+        # `search_centers` is `vsf.avr`'s own value on the SEARCH partition,
+        # carried so a discrepancy is visible rather than silently averaged
+        # away (see this function's docstring).
+        "certificate": {
+            "tau": float(spec.tau),
+            "alpha": float(spec.alpha),
+            "rule": spec.rule,
+            "min_samples": int(spec.min_samples),
+            "method": spec.method,
+            "multiplicity": spec.multiplicity,
+            "alpha_effective": float(cell_stats[_headline_key].alpha_effective),
+            "positive_value": None if positive_value is None else str(positive_value),
+            "positive_label": (
+                _label_of(positive_value) if positive_value is not None else None
+            ),
+            "partition_matches_search": (
+                branch.centers is not None
+                and branch.centers.n_cells_occupied
+                == cell_stats[_headline_key].summary()["n_cells_occupied"]
+            ),
+        },
+        "centers": {
+            **cell_stats[_headline_key].summary(),
+            "n_positive": int(cell_stats[_headline_key].n_positive),
+            "prevalence": float(
+                cell_stats[_headline_key].n_positive
+                / max(1, cell_stats[_headline_key].n_samples)
+            ),
+            "top": [
+                {
+                    "n": int(c["N"]), "k": int(c["k"]), "purity": float(c["pur"]),
+                    "lower": float(c["lower"]), "coords": c["coords"],
+                }
+                for c in sorted(
+                    (
+                        cd for cd in grids[_headline_grid_key]["customdata"]
+                        if cd["certified"]
+                    ),
+                    key=lambda cd: (-cd["k"], -cd["lower"]),
+                )[:10]
+            ],
+        },
+        "search_centers": (
+            None
+            if branch.centers is None
+            else {
+                "n_centers": int(branch.centers.n_centers),
+                "coverage": float(branch.centers.coverage),
+                "coverage_lower": float(branch.centers.coverage_lower),
+                "purity_pooled": float(branch.centers.purity_pooled),
+                "mass": float(branch.centers.mass),
+                "lift": float(branch.centers.lift),
+                "max_purity_point": float(branch.centers.max_purity_point),
+                "max_purity_lower": float(branch.centers.max_purity_lower),
+                "n_positive": int(branch.centers.n_positive),
+                "coverage_cv": (
+                    None
+                    if branch.centers.coverage_cv is None
+                    else {
+                        "mean": float(branch.centers.coverage_cv.mean),
+                        "se": float(branch.centers.coverage_cv.se),
+                        "n_splits": int(branch.centers.coverage_cv.n_splits),
+                        "n_repeats": int(branch.centers.coverage_cv.n_repeats),
+                    }
+                ),
+                "coverage_p_value": branch.centers.coverage_p_value,
+                "coverage_p_value_familywise": branch.coverage_p_value_familywise,
+                "undetermined_reason": branch.centers.undetermined_reason,
+            }
+        ),
+        # Exact additive decomposition of `metrics.mi` over the target's
+        # classes: sum_z p(z) * D_KL(p(x|z) || p(x)) = I(Z; X). The frontend
+        # shows this because no scalar can answer the question it answers —
+        # whether the headline number is carried by the class the user cares
+        # about or entirely by the majority class. A 0.1 %-prevalence class
+        # typically contributes < 1 % of the total however large the headline.
+        # `label` falls back to the bare class index when the target went
+        # through PMD binning (`vsf.avr._discretize_target`), where code
+        # indices no longer correspond 1:1 to observed target values.
+        "class_breakdown": class_breakdown,
+        # Per-collapsed-view metrics for THIS branch's own axes, keyed by
+        # view dimensionality "1".."{branch.d}" as strings (JSON object
+        # keys are always strings). `view_metrics["mi_by_d"][str(k)]` is
+        # I(Z; X_{S[:k]}) for this branch's own first k selected features —
+        # a marginal/projection of this branch's own joint distribution,
+        # NOT `discover_branches`'s independently-optimal k-dimensional
+        # branch (see `vsf.avr.BranchResult.mi_by_prefix_d`'s docstring).
+        # The frontend's dimensionality toggle (`setDimensionality`/
+        # `updateHUDForDimension`) must read THESE values for the currently
+        # viewed d, not the fixed `metrics` scalars above — using
+        # the latter for a collapsed (d < branch.d) view silently overstates
+        # the association actually carried by the visible axes.
+        #
+        # Empty prefix lists (i.e. a `BranchResult` built by hand rather than
+        # via `discover_branches`, as some unit tests do) fall back to a
+        # single entry at the branch's own `d`, matching `metrics` above.
+        "view_metrics": {
+            "mi_by_d": (
+                {str(k + 1): v for k, v in enumerate(branch.mi_by_prefix_d)}
+                if branch.mi_by_prefix_d
+                else {str(branch.d): float(branch.mi)}
+            ),
+            "mi_adj_by_d": (
+                {str(k + 1): v for k, v in enumerate(branch.mi_adj_by_prefix_d)}
+                if branch.mi_adj_by_prefix_d
+                else {str(branch.d): float(branch.mi_adj)}
+            ),
+            "u_adj_by_d": (
+                {str(k + 1): v for k, v in enumerate(branch.u_adj_by_prefix_d)}
+                if branch.u_adj_by_prefix_d
+                else {str(branch.d): float(branch.u_adj)}
+            ),
+            # Centre statistics for each collapsed view, computed on the SAME
+            # displayed partition the user is looking at (so a 1-D view's
+            # coverage is the coverage of the 1-D lattice on screen, not a
+            # projection bookkept elsewhere). Defined for every view the
+            # renderer can show, including views wider than `branch.d`, where
+            # the extra axes are `_axis_fallback_indices` padding.
+            # Keyed "1".."4". The "4" entry comes from the joint (x, y, z, w)
+            # partition rather than from any single grid, because a 4-D view
+            # is drawn as a stack of 3-D slices and its cells are exactly the
+            # cells of that joint partition.
+            "coverage_by_d": {
+                k: float(v.summary()["coverage"])
+                for k, v in cell_stats.items() if k in ("1", "2", "3", "4")
+            },
+            "n_centers_by_d": {
+                k: int(v.summary()["n_centers"])
+                for k, v in cell_stats.items() if k in ("1", "2", "3", "4")
+            },
+            "purity_by_d": {
+                k: float(v.summary()["purity_pooled"])
+                for k, v in cell_stats.items() if k in ("1", "2", "3", "4")
+            },
+            "max_purity_lower_by_d": {
+                k: float(v.summary()["max_purity_lower"])
+                for k, v in cell_stats.items() if k in ("1", "2", "3", "4")
+            },
         },
     }
 

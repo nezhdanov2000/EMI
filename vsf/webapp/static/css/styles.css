@@ -595,12 +595,22 @@ main {
     color: var(--accent-cyan);
 }
 
-.branch-nmi {
+.branch-uadj {
     font-family: 'JetBrains Mono', monospace;
     font-size: 0.78rem;
     font-weight: 600;
     color: var(--accent-purple);
     margin-left: auto;
+}
+
+/* Significance caption under a branch card. Deliberately low-contrast but
+   always present: a branch card that shows an effect size with no statement
+   about whether it clears chance is the exact failure mode v2.1 removed. */
+.branch-signif {
+    font-size: 0.7rem;
+    color: var(--text-dim);
+    margin-top: 3px;
+    line-height: 1.3;
 }
 
 .branch-features {
@@ -609,32 +619,83 @@ main {
     line-height: 1.35;
 }
 
-/* Purity legend (settings sidebar) */
-.purity-legend {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    font-size: 0.8rem;
-    color: var(--text-muted);
-    background: rgba(15, 23, 42, 0.4);
-    padding: 10px 12px;
-    border-radius: 12px;
+/* Colour-boundary slider (Centres & Colour, settings sidebar). Replaces the
+   old static "Certificate Colour Scale" legend: the gradient track is drawn
+   directly from the live tau / redTo values via the --red-pct /
+   --tau-pct custom properties (set in app.js's setColorScaleUI), so the bar
+   IS the legend and cannot drift out of sync with the cell colours. */
+.color-scale {
+    padding: 2px 8px 0 8px;
+}
+
+.color-scale-track {
+    position: relative;
+    height: 10px;
+    border-radius: 6px;
+    background: linear-gradient(90deg,
+        #ef4444 0%, #ef4444 var(--red-pct, 40%),
+        #92572e var(--red-pct, 40%), #92572e var(--tau-pct, 90%),
+        #22c55e var(--tau-pct, 90%), #22c55e 100%);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    margin: 20px 8px 6px 8px;
+}
+
+.color-scale-handle {
+    position: absolute;
+    top: 50%;
+    width: 16px;
+    height: 16px;
+    margin-left: -8px;
+    border-radius: 50%;
+    background: #0f172a;
+    border: 3px solid var(--handle-color, #fff);
+    transform: translateY(-50%);
+    cursor: grab;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.55);
+    touch-action: none;
+}
+
+.color-scale-handle:active {
+    cursor: grabbing;
+}
+
+.color-scale-handle:focus-visible {
+    outline: 2px solid var(--accent-cyan);
+    outline-offset: 2px;
+}
+
+.color-scale-handle--red {
+    --handle-color: #ef4444;
+    z-index: 2;
+}
+
+.color-scale-handle--green {
+    --handle-color: #22c55e;
+    z-index: 3;
+}
+
+.color-scale-handle-value {
+    position: absolute;
+    top: -22px;
+    left: 50%;
+    transform: translateX(-50%);
+    font-size: 0.68rem;
+    font-weight: 600;
+    color: var(--text-main);
+    background: rgba(15, 23, 42, 0.92);
+    padding: 1px 5px;
+    border-radius: 4px;
+    white-space: nowrap;
+    pointer-events: none;
     border: 1px solid var(--border-color);
 }
 
-.purity-legend-item {
+.color-scale-ticks {
     display: flex;
-    align-items: center;
-    gap: 8px;
-}
-
-.purity-dot {
-    width: 12px;
-    height: 12px;
-    border-radius: 50%;
-    display: inline-block;
-    flex-shrink: 0;
-    border: 1px solid rgba(255, 255, 255, 0.35);
+    justify-content: space-between;
+    font-size: 0.65rem;
+    color: var(--text-dim);
+    padding: 0 4px;
 }
 
 /* Filter / stroke controls (Purity Contour sidebar) */

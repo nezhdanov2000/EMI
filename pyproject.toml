@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vsf"
-version = "2.0.0"
+version = "2.2.0"
 description = "Visual Sufficiency Framework (VSF): Information-Theoretic Adaptive Dimensionality Selection"
 readme = "README.md"
 license = { text = "MIT" }
@@ -34,22 +34,11 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
-# `vsf/backend.py` dynamically imports cupy (via importlib, wrapped in
-# try/except with a CUDA device-count check) and falls back to numpy when
-# it's absent or unusable — GPU support is opt-in, never a hard dependency.
-# The generic "cupy" sdist requires a local CUDA toolchain to build; most
-# users instead want a prebuilt wheel matching their CUDA version, e.g.
-# `pip install vsf[gpu]` after separately installing `cupy-cuda12x` (or
-# `cupy-cuda11x`), or replace the line below with the matching pinned
-# wheel name for a fully reproducible one-command install.
-gpu = ["cupy"]
 test = ["pytest>=7.0"]
 
 [tool.setuptools]
 # Explicit, not `find_packages()`: this repository's root also contains
-# `examples/` (a second package, holding demo-dataset-specific display
-# metadata for `server.py` — see `examples/mushroom_demo.py`) and `tests/`.
-# Neither belongs inside the installable `vsf` distribution; both are
+# `tests/`. It does not belong inside the installable `vsf` distribution; it is
 # consumed directly from the repository checkout, not from site-packages.
 # `vsf.templates` IS included: it holds the CSS/JS/HTML assets
 # `vsf.dashboard.export_full_dashboard` reads via `importlib.resources` at

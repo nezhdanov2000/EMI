@@ -67,14 +67,25 @@ Global Pattern Scan (`/api/scan/start` / `/api/scan/status` /
 each of its observed values as a One-vs-Rest binary criterion (exactly
 `/api/analyze`'s `criterion` shape), runs Independent Branch Discovery
 against every OTHER column for it, and keeps the (column, value) pair only
-if the MAXIMUM NMI across its up-to-4 branches exceeds a caller-chosen
-threshold. This is NOT a return of v1.0's removed Auto-Discovery/Universal
+if the MAXIMUM `u_adj` across its up-to-4 branches exceeds a caller-chosen
+threshold AND the pair survives Benjamini-Hochberg FDR control across every
+pair scanned in that run.
+
+Two things changed here in v2.1, both mandatory rather than cosmetic. The
+filter used to be `max NMI > threshold`, and NMI_min is precisely the metric
+that saturates toward 100 % on a rare One-vs-Rest criterion with no signal
+(see `vsf.math.normalized_mutual_information`) — a scan that enumerates every
+(column, value) pair generates rare criteria by the hundred, so the old scan
+selected FOR the artifact it was most exposed to. And a sweep of k targets at
+a nominal alpha yields ~alpha*k spurious "patterns" by construction, so FDR
+control across the swept family is not optional; `metric_fdr_q` sets the rate.
+
+This is still NOT a return of v1.0's removed Auto-Discovery/Universal
 Propositional Screening (see Section 0 of the master doc for why that was
-cut) — there is no permutation-test significance gating here either, same
-as `/api/analyze`; it is a dataset-wide restatement of the exact same
-"honest exhaustive search, ranked by raw/normalized MI, no significance
-claim" algorithm `/api/analyze` already runs for one target, just looped
-over every (column, value) pair. That looping makes it genuinely expensive
+cut): v1.0 used permutation tests to GATE greedy feature selection inside a
+single analysis, whereas the scan tests already-selected, exhaustively
+searched branches and corrects only for the multiplicity the scan itself
+creates. That looping makes it genuinely expensive
 — one `discover_branches` call per pair, each itself an exhaustive 1D-4D
 search (see `vsf.avr`'s module docstring on cost) — so it runs in a
 background thread (`_run_dataset_scan`), polled via `/api/scan/status`
@@ -96,10 +107,18 @@ import webbrowser
 from importlib import resources
 from typing import Any, Dict, List, Optional
 
+import numpy as _np
 import pandas as pd
 
 from . import vis as _vis
-from .avr import MAX_BRANCH_D, discover_branches
+from .avr import (
+    DEFAULT_N_PERMUTATIONS,
+    MAX_BRANCH_D,
+    discover_branches,
+    select_branch_dimensionality,
+)
+from .centers import CenterSpec
+from .metrics import benjamini_hochberg
 from .vis import Translations, catalog_from_dataframe, prepare_visualization_payload
 
 __all__ = ["serve"]
@@ -109,7 +128,16 @@ __all__ = ["serve"]
 # supports (3 coordinate axes + 1 time/frame axis; see `vsf.avr`'s module
 # docstring). `discover_branches` is fully deterministic (no permutation
 # testing, no randomness at all — see that module's docstring), so unlike
-# v1.0 there is no alpha/vir_threshold/n_permutations/random_state to pin
+#: Permutation replicates per (column, value) pair in a Global Pattern Scan.
+#: 199 rather than `vsf.avr.DEFAULT_N_PERMUTATIONS` because the scan pays this
+#: cost once per pair over a family that is routinely hundreds of pairs wide;
+#: it floors the per-pair p-value at 0.005, still an order of magnitude below
+#: any FDR rate a user would set.
+_SCAN_N_PERMUTATIONS = 199
+#: Fixed so a scan is reproducible run-to-run on unchanged data.
+_SCAN_RANDOM_STATE = 0
+
+# v1.0 there is no alpha/vir_threshold to pin
 # here.
 _MAX_D = MAX_BRANCH_D
 
@@ -326,7 +354,42 @@ class VSFRequestHandler(http.server.BaseHTTPRequestHandler):
             feature_names = list(X_df.columns)
             X = X_df.values
 
-            cache_key = {"target_col": target_col, "criterion": criterion}
+            # Certificate parameters are part of the cache key: changing tau
+            # or alpha changes every centre, every colour and every reported
+            # number, so a cached payload computed at a different tau must not
+            # be served.
+            try:
+                tau = float(req.get("tau", 0.90))
+                alpha = float(req.get("alpha", 0.05))
+                min_samples = int(req.get("min_samples", 1))
+            except (TypeError, ValueError):
+                self._send_json_response(
+                    400, {"error": "tau, alpha and min_samples must be numbers"}
+                )
+                return
+            rule = req.get("rule", "purity")
+            if rule not in ("purity", "certified"):
+                self._send_json_response(
+                    400,
+                    {"error": f"rule must be 'purity' or 'certified', got {rule!r}"},
+                )
+                return
+            try:
+                center_spec = CenterSpec(
+                    tau=tau, alpha=alpha, rule=rule, min_samples=min_samples
+                )
+            except ValueError as exc:
+                self._send_json_response(400, {"error": str(exc)})
+                return
+
+            cache_key = {
+                "target_col": target_col,
+                "criterion": criterion,
+                "tau": tau,
+                "alpha": alpha,
+                "rule": rule,
+                "min_samples": min_samples,
+            }
 
             # Same rationale as before: holding `cache_lock` across the
             # check-and-fit means two concurrent requests for different
@@ -337,8 +400,47 @@ class VSFRequestHandler(http.server.BaseHTTPRequestHandler):
                 if self.server.last_params == cache_key and self.server.last_branches_payload is not None:
                     response_payload = self.server.last_branches_payload
                 else:
+                    # `n_permutations` costs ~0.25 s per branch at B = 999 on
+                    # a 32k-row dataset (the null is sampled directly from the
+                    # multiple hypergeometric law, not by shuffling labels), so
+                    # the interactive path can afford the p-value that the HUD
+                    # needs to tell a real association from a bias artifact.
+                    # `n_permutations_familywise` is NOT set here: it costs B
+                    # times the whole search and belongs to an offline run, not
+                    # to a click. The HUD labels the p-value it shows
+                    # accordingly.
+                    # v2.2: `positive_class` is the value the certified
+                    # centres are measured against. In criterion mode Z is
+                    # literally 0/1 and the positive value is 1. Without a
+                    # criterion the target may have K > 2 values, which have
+                    # no single purity; `discover_branches` then returns
+                    # `centers=None` and the panel says so rather than
+                    # certifying an arbitrary class.
+                    positive_class = 1 if criterion is not None else None
                     branches = discover_branches(
-                        X, Z, feature_names=feature_names, max_d=_MAX_D
+                        X,
+                        Z,
+                        feature_names=feature_names,
+                        max_d=_MAX_D,
+                        n_permutations=DEFAULT_N_PERMUTATIONS,
+                        random_state=_SCAN_RANDOM_STATE,
+                        positive_class=positive_class,
+                        center_spec=center_spec,
+                        n_permutations_centers=DEFAULT_N_PERMUTATIONS,
+                    )
+                    # `discover_branches` is called with objective="auto"
+                    # (the default -- never overridden here), which resolves
+                    # to "coverage" exactly when a positive class was
+                    # resolvable and to "mi_adj" otherwise (see
+                    # `avr._resolve_positive_indicator`'s docstring). Rather
+                    # than re-deriving that condition here and risking it
+                    # drifting from what the search actually did, read it
+                    # off the same signal `discover_branches` itself gates
+                    # `BranchResult.centers` on: centers is not None on some
+                    # branch iff a positive class was resolved for this call.
+                    objective_used = (
+                        "coverage" if any(b.centers is not None for b in branches.values())
+                        else "mi_adj"
                     )
                     branches_data: Dict[str, Any] = {}
                     for d, branch in branches.items():
@@ -348,15 +450,60 @@ class VSFRequestHandler(http.server.BaseHTTPRequestHandler):
                             Z,
                             feature_names=feature_names,
                             target_name=display_target_name,
+                            # Z is a One-vs-Rest 0/1 vector in criterion mode,
+                            # so its class labels must read as the criterion
+                            # and its negation, not as "0" and "1".
+                            target_is_indicator=criterion is not None,
                             sort_Z=sort_Z,
                             translations=translations,
+                            positive_value=(
+                                1 if criterion is not None
+                                else (
+                                    _np.unique(Z)[-1] if len(_np.unique(Z)) else None
+                                )
+                            ),
+                            center_spec=center_spec,
                         )
+                    selected_d = select_branch_dimensionality(branches)
                     response_payload = {
                         "target": target_col,
                         "criterion": criterion,
                         "branches": branches_data,
                         "branch_dims": sorted(branches.keys()),
-                        "default_branch": str(max(branches.keys())) if branches else None,
+                        # v2.2: the branch opened first is the SMALLEST
+                        # SUFFICIENT one, not the widest available. The
+                        # product goal is the fewest cells that capture the
+                        # target value, and `max(branches)` is the opposite
+                        # of that: on `relationship = Husband` the 4-D branch
+                        # certifies 3 centres for 98.6 % coverage where the
+                        # 2-D branch certifies 1 for 99.9 %. Falls back to the
+                        # widest branch only when no dimensionality certifies
+                        # anything, since there is then nothing to prefer.
+                        "default_branch": (
+                            str(selected_d) if selected_d in branches
+                            else (str(max(branches.keys())) if branches else None)
+                        ),
+                        # Which objective the search actually maximised for
+                        # THIS response (see the comment above where this is
+                        # computed) -- consumed by the frontend so the
+                        # branch-list caption describes reality instead of
+                        # being a static, version-drifting string.
+                        "objective_used": objective_used,
+                        # v2.2: the answer to "how many characteristics does
+                        # it take to describe this value" -- the smallest
+                        # sufficient dimensionality by out-of-sample certified
+                        # coverage, or None when no dimensionality certifies
+                        # anything. The frontend must render None as "none",
+                        # never as 1.
+                        "sufficient_d": None if selected_d is None else int(selected_d),
+                        "certificate": {
+                            "tau": center_spec.tau,
+                            "alpha": center_spec.alpha,
+                            "rule": center_spec.rule,
+                            "min_samples": center_spec.min_samples,
+                            "method": center_spec.method,
+                            "multiplicity": center_spec.multiplicity,
+                        },
                     }
                     self.server.last_params = cache_key
                     self.server.last_branches_payload = response_payload
@@ -375,13 +522,103 @@ class VSFRequestHandler(http.server.BaseHTTPRequestHandler):
         """
         try:
             req = self._read_json_body()
-            try:
-                threshold_pct = float(req.get("nmi_threshold", 80))
-            except (TypeError, ValueError):
-                self._send_json_response(400, {"error": "nmi_threshold must be a number"})
+            if "nmi_threshold" in req:
+                self._send_json_response(400, {
+                    "error": (
+                        "nmi_threshold was removed in v2.1. NMI_min saturates toward "
+                        "100% on rare One-vs-Rest criteria with no signal, which is "
+                        "exactly what a dataset-wide scan produces in bulk. Use "
+                        "coverage_threshold (share of the target value captured by "
+                        "certified centres, same [0, 100) percent scale)."
+                    )
+                })
                 return
-            if not (0.0 <= threshold_pct < 100.0):
-                self._send_json_response(400, {"error": "nmi_threshold must be in [0, 100)"})
+            if "u_adj_threshold" in req and "coverage_threshold" not in req:
+                self._send_json_response(400, {
+                    "error": (
+                        "u_adj_threshold was replaced in v2.2 by coverage_threshold. "
+                        "u_adj measures whether an association EXISTS; the scan's "
+                        "purpose is to find (column, value) pairs that produce "
+                        "certified discrete centres, and the two select different "
+                        "pairs. On data/adult_census.csv, income='>50K' reaches "
+                        "u_adj = 34.0% with zero certified centres at tau = 0.90, "
+                        "and occupation='Armed-Forces' reaches 44.4% with a highest "
+                        "cell purity of 2.42%. Pass coverage_threshold (percent), "
+                        "and optionally tau and alpha."
+                    )
+                })
+                return
+            try:
+                threshold_pct = float(req.get("coverage_threshold", 20))
+                scan_tau = float(req.get("tau", 0.90))
+                scan_alpha = float(req.get("alpha", 0.05))
+                scan_min_samples = int(req.get("min_samples", 1))
+            except (TypeError, ValueError):
+                self._send_json_response(
+                    400, {
+                        "error": (
+                            "coverage_threshold, tau, alpha and min_samples "
+                            "must be numbers"
+                        )
+                    },
+                )
+                return
+            if not (0.0 <= threshold_pct <= 100.0):
+                self._send_json_response(
+                    400, {"error": "coverage_threshold must be in [0, 100]"}
+                )
+                return
+            # `rule` (Strict mode) is shared with the Centres & Colour panel --
+            # the scan is certified under the same certificate the viewport
+            # would show. `min_samples` is NOT shared: it has its own
+            # "Min. objects" field in the Scan panel (scanMinSamples in
+            # app.js), independent of Centres & Colour's, because a sensible
+            # per-cell floor for mining across hundreds of pairs is not
+            # necessarily the one you'd set while looking at a single
+            # branch. (Both used to silently fall back to CenterSpec's
+            # defaults -- rule="purity", min_samples=1 -- regardless of what
+            # either UI value was; that bug is what introduced this parsing.)
+            # Validated the same way /api/analyze does above, so both
+            # endpoints agree on what a bad `rule` looks like.
+            scan_rule = req.get("rule", "purity")
+            if scan_rule not in ("purity", "certified"):
+                self._send_json_response(
+                    400,
+                    {"error": f"rule must be 'purity' or 'certified', got {scan_rule!r}"},
+                )
+                return
+            try:
+                scan_spec = CenterSpec(
+                    tau=scan_tau, alpha=scan_alpha, rule=scan_rule,
+                    min_samples=scan_min_samples,
+                )
+            except ValueError as exc:
+                self._send_json_response(400, {"error": str(exc)})
+                return
+            try:
+                fdr_q = float(req.get("fdr_q", 0.05))
+            except (TypeError, ValueError):
+                self._send_json_response(400, {"error": "fdr_q must be a number"})
+                return
+            if not (0.0 < fdr_q <= 1.0):
+                self._send_json_response(400, {"error": "fdr_q must be in (0, 1]"})
+                return
+            try:
+                n_perm = int(req.get("n_permutations", _SCAN_N_PERMUTATIONS))
+                n_perm_fw = int(req.get("n_permutations_familywise", 0))
+            except (TypeError, ValueError):
+                self._send_json_response(400, {"error": "permutation counts must be integers"})
+                return
+            if n_perm < 0 or n_perm_fw < 0:
+                self._send_json_response(400, {"error": "permutation counts must be non-negative"})
+                return
+            if n_perm == 0 and n_perm_fw == 0:
+                self._send_json_response(400, {
+                    "error": (
+                        "the scan requires a permutation null: with no p-values there is "
+                        "nothing for Benjamini-Hochberg to control across the swept family."
+                    )
+                })
                 return
 
             with self.server.scan_lock:
@@ -393,6 +630,13 @@ class VSFRequestHandler(http.server.BaseHTTPRequestHandler):
                 self.server.scan_job = {
                     "status": "running",
                     "threshold_pct": threshold_pct,
+                    "tau": scan_spec.tau,
+                    "alpha": scan_spec.alpha,
+                    "rule": scan_spec.rule,
+                    "min_samples": scan_spec.min_samples,
+                    "fdr_q": fdr_q,
+                    "n_permutations": n_perm,
+                    "n_permutations_familywise": n_perm_fw,
                     "started_at": time.time(),
                     "progress": {"current": 0, "total": 0, "label": ""},
                     "results": None,
@@ -401,7 +645,10 @@ class VSFRequestHandler(http.server.BaseHTTPRequestHandler):
 
             thread = threading.Thread(
                 target=_run_dataset_scan,
-                args=(self.server, threshold_pct, cancel_event),
+                args=(
+                    self.server, threshold_pct, fdr_q, n_perm, n_perm_fw,
+                    cancel_event, scan_spec,
+                ),
                 daemon=True,
             )
             thread.start()
@@ -443,22 +690,69 @@ class VSFRequestHandler(http.server.BaseHTTPRequestHandler):
         self._send_json_response(200, {"status": "cancelling"})
 
 
-def _run_dataset_scan(server: "_VSFServer", threshold_pct: float, cancel_event: threading.Event) -> None:
+def _run_dataset_scan(
+    server: "_VSFServer",
+    threshold_pct: float,
+    fdr_q: float,
+    n_permutations: int,
+    n_permutations_familywise: int,
+    cancel_event: threading.Event,
+    spec: CenterSpec,
+) -> None:
     """
     Global Pattern Scan background worker (see module docstring). For every
     column of `server.df`, for every one of its observed values, runs
     `discover_branches` with that (column, value) as a One-vs-Rest binary
     target against every OTHER column as features — an honest exhaustive
     1D-4D search, identical in kind to a single `/api/analyze` call, just
-    looped over every (column, value) pair in the dataset. A pair is kept
-    only if the MAXIMUM NMI across its found branches strictly exceeds
-    `threshold_pct / 100`.
+    looped over every (column, value) pair in the dataset.
 
-    Runs entirely in a background thread started by
-    `_handle_scan_start_api`; progress is written to `server.scan_job`
-    under `server.scan_lock` after every pair so `/api/scan/status` always
-    reflects the latest state. Checks `cancel_event` between pairs (not
-    mid-`discover_branches` — see `_handle_scan_cancel_api`'s docstring).
+    Selection is a conjunction of two independent conditions, and both are
+    load-bearing:
+
+    1.  EFFECT SIZE. The maximum certified COVERAGE across the pair's
+        branches must be at least `threshold_pct / 100` (inclusive — a pair
+        certifying exactly 100% coverage clears a 100% threshold) — the
+        share of the pair's target-value samples that fall inside cells
+        certified to be at least `spec.tau` pure at simultaneous level
+        `1 - spec.alpha`.
+
+        v2.2 changed this from `u_adj`, and the search objective with it, for
+        one reason: the scan's product is a list of (column, value) pairs
+        worth DISPLAYING as discrete centres, and u_adj does not measure
+        that. On `data/adult_census.csv`, income = ">50K" reaches
+        u_adj = 34.0% with zero certified centres at tau = 0.90, and
+        occupation = "Armed-Forces" reaches 44.4% while the highest cell
+        purity anywhere in its best branch is 2.42%. A scan filtered on
+        u_adj returns both; a scan filtered on coverage returns neither, and
+        that is the correct behaviour for the question being asked. u_adj is
+        still recorded per pair as a diagnostic, so the divergence between
+        "an association exists" and "a centre exists" stays visible in the
+        results rather than being decided silently.
+
+    2.  SIGNIFICANCE, FDR-controlled over the whole swept family. Every pair
+        contributes its winning branch's COVERAGE permutation p-value to one
+        Benjamini-Hochberg procedure at rate `fdr_q`. Critically, BH runs over
+        EVERY pair scanned — not only those clearing condition 1 — because
+        filtering first and correcting afterwards is itself a selection effect
+        and voids the guarantee. The p-value is drawn from the multivariate
+        hypergeometric null of the cell counts given both margins, which is
+        the exact permutation null of the coverage statistic.
+
+    `n_permutations_familywise > 0` upgrades each pair's p-value from the
+    uncorrected per-branch value to one corrected for the look-elsewhere
+    effect of that pair's own C(M,1..4) subset scan. Without it, FDR is
+    controlled across TARGETS but not across each target's internal search,
+    which leaves the reported p-values anti-conservative; with it, both levels
+    are covered, at roughly `n_permutations_familywise` times the per-pair
+    search cost. Any published scan result must set it.
+
+    Runs entirely in a background thread started by `_handle_scan_start_api`;
+    progress is written to `server.scan_job` under `server.scan_lock` after
+    every pair so `/api/scan/status` always reflects the latest state. Checks
+    `cancel_event` between pairs (not mid-`discover_branches` — see
+    `_handle_scan_cancel_api`'s docstring); a cancelled scan reports the pairs
+    it did complete, with BH applied to that completed family only.
     """
     df = server.df
     pairs: List[tuple] = []
@@ -467,7 +761,7 @@ def _run_dataset_scan(server: "_VSFServer", threshold_pct: float, cancel_event: 
             pairs.append((col, val))
     total = len(pairs)
 
-    results: List[Dict[str, Any]] = []
+    scanned: List[Dict[str, Any]] = []
     try:
         for i, (col, val) in enumerate(pairs):
             if cancel_event.is_set():
@@ -481,22 +775,92 @@ def _run_dataset_scan(server: "_VSFServer", threshold_pct: float, cancel_event: 
             feature_names = list(X_df.columns)
             X = X_df.values
 
-            branches = discover_branches(X, Z, feature_names=feature_names, max_d=_MAX_D)
+            branches = discover_branches(
+                X,
+                Z,
+                feature_names=feature_names,
+                max_d=_MAX_D,
+                n_permutations=n_permutations,
+                n_permutations_familywise=n_permutations_familywise,
+                random_state=_SCAN_RANDOM_STATE,
+                objective="coverage",
+                positive_class=1,
+                center_spec=spec,
+                n_permutations_centers=n_permutations,
+                n_permutations_familywise_coverage=n_permutations_familywise,
+            )
             if not branches:
                 continue
 
-            best_d, best_branch = max(branches.items(), key=lambda kv: kv[1].nmi)
-            if best_branch.nmi > threshold_pct / 100.0:
-                results.append({
-                    "column": col,
-                    "value": str(val),
-                    "max_nmi": float(best_branch.nmi),
-                    "best_d": best_d,
-                    "best_mi": float(best_branch.mi),
-                    "best_features": best_branch.selected_feature_names,
-                })
+            # Winner within the pair: highest coverage, ties broken toward
+            # FEWER certified centres and then toward the LOWER
+            # dimensionality — the same order as
+            # `vsf.centers.coverage_score`, extended with a preference for
+            # the simpler display when two branches are otherwise identical.
+            best_d, best = max(
+                branches.items(),
+                key=lambda kv: (
+                    kv[1].centers.coverage if kv[1].centers else 0.0,
+                    -(kv[1].centers.n_centers if kv[1].centers else 0),
+                    -kv[0],
+                ),
+            )
+            centers = best.centers
+            p_used = (
+                best.coverage_p_value_familywise
+                if best.coverage_p_value_familywise is not None
+                else (centers.coverage_p_value if centers else None)
+            )
+            cv = centers.coverage_cv if centers else None
+            scanned.append({
+                "column": col,
+                "value": str(val),
+                "coverage": float(centers.coverage) if centers else 0.0,
+                "n_centers": int(centers.n_centers) if centers else 0,
+                "purity_pooled": float(centers.purity_pooled) if centers else 0.0,
+                "mass": float(centers.mass) if centers else 0.0,
+                "lift": float(centers.lift) if centers else 0.0,
+                "n_positive": int(centers.n_positive) if centers else 0,
+                "coverage_cv": None if cv is None else float(cv.mean),
+                "coverage_cv_se": None if cv is None else float(cv.se),
+                "undetermined": bool(centers.is_undetermined) if centers else True,
+                # Diagnostic only: retained so that the divergence between
+                # "an association exists" and "a centre exists" is visible in
+                # the scan output instead of being resolved silently.
+                "max_u_adj": float(best.u_adj),
+                "best_d": best_d,
+                "best_mi": float(best.mi),
+                "best_mi_null": float(best.mi_null),
+                "best_mi_adj": float(best.mi_adj),
+                "best_features": best.selected_feature_names,
+                "p_value": (
+                    None if centers is None or centers.coverage_p_value is None
+                    else float(centers.coverage_p_value)
+                ),
+                "p_value_familywise": (
+                    None if best.coverage_p_value_familywise is None
+                    else float(best.coverage_p_value_familywise)
+                ),
+                "p_value_mi": None if best.p_value is None else float(best.p_value),
+                # 1.0 rather than None so a pair that produced no p-value is
+                # carried through BH as an automatic non-rejection instead of
+                # silently shrinking the family size m and inflating everyone
+                # else's critical value.
+                "_p": 1.0 if p_used is None else float(p_used),
+            })
 
-        results.sort(key=lambda r: r["max_nmi"], reverse=True)
+        # BH over the ENTIRE completed family, before any effect-size filter.
+        rejected = benjamini_hochberg([r["_p"] for r in scanned], q=fdr_q)
+        results: List[Dict[str, Any]] = []
+        for record, keep in zip(scanned, rejected):
+            record["fdr_significant"] = bool(keep)
+            record.pop("_p", None)
+            if keep and record["coverage"] >= threshold_pct / 100.0:
+                results.append(record)
+
+        results.sort(
+            key=lambda r: (r["coverage"], -r["n_centers"]), reverse=True
+        )
         cancelled = cancel_event.is_set()
 
         with server.scan_lock:
@@ -504,6 +868,8 @@ def _run_dataset_scan(server: "_VSFServer", threshold_pct: float, cancel_event: 
             final_current = server.scan_job["progress"]["current"] if cancelled else total
             server.scan_job["progress"] = {"current": final_current, "total": total, "label": ""}
             server.scan_job["results"] = results
+            server.scan_job["n_tested"] = len(scanned)
+            server.scan_job["n_fdr_significant"] = int(sum(rejected))
     except Exception as e:
         with server.scan_lock:
             server.scan_job["status"] = "error"

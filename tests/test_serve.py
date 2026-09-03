@@ -42,10 +42,13 @@ Covers:
      "does not open" case.
   9. Global Pattern Scan (`/api/scan/start`/`/api/scan/status`/
      `/api/scan/cancel`, `TestGlobalPatternScan`): idle status before any
-     scan; threshold validation; a planted XOR ground truth (`target = a
+     scan; threshold/FDR validation; explicit rejection of the removed
+     `nmi_threshold` parameter; a planted XOR ground truth (`target = a
      XOR b`, `c`/`d` pure noise) actually gets found and correctly
-     filtered/sorted by NMI; an all-noise dataset completes with an empty
-     result set rather than erroring; 409 on a concurrent start; cancel
+     filtered/sorted by `max_u_adj`; an all-noise dataset completes with an
+     empty result set rather than erroring, which under v2.1 is enforced by
+     Benjamini-Hochberg FDR control across the swept family and not merely by
+     a high effect-size threshold; 409 on a concurrent start; cancel
      genuinely stops a scan before every pair is scanned (verified via a
      slowed-down `discover_branches`, not a size/speed-dependent race); a
      cancel with nothing running is a harmless no-op; scan state is
@@ -97,9 +100,9 @@ def _synthetic_df(seed: int = 0, n: int = 400) -> pd.DataFrame:
     """
     rng = np.random.RandomState(seed)
     color = rng.choice(["red", "blue", "green"], n)
-    # Make `outcome` deterministically dependent on `color` so NMI-based
-    # code paths (top_columns, graph inference/mining) have real signal to
-    # find rather than pure noise.
+    # Make `outcome` deterministically dependent on `color` so the
+    # information-theoretic code paths have real signal to find rather than
+    # pure noise.
     outcome = np.where(color == "red", "yes", rng.choice(["yes", "no"], n))
     return pd.DataFrame(
         {
@@ -316,9 +319,10 @@ class TestGlobalPatternScan(unittest.TestCase):
         """
         `target = a XOR b` (both binary), `c`/`d` pure noise — so a scan has
         an unambiguous ground truth: every (a, value)/(b, value)/(target,
-        value) pair should score max_nmi == 1.0 (found via the branch that
-        pairs the other two of {a, b, target}), while every (c, *)/(d, *)
-        pair should score far below any reasonable threshold.
+        value) pair should score coverage == 1.0 (found via the branch that
+        pairs the other two of {a, b, target}: two cells, each 100% pure and
+        large enough to certify), while every (c, *)/(d, *) pair should score
+        far below any reasonable threshold AND fail FDR control.
         """
         rng = np.random.RandomState(seed)
         a = rng.randint(0, 2, n)
@@ -388,15 +392,89 @@ class TestGlobalPatternScan(unittest.TestCase):
         httpd, thread = self._start_server(self._xor_df())
         try:
             port = httpd.server_address[1]
-            for bad in (150, -1, 100, "not-a-number"):
-                resp = self._post(port, "/api/scan/start", {"nmi_threshold": bad})
+            # 100 is deliberately NOT in this list: the comparison against
+            # coverage_threshold is >= (see
+            # test_scan_coverage_threshold_is_inclusive_at_100), so a pair
+            # certifying exactly 100% coverage must be reachable by typing
+            # 100 into the threshold field, not silently unrepresentable.
+            for bad in (150, -1, "not-a-number"):
+                resp = self._post(port, "/api/scan/start", {"coverage_threshold": bad})
                 self.assertEqual(resp.code, 400, msg=f"threshold={bad!r} should be rejected")
                 data = json.loads(resp.read())
                 self.assertIn("error", data)
+            for bad_q in (0, -0.1, 1.5, "nope"):
+                resp = self._post(port, "/api/scan/start",
+                                  {"coverage_threshold": 50, "fdr_q": bad_q})
+                self.assertEqual(resp.code, 400, msg=f"fdr_q={bad_q!r} should be rejected")
+            # A scan with no permutation null at all has nothing for BH to
+            # control across, so it must be refused rather than silently
+            # degrading to an uncorrected effect-size filter.
+            resp = self._post(port, "/api/scan/start", {
+                "coverage_threshold": 50, "n_permutations": 0,
+                "n_permutations_familywise": 0,
+            })
+            self.assertEqual(resp.code, 400)
             # A fresh, valid start must still work afterward — the rejected
             # attempts above must not have left scan_job in a bad state.
-            resp = self._post(port, "/api/scan/start", {"nmi_threshold": 50})
+            resp = self._post(port, "/api/scan/start", {"coverage_threshold": 50})
             self.assertEqual(resp.status, 200)
+            self._poll_until_terminal(port, timeout=60)
+        finally:
+            self._stop_server(httpd, thread)
+
+    def test_scan_coverage_threshold_is_inclusive_at_100(self):
+        # _xor_df's docstring guarantees every (a, value)/(b, value)/
+        # (target, value) pair certifies coverage == 1.0 exactly (two
+        # cells, each 100% pure, large enough to certify). A threshold of
+        # 100 must still keep these — coverage >= threshold_pct / 100, not
+        # coverage > threshold_pct / 100 — or "100%" would be an
+        # unsatisfiable filter despite being a legal input value.
+        httpd, thread = self._start_server(self._xor_df())
+        try:
+            port = httpd.server_address[1]
+            resp = self._post(port, "/api/scan/start",
+                              {"coverage_threshold": 100, "n_permutations": 99})
+            self.assertEqual(resp.status, 200)
+
+            status = self._poll_until_terminal(port, timeout=60)
+            self.assertEqual(status["status"], "done")
+
+            results = status["results"]
+            self.assertGreater(len(results), 0)
+            found_columns = {r["column"] for r in results}
+            self.assertEqual(found_columns, {"a", "b", "target"})
+            for r in results:
+                self.assertEqual(r["coverage"], 1.0)
+        finally:
+            self._stop_server(httpd, thread)
+
+    def test_start_rejects_the_removed_nmi_threshold_parameter(self):
+        # `nmi_threshold` is not merely renamed: NMI_min saturates toward
+        # 100% on rare One-vs-Rest criteria with no signal, which is exactly
+        # what a dataset-wide scan manufactures in bulk. Silently accepting
+        # the old parameter would let a caller keep filtering on the artifact.
+        httpd, thread = self._start_server(self._xor_df())
+        try:
+            port = httpd.server_address[1]
+            resp = self._post(port, "/api/scan/start", {"nmi_threshold": 80})
+            self.assertEqual(resp.code, 400)
+            data = json.loads(resp.read())
+            self.assertIn("coverage_threshold", data["error"])
+        finally:
+            self._stop_server(httpd, thread)
+
+    def test_start_rejects_the_removed_u_adj_threshold_parameter(self):
+        # v2.2: u_adj answers "does an association exist", the scan answers
+        # "does a certifiable centre exist", and the two select different
+        # pairs. Accepting the old parameter would silently keep filtering on
+        # the wrong quantity.
+        httpd, thread = self._start_server(self._xor_df())
+        try:
+            port = httpd.server_address[1]
+            resp = self._post(port, "/api/scan/start", {"u_adj_threshold": 50})
+            self.assertEqual(resp.code, 400)
+            data = json.loads(resp.read())
+            self.assertIn("coverage_threshold", data["error"])
         finally:
             self._stop_server(httpd, thread)
 
@@ -404,10 +482,11 @@ class TestGlobalPatternScan(unittest.TestCase):
         httpd, thread = self._start_server(self._xor_df())
         try:
             port = httpd.server_address[1]
-            resp = self._post(port, "/api/scan/start", {"nmi_threshold": 80})
+            resp = self._post(port, "/api/scan/start",
+                              {"coverage_threshold": 80, "n_permutations": 99})
             self.assertEqual(resp.status, 200)
 
-            status = self._poll_until_terminal(port, timeout=30)
+            status = self._poll_until_terminal(port, timeout=60)
             self.assertEqual(status["status"], "done")
             self.assertEqual(status["progress"]["current"], status["progress"]["total"])
 
@@ -418,12 +497,18 @@ class TestGlobalPatternScan(unittest.TestCase):
             # Every surviving pair must genuinely exceed the threshold —
             # the endpoint's own filtering, not just this test's assertion.
             for r in results:
-                self.assertGreater(r["max_nmi"], 0.80)
+                self.assertGreater(r["coverage"], 0.80)
+                self.assertGreater(r["n_centers"], 0)
+                self.assertTrue(r["fdr_significant"])
+                self.assertLessEqual(r["p_value"], 0.05)
+                # The raw MI must clear its own noise floor, not merely be
+                # large: `mi > mi_null` is the property v2.0 could not state.
+                self.assertGreater(r["best_mi"], r["best_mi_null"])
                 self.assertIn(r["column"], {"a", "b", "target"})  # c/d are pure noise, must not survive
 
-            # Results are sorted by max_nmi descending.
-            nmis = [r["max_nmi"] for r in results]
-            self.assertEqual(nmis, sorted(nmis, reverse=True))
+            # Results are sorted by coverage descending.
+            scores = [r["coverage"] for r in results]
+            self.assertEqual(scores, sorted(scores, reverse=True))
 
             # a=0, a=1, b=0, b=1, target=0, target=1 should all be found
             # (the XOR relationship is symmetric in all three columns).
@@ -432,22 +517,27 @@ class TestGlobalPatternScan(unittest.TestCase):
         finally:
             self._stop_server(httpd, thread)
 
-    def test_scan_with_high_threshold_yields_no_results_but_still_completes(self):
-        # Same dataset, but plain noise columns c/d can never reach a
-        # threshold this permissive vantage... rather: use an all-noise
-        # dataset so nothing survives even a low bar, proving an empty
-        # result set is reported as "done" with results=[], not as an error.
+    def test_all_noise_dataset_yields_no_results_even_at_a_permissive_threshold(self):
+        # An all-noise dataset must survive NOTHING, and — the point of the
+        # v2.1 change — it must survive nothing even when the effect-size
+        # threshold is set low enough that v2.0's NMI_min filter would have
+        # passed rare One-vs-Rest criteria on this exact data. The FDR gate
+        # is what enforces that, so this asserts on `n_fdr_significant`
+        # directly rather than only on the filtered output.
         rng = np.random.RandomState(1)
         n = 150
         noise_df = pd.DataFrame({f"col{i}": rng.randint(0, 3, n) for i in range(5)})
         httpd, thread = self._start_server(noise_df)
         try:
             port = httpd.server_address[1]
-            resp = self._post(port, "/api/scan/start", {"nmi_threshold": 95})
+            resp = self._post(port, "/api/scan/start",
+                              {"coverage_threshold": 5, "n_permutations": 99})
             self.assertEqual(resp.status, 200)
-            status = self._poll_until_terminal(port, timeout=30)
+            status = self._poll_until_terminal(port, timeout=60)
             self.assertEqual(status["status"], "done")
             self.assertEqual(status["results"], [])
+            self.assertGreater(status["n_tested"], 0)
+            self.assertEqual(status["n_fdr_significant"], 0)
         finally:
             self._stop_server(httpd, thread)
 
@@ -465,11 +555,11 @@ class TestGlobalPatternScan(unittest.TestCase):
                 return real_discover_branches(*args, **kwargs)
 
             with mock.patch.object(vserve, "discover_branches", _slow_discover_branches):
-                resp1 = self._post(port, "/api/scan/start", {"nmi_threshold": 50})
+                resp1 = self._post(port, "/api/scan/start", {"coverage_threshold": 50})
                 self.assertEqual(resp1.status, 200)
                 time.sleep(0.05)  # let the background thread actually start
 
-                resp2 = self._post(port, "/api/scan/start", {"nmi_threshold": 50})
+                resp2 = self._post(port, "/api/scan/start", {"coverage_threshold": 50})
                 self.assertEqual(resp2.code, 409)
                 data = json.loads(resp2.read())
                 self.assertIn("error", data)
@@ -489,7 +579,7 @@ class TestGlobalPatternScan(unittest.TestCase):
                 return real_discover_branches(*args, **kwargs)
 
             with mock.patch.object(vserve, "discover_branches", _slow_discover_branches):
-                resp = self._post(port, "/api/scan/start", {"nmi_threshold": 50})
+                resp = self._post(port, "/api/scan/start", {"coverage_threshold": 50})
                 self.assertEqual(resp.status, 200)
                 time.sleep(0.15)  # ensure it's mid-flight, not finished or unstarted
 
@@ -522,7 +612,7 @@ class TestGlobalPatternScan(unittest.TestCase):
             port_a = httpd_a.server_address[1]
             port_b = httpd_b.server_address[1]
 
-            resp = self._post(port_a, "/api/scan/start", {"nmi_threshold": 50})
+            resp = self._post(port_a, "/api/scan/start", {"coverage_threshold": 50})
             self.assertEqual(resp.status, 200)
             self._poll_until_terminal(port_a, timeout=30)
 

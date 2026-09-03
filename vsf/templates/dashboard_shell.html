@@ -102,22 +102,36 @@
                         <span class="metric-label">Dimensionality:</span>
                         <strong id="val-branch-d" style="color: var(--accent-purple); font-size: 1rem;">-</strong>
                     </div>
-                    <div class="metric-chip" title="Raw mutual information I(Z̃; X̃_S) of this branch's chosen features with the target — ranked against other branches of the same dimensionality only, not a global optimum">
+                    <div class="metric-chip" title="Coverage: the share of ALL target-value objects that fall inside certified discrete centres. This is what the branch delivers. It is 0% whenever no cell can be certified, however strong the underlying association is.">
+                        <span class="metric-label">Coverage:</span>
+                        <strong id="val-coverage" style="color: var(--green); font-size: 1.05rem;">-</strong>
+                    </div>
+                    <div class="metric-chip" title="Number of certified centres, and the pooled purity inside them. At equal coverage, fewer centres is better: the deliverable is a small set of readable cells.">
+                        <span class="metric-label">Centres:</span>
+                        <strong id="val-centers" style="color: var(--green); font-size: 1.05rem;">-</strong>
+                        <span class="mi-caption" id="val-purity">purity —</span>
+                    </div>
+                    <div class="metric-chip" style="opacity: 0.72;" title="DIAGNOSTIC. Raw plug-in mutual information I(Z̃; X̃_S) in bits, shown against the noise floor E₀[MI] — the value this same estimator returns when the target is independent of these axes. Raw MI is NOT comparable across branches of different dimensionality: its bias grows with the number of occupied cells.">
                         <span class="metric-label">MI (raw):</span>
                         <strong id="val-mi" style="color: var(--accent-cyan); font-size: 1rem;">-</strong>
-                        <span class="mi-caption">MI (unadjusted, no significance test)</span>
+                        <span class="mi-caption" id="val-mi-null">noise floor —</span>
                     </div>
-                    <div class="metric-chip" title="Normalized Mutual Information — shown for reference; branches are ranked by raw MI, not NMI (Project_Master_Document.md Section 4.2)">
-                        <span class="metric-label">NMI:</span>
-                        <strong id="val-nmi" style="color: var(--green); font-size: 1rem;">-</strong>
+                    <div class="metric-chip" style="opacity: 0.72;" title="DIAGNOSTIC, not the headline. U_adj = (MI − E₀[MI]) / (H(Z) − E₀[MI]) is the bias-corrected share of the TARGET's entropy that these axes resolve, and it answers 'does an association exist', not 'can a centre be isolated'. 0% on independent data at any class balance; 100% on a deterministic relation, including a micro-class. This replaced NMI_min in v2.1 — NMI_min reads ~66% on provably independent data when the target class is rare.">
+                        <span class="metric-label">U<sub>adj</sub>:</span>
+                        <strong id="val-u-adj" style="color: var(--green); font-size: 1rem;">-</strong>
+                    </div>
+                    <div class="metric-chip" id="chip-significance" title="Permutation p-value of this branch. Unless it is marked 'family-corrected', it does NOT account for the branch having been selected as the best of C(M,1..4) candidates, and is anti-conservative.">
+                        <span class="metric-label">p:</span>
+                        <strong id="val-pvalue" style="font-size: 1rem;">-</strong>
                     </div>
                 </div>
                 <div style="display: flex; align-items: center; gap: 8px; border-left: 1px solid var(--border-color); padding-left: 1rem;">
                     <span style="font-size: 0.75rem; color: var(--text-dim); font-weight: 500;">Viewing:</span>
                     <div id="dimButtonsGroup" class="view-toggle-group" style="padding: 2px;"></div>
                 </div>
-                <div style="font-size: 0.85rem; color: var(--text-dim);">
-                    Total Samples: <strong id="totalSamplesVal" style="color: #fff;">-</strong>
+                <div style="font-size: 0.85rem; color: var(--text-dim);"
+                    title="Rows every statistic and every cell colour is computed on. When the plot subsamples for rendering, the number actually drawn is shown in brackets.">
+                    Samples (statistics): <strong id="totalSamplesVal" style="color: #fff;">-</strong>
                 </div>
             </div>
         </div>
@@ -160,7 +174,8 @@
 
         <!-- Stroke Settings -->
         <div>
-            <div style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 8px;">✨ Purity Contour (Focus)</div>
+            <div style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 8px;"
+                title="A DISPLAY FILTER, not a claim: it outlines cells whose POINT purity falls in the chosen range, ignoring the certificate. Use it to find cells to look at; use the colour to decide what they mean.">✨ Purity Contour (Focus) — point purity, not certified</div>
             <div
                 style="display: flex; flex-direction: column; gap: 10px; font-size: 0.85rem; background: rgba(15, 23, 42, 0.4); padding: 12px; border-radius: 12px; border: 1px solid var(--border-color);">
                 <div style="display: flex; gap: 10px; align-items: center;">
@@ -211,16 +226,31 @@
             </div>
         </div>
 
-        <!-- Purity color legend (Project_Master_Document.md Section 5.3):
+        <!-- Certificate colour legend (Project_Master_Document.md Section 5.3):
              4 discrete, non-overlapping zones — a direct color key, no
              gradient, for instant categorical read of a center's purity. -->
         <div>
-            <div style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 8px;">🎨 Purity Color Scale</div>
-            <div class="purity-legend">
-                <div class="purity-legend-item"><span class="purity-swatch" style="background: var(--purity-green);"></span>Green — purity &gt; 85%</div>
-                <div class="purity-legend-item"><span class="purity-swatch" style="background: var(--purity-yellow);"></span>Yellow — 75%–85%</div>
-                <div class="purity-legend-item"><span class="purity-swatch" style="background: var(--purity-brown);"></span>Brown — 25%–75% (murky)</div>
-                <div class="purity-legend-item"><span class="purity-swatch" style="background: var(--purity-red);"></span>Red — purity &lt; 25%</div>
+            <div style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 8px;">🎨 Colour Scale</div>
+            <!-- The green boundary was fixed when this file was exported: the
+                 Coverage figure is computed from exactly the green cells, and a
+                 static page cannot recompute it. The lower boundary is purely
+                 cosmetic and the reader can move it. -->
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; font-size: 0.85rem;">
+                <label style="color: #b98153;" title="Colour boundary only: cells between it and the green boundary read brown, below it red. Changes nothing that is reported.">🟤 Brown from:</label>
+                <div style="display: flex; align-items: center; gap: 4px;">
+                    <input type="number" id="colorBrownFrom" min="0" max="99" step="1" value="40"
+                        oninput="applyColorBoundary()"
+                        style="background: rgba(15, 23, 42, 0.8); color: white; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 2px 6px; width: 55px;">
+                    <span style="color: var(--text-muted);">%</span>
+                </div>
+            </div>
+            <!-- Rewritten by renderCertificateLegend() from the certificate
+                 baked into this export, so the captions cannot drift from the
+                 thresholds the renderer uses. -->
+            <div class="purity-legend" id="purityLegend">
+                <div class="purity-legend-item"><span class="purity-swatch" style="background: var(--purity-green);"></span>Discrete centre</div>
+                <div class="purity-legend-item"><span class="purity-swatch" style="background: var(--purity-brown);"></span>Mixed</div>
+                <div class="purity-legend-item"><span class="purity-swatch" style="background: var(--purity-red);"></span>Low</div>
             </div>
         </div>
     </aside>

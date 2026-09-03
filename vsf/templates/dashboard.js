@@ -42,19 +42,18 @@ let currentRenderedDim = null;     // dimensionality Plotly is currently showing
 let isAnimating = false;
 
 // ---------------------------------------------------------------------
-// Purity color scale — 4 zones (Project_Master_Document.md Section 5.3),
-// replacing v1.0's 5-zone scale. Boundaries are a partition of [0,1] into
-// 4 disjoint, exhaustive intervals so every purity value lands in exactly
-// one zone:
-//   [0.00, 0.25)  -> red    ("Alternative": target class practically absent)
-//   [0.25, 0.75]  -> brown  ("Murky zone": genuinely mixed)
-//   (0.75, 0.85]  -> yellow ("High": target class leads, but with a real minority)
-//   (0.85, 1.00]  -> green  ("Target": target class dominates cleanly)
+// Purity colour scale — 3 zones (Project_Master_Document.md Section 5.3).
+// v2.2 removed the yellow band and the hard-coded 0.25 / 0.75 / 0.85
+// boundaries. The GREEN boundary is tau, baked into this export at build time
+// because Coverage was computed from it and a static page cannot recompute;
+// the LOWER boundary is cosmetic and the reader can move it here.
+//   [0, brownFrom)      -> red
+//   [brownFrom, tau)    -> brown
+//   [tau, 1]            -> green: a discrete centre, counted in Coverage
 const PROB_COLORS = [
-    '#ef4444', // Red    — purity < 0.25
-    '#8a5a34', // Brown  — 0.25 <= purity < 0.75
-    '#eab308', // Yellow — 0.75 <= purity <= 0.85
-    '#22c55e'  // Green  — purity > 0.85
+    '#ef4444', // Red   — below the reader's lower boundary
+    '#8a5a34', // Brown — between the boundaries
+    '#22c55e'  // Green — at or above tau: a discrete centre
 ];
 const PALETTE_COUNT = PROB_COLORS.length;
 
@@ -70,11 +69,77 @@ function buildDiscreteColorscale() {
 }
 const DISCRETE_COLORSCALE = buildDiscreteColorscale();
 
+// v2.2 Certificate colour scale. See vsf/webapp/static/js/app.js for the
+// full rationale; in brief, the v2.1 bands (0.25 / 0.75 / 0.85 on the POINT
+// purity) had no derivation and drew a cell holding one sample of the target
+// value as a fully saturated green centre. Every boundary below is either
+// the certificate or the dataset-wide base rate, so none is a free
+// parameter, and a singleton cell can never be green.
+//
+//   Green  -> certified: simultaneous lower bound on purity >= tau
+//   Yellow -> candidate: upper bound >= tau, not certified
+//   Brown  -> enriched over the base rate, provably below tau
+//   Red    -> at or below the base rate
+let dashboardTau = 0.90;
+let dashboardPrevalence = 0.0;
+
+// Rewrites the colour legend from the certificate baked into this export, so
+// the swatch captions can never drift from the thresholds the renderer uses.
+function renderCertificateLegend(payload) {
+    const el = document.getElementById('purityLegend');
+    if (!el) return;
+    const cert = payload.certificate || {};
+    const tau = ((cert.tau !== undefined && cert.tau !== null) ? cert.tau : 0.90) * 100;
+    const alpha = ((cert.alpha !== undefined && cert.alpha !== null) ? cert.alpha : 0.05) * 100;
+    const prev = (payload.centers && payload.centers.prevalence !== undefined)
+        ? payload.centers.prevalence * 100 : 0;
+    const label = cert.positive_label || payload.target_name || 'target';
+    const brown = readBrownFrom() * 100;
+    const strict = (cert.rule === 'certified');
+    el.innerHTML = `
+        <div class="purity-legend-item"><span class="purity-swatch" style="background: var(--purity-green);"></span><b>Discrete centre</b> — ${strict ? `lower bound ≥ ${tau.toFixed(0)}%` : `purity ≥ ${tau.toFixed(0)}%`}</div>
+        <div class="purity-legend-item"><span class="purity-swatch" style="background: var(--purity-brown);"></span>Mixed — ${brown.toFixed(0)}% – ${tau.toFixed(0)}%</div>
+        <div class="purity-legend-item"><span class="purity-swatch" style="background: var(--purity-red);"></span>Low — below ${brown.toFixed(0)}%</div>
+        <div style="font-size:0.72rem;opacity:0.75;margin-top:6px;line-height:1.45;">
+            Positive value: <b>${label}</b>. Base rate ${prev.toFixed(2)}%.
+            Green cells are exactly the cells Coverage is computed from; the green
+            boundary was fixed when this file was exported. Every cell carries a
+            ${(100 - alpha).toFixed(0)}% Clopper–Pearson interval in its hover text.
+            All figures on ${(payload.total_samples || 0).toLocaleString()} rows.
+        </div>`;
+}
+
+function readBrownFrom() {
+    const el = document.getElementById('colorBrownFrom');
+    const v = el ? Number(el.value) / 100 : 0.40;
+    return (Number.isFinite(v) && v >= 0 && v <= 1) ? v : 0.40;
+}
+
+function getColorIndexForCell(purity, isCenter, tau, brownFrom) {
+    // `isCenter` was decided server-side at export time and is authoritative;
+    // under the strict rule a cell can sit above tau by point purity and
+    // still not be a centre.
+    if (isCenter === true) return 2;
+    if (isCenter === false && purity >= tau) return 1;
+    if (purity >= tau) return 2;
+    if (purity >= brownFrom) return 1;
+    return 0;
+}
+
+// Re-colours in place when the reader moves the cosmetic lower boundary.
+function applyColorBoundary() {
+    if (!currentPayload) return;
+    renderCertificateLegend(currentPayload);
+    renderPlot(currentPayload);
+}
+
+// Retained ONLY for the legacy purity-range filter (`checkMatch`), which
+// selects cells by point purity and is a display filter, not a claim.
 function getColorIndexForPurity(purity) {
-    if (purity < 0.25) return 0;   // red
-    if (purity < 0.75) return 1;   // brown
-    if (purity <= 0.85) return 2;  // yellow
-    return 3;                      // green
+    if (purity < 0.25) return 0;
+    if (purity < 0.75) return 1;
+    if (purity <= 0.85) return 2;
+    return 3;
 }
 
 // ---------------------------------------------------------------------
@@ -192,12 +257,17 @@ function populateBranches() {
             <div class="branch-item-header">
                 <span class="branch-item-dim">${d}D</span>
                 <span class="branch-item-metrics">
-                    <span class="branch-mi" title="Raw mutual information I(Z̃; X̃_S) of this branch's chosen features with the target">MI ${m.mi.toFixed(3)}</span>
-                    <span class="branch-nmi" title="Normalized mutual information (for reference only — branches are ranked by raw MI, not NMI)">NMI ${(m.nmi * 100).toFixed(1)}%</span>
+                    <span class="branch-mi" title="Raw plug-in mutual information in bits, against this branch's own noise floor E₀[MI]">MI ${m.mi.toFixed(3)} / E₀ ${m.mi_null.toFixed(3)}</span>
+                    <span class="branch-uadj" title="Share of all target-value samples inside certified discrete centres. This is what the branch delivers; U_adj below is a diagnostic of whether an association exists at all, and on a rare target the two diverge completely.">${
+                        (branch.centers && branch.centers.n_centers)
+                            ? `coverage ${(branch.centers.coverage * 100).toFixed(1)}% · ${branch.centers.n_centers} centre${branch.centers.n_centers === 1 ? '' : 's'}`
+                            : 'no certified centres'
+                    }</span>
+                    <span class="branch-uadj" style="opacity:0.7;" title="DIAGNOSTIC. Bias-corrected share of the target's entropy resolved by these axes.">U<sub>adj</sub> ${(m.u_adj * 100).toFixed(1)}%</span>
                 </span>
             </div>
             <div class="branch-item-features">${featuresText || '(no features selected)'}</div>
-            <div class="branch-mi-caption">MI (unadjusted, no significance test)</div>
+            <div class="branch-mi-caption">${formatSignificance(m)}</div>
         `;
         item.onclick = () => selectBranch(d);
         container.appendChild(item);
@@ -305,8 +375,19 @@ function updateDashboard(payload) {
         if (sliceCtrl) sliceCtrl.style.display = 'none';
     }
 
+    // v2.2: `total_samples` is the N every statistic is computed on;
+    // `rendered_samples` is how many rows are drawn as spheres. The two were
+    // silently conflated before (see Project_Master_Document.md 0-ter).
     const totalEl = document.getElementById('totalSamplesVal');
-    if (totalEl) totalEl.innerText = (payload.total_samples || (payload.x ? payload.x.length : 0)).toLocaleString();
+    if (totalEl) {
+        const nStat = payload.total_samples || (payload.x ? payload.x.length : 0);
+        const nDrawn = (payload.rendered_samples !== undefined && payload.rendered_samples !== null)
+            ? payload.rendered_samples : nStat;
+        totalEl.innerText = (nDrawn < nStat)
+            ? `${nStat.toLocaleString()} (${nDrawn.toLocaleString()} drawn)`
+            : nStat.toLocaleString();
+    }
+    renderCertificateLegend(payload);
 
     // Populate Exact Values for the stroke ("Purity Contour") settings
     const exactSelect = document.getElementById('strokeExactVal');
@@ -351,23 +432,103 @@ function renderDimensionButtons(payload) {
     }
 }
 
-// HUD metrics — MI/NMI describe the BRANCH (fixed regardless of which
-// collapsed view-dimensionality is currently displayed); only the
-// "Dimensionality" readout reflects the view. Deliberately no VIR, no d*,
-// no p-value, no scenario badge — none of those concepts exist in v2.0
-// (Project_Master_Document.md Section 0/4.5).
+// Formats a branch's significance statement. Deliberately explicit about
+// WHICH p-value is being shown: `p_value` is the uncorrected permutation
+// p-value of a subset that was CHOSEN as the argmax over C(M,1..4)
+// candidates, so it is anti-conservative and must not be presented as the
+// significance of a discovery. `p_value_familywise` is the corrected one and
+// is only present when the caller paid for it.
+function formatSignificance(m) {
+    if (m.p_value_familywise !== null && m.p_value_familywise !== undefined) {
+        return `p = ${m.p_value_familywise.toFixed(3)} (family-corrected over the full 1D–4D search)`;
+    }
+    if (m.p_value !== null && m.p_value !== undefined) {
+        return `p = ${m.p_value.toFixed(3)} (uncorrected — this branch was selected as an argmax)`;
+    }
+    return 'no significance test run';
+}
+
+// HUD metrics — every readout must track the CURRENTLY VIEWED collapsed
+// dimensionality `viewD`, not the branch's fixed full-d aggregate: a
+// viewD < m.d readout is a projection of this branch's own axes onto its
+// first `viewD` of them, and generally carries LESS information than the
+// full branch (see vsf.vis's `view_metrics` and
+// vsf.avr.BranchResult.mi_by_prefix_d docstrings) — showing the full-branch
+// values while collapsed silently overstates what the visible axes alone
+// explain.
+//
+// The p-value is NOT recomputed per collapsed view: it belongs to the branch
+// as searched and selected. It is therefore shown unchanged, and the
+// dimensionality label makes clear when the view is a projection.
 function updateHUDForDimension(viewD) {
     if (!currentPayload || !currentPayload.metrics) return;
     const m = currentPayload.metrics;
+    const vm = currentPayload.view_metrics;
+    const dKey = String(viewD);
+    const viewMi = (vm && vm.mi_by_d && vm.mi_by_d[dKey] !== undefined) ? vm.mi_by_d[dKey] : m.mi;
+    const viewUAdj = (vm && vm.u_adj_by_d && vm.u_adj_by_d[dKey] !== undefined) ? vm.u_adj_by_d[dKey] : m.u_adj;
 
     const dEl = document.getElementById('val-branch-d');
     if (dEl) dEl.innerText = (viewD === m.d) ? `${m.d}D` : `${viewD}D (of ${m.d}D branch)`;
 
     const miEl = document.getElementById('val-mi');
-    if (miEl) miEl.innerText = m.mi.toFixed(3);
+    if (miEl) miEl.innerText = viewMi.toFixed(3);
 
-    const nmiEl = document.getElementById('val-nmi');
-    if (nmiEl) nmiEl.innerText = `${(m.nmi * 100).toFixed(1)}%`;
+    const floorEl = document.getElementById('val-mi-null');
+    if (floorEl) floorEl.innerText = `noise floor E₀ = ${m.mi_null.toFixed(3)} bits`;
+
+    const uEl = document.getElementById('val-u-adj');
+    if (uEl) uEl.innerText = `${(viewUAdj * 100).toFixed(1)}%`;
+
+    // v2.2 headline: coverage / K / pooled purity for the CURRENTLY VIEWED
+    // dimensionality, read from the displayed partition itself.
+    const pick = (obj, fallback) =>
+        (obj && obj[dKey] !== undefined && obj[dKey] !== null) ? obj[dKey] : fallback;
+    const cBlock = currentPayload.centers || {};
+    const sc = currentPayload.search_centers;
+    const viewCoverage = pick(vm && vm.coverage_by_d, cBlock.coverage);
+    const viewCenters = pick(vm && vm.n_centers_by_d, cBlock.n_centers);
+    const viewPurity = pick(vm && vm.purity_by_d, cBlock.purity_pooled);
+
+    const covEl = document.getElementById('val-coverage');
+    if (covEl) {
+        if (viewCoverage === undefined || viewCoverage === null) {
+            covEl.innerText = 'n/a';
+            covEl.style.color = 'var(--text-dim)';
+        } else if (sc && sc.undetermined_reason) {
+            covEl.innerText = 'undetermined';
+            covEl.style.color = 'var(--text-dim)';
+            covEl.title = sc.undetermined_reason;
+        } else {
+            covEl.innerText = `${(viewCoverage * 100).toFixed(1)}%`;
+            covEl.style.color = viewCoverage > 0 ? 'var(--green)' : 'var(--text-dim)';
+            const cv = sc && sc.coverage_cv;
+            if (cv) {
+                covEl.title = `In-sample ${(viewCoverage * 100).toFixed(1)}%. Out-of-sample (${cv.n_repeats}x${cv.n_splits}-fold, Nadeau-Bengio SE): ${(cv.mean * 100).toFixed(1)}% +/- ${(cv.se * 100).toFixed(1)} points.`;
+            }
+        }
+    }
+    const kEl = document.getElementById('val-centers');
+    if (kEl) kEl.innerText = (viewCenters === undefined || viewCenters === null) ? 'n/a' : String(viewCenters);
+    const purEl = document.getElementById('val-purity');
+    if (purEl) {
+        purEl.innerText = viewCenters
+            ? `purity ${(viewPurity * 100).toFixed(1)}%`
+            : (cBlock.max_purity_lower !== undefined
+                ? `best bound ${(cBlock.max_purity_lower * 100).toFixed(1)}%`
+                : 'purity —');
+    }
+
+    const pEl = document.getElementById('val-pvalue');
+    if (pEl) {
+        const p = (m.p_value_familywise !== null && m.p_value_familywise !== undefined)
+            ? m.p_value_familywise : m.p_value;
+        pEl.innerText = (p === null || p === undefined) ? 'not tested' : p.toFixed(3);
+        pEl.style.color = (p !== null && p !== undefined && p <= 0.01)
+            ? 'var(--green)' : 'var(--text-dim)';
+    }
+    const chip = document.getElementById('chip-significance');
+    if (chip) chip.title = formatSignificance(m);
 }
 
 function setDimensionality(d) {
@@ -541,6 +702,11 @@ function buildPlotData(payload, dim, sliceIndex) {
     const zCoords = g ? g.z : payload.grid_z;
 
     const currentPurity = g ? g.purity : payload.grid_purity;
+    const currentCertified = g ? g.certified : payload.grid_certified;
+    const cert = payload.certificate || {};
+    dashboardTau = (cert.tau !== undefined && cert.tau !== null) ? cert.tau : 0.90;
+    dashboardPrevalence = (payload.centers && payload.centers.prevalence !== undefined)
+        ? payload.centers.prevalence : 0.0;
     const currentSizes = g ? g.sizes : payload.grid_sizes;
     const currentHover = g ? g.hover_text : payload.grid_hover_text;
     const currentCustomdata = g ? g.customdata : payload.grid_customdata;
@@ -601,7 +767,12 @@ function buildPlotData(payload, dim, sliceIndex) {
         const p = (currentPurity && currentPurity[i] !== undefined) ? currentPurity[i] : 0.5;
         const n_c = (currentSizes && currentSizes[i] !== undefined) ? currentSizes[i] : 1;
 
-        const colorIndex = getColorIndexForPurity(p);
+        const colorIndex = getColorIndexForCell(
+            p,
+            (currentCertified && currentCertified[i] !== undefined) ? currentCertified[i] : undefined,
+            dashboardTau,
+            readBrownFrom()
+        );
 
         fx.push(xCoords[i]);
         fy.push(yCoords[i]);

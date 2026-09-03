@@ -51,7 +51,8 @@ from typing import Any, Dict, Optional
 
 import pandas as pd
 
-from .avr import MAX_BRANCH_D, discover_branches
+from .avr import DEFAULT_N_PERMUTATIONS, MAX_BRANCH_D, discover_branches
+from .centers import CenterSpec
 from .vis import (
     Translations,
     catalog_from_dataframe,
@@ -164,6 +165,7 @@ def export_full_dashboard(
     translations: Optional[Translations] = None,
     title: str = "VSF Interactive Dashboard",
     max_d: int = MAX_BRANCH_D,
+    center_spec: Optional[CenterSpec] = None,
 ) -> str:
     """
     Builds one self-contained HTML dashboard: up to 4 independently
@@ -185,6 +187,12 @@ def export_full_dashboard(
             `vsf.vis.Translations`); falls back to raw column/value strings
             with none, same as every other `vsf` function.
         title: HTML `<title>`.
+        center_spec: the discrete-centre certificate (`vsf.centers.CenterSpec`)
+            baked into this export: the purity floor `tau`, the simultaneous
+            error rate `alpha`, and the multiplicity policy. Defaults to
+            tau = 0.90, alpha = 0.05, Bonferroni. A static page cannot be
+            re-certified after the fact, so this value is final for the
+            exported document and is stated in its legend.
         max_d: upper bound on branch dimensionality — passed through to
             `vsf.avr.discover_branches`. Must be in `[1, 4]`; this export's
             spatial encoding stops at 3D + one time/frame axis (see the
@@ -218,7 +226,20 @@ def export_full_dashboard(
     feature_names = list(X_df.columns)
     X = X_df.values
 
-    branches = discover_branches(X, Z, feature_names=feature_names, max_d=max_d)
+    # A static export is produced once and then read many times with no way
+    # to re-run anything, so it carries the permutation p-value rather than
+    # leaving the reader with an uncalibrated effect size.
+    # v2.2: the export carries the certified-centre layer too. A static
+    # page cannot re-run anything, so it must ship the certificate it was
+    # built under; `spec` is baked into every payload and into the legend.
+    spec = center_spec if center_spec is not None else CenterSpec()
+    positive_class = 1 if criterion is not None else None
+    branches = discover_branches(
+        X, Z, feature_names=feature_names, max_d=max_d,
+        n_permutations=DEFAULT_N_PERMUTATIONS, random_state=0,
+        positive_class=positive_class, center_spec=spec,
+        n_permutations_centers=DEFAULT_N_PERMUTATIONS,
+    )
 
     branches_data: Dict[str, Any] = {}
     for d, branch in branches.items():
@@ -228,8 +249,14 @@ def export_full_dashboard(
             Z,
             feature_names=feature_names,
             target_name=display_target_name,
+            # `_prepare_target` returns a One-vs-Rest 0/1 vector whenever a
+            # criterion was given, so its class labels must read as the
+            # criterion and its negation rather than as "0" and "1".
+            target_is_indicator=criterion is not None,
             sort_Z=sort_Z,
             translations=translations,
+            positive_value=(1 if criterion is not None else None),
+            center_spec=spec,
         )
         branches_data[str(d)] = payload
 

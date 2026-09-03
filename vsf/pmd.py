@@ -2,13 +2,21 @@
 VSF PMD Module: Perceptually-Matched Discretization
 Implements rate-distortion optimal quantization, visual channel limits,
 and grid capacity protection against Miller-Madow bias.
+
+Note on `check_grid_capacity`: the prod(k_j) <= N / 10 ceiling bounds the
+VARIANCE of the plug-in entropy estimates but does not remove their BIAS. At
+the ceiling itself (N = 32 561 -> 3 256 cells, ~10 samples per cell) the
+expected plug-in mutual information between a binary target and an
+independently generated feature grid is ~0.08 bits. That floor is subtracted
+explicitly by `vsf.metrics`; it is NOT small enough to ignore, and any number
+taken straight from `vsf.math` at this grid density is dominated by it.
 """
 
 import warnings
 
 import numpy as np
 
-from .math import normalized_mutual_information
+from .metrics import contingency_table, entropy_bits_from_counts, mutual_information_bits
 
 # 7 Visual Channels Limits (Lv) from VSF Spec Table Section 2.2
 CHANNEL_LIMITS: dict[str, int] = {
@@ -59,7 +67,23 @@ def discretize_feature(
     
     Returns:
         (discrete_X, k_actual, distortion D_j)
-        where D_j = 1 - NMI(X_discrete; X_original_quantized_fine)
+        where D_j = 1 - I(X_discrete; X_fine) / H(X_fine), the fraction of the
+        fine-grained quantization's information that this coarser code fails
+        to carry.
+
+    The definition changed in v2.1. It was previously
+    `1 - NMI_min(X_discrete, X_fine)` = `1 - I / min(H(X_discrete), H(X_fine))`,
+    which is not a rate-distortion quantity at all: X_discrete is (up to bin-
+    edge ties) a deterministic function of X_fine, so I = H(X_discrete) and
+    the ratio collapses to ~1 whenever H(X_discrete) <= H(X_fine), leaving D_j
+    to be driven entirely by residual tie noise. Measured consequence: for a
+    standard normal feature the old formula returned D_j = 0.034 at k = 12 but
+    D_j = 0.121 at k = 101 - MORE bins scored as MORE distortion, inverting
+    the monotonicity that Project_Master_Document.md Section 2 relies on when
+    it trades L_v against D_j. Normalizing by H(X_fine) - the information
+    actually available to be preserved - restores
+    D_j(k) in [0, 1], non-increasing in k, and 0 iff the coarse code is
+    lossless with respect to the fine reference.
     """
     raw_arr = np.asarray(X)
     if raw_arr.ndim > 1:
@@ -134,14 +158,21 @@ def discretize_feature(
             _, bin_edges = np.histogram(arr, bins=k_actual)
             discrete_x = np.digitize(arr, bin_edges[1:-1])
             
-    # Calculate Distortion D_j = 1 - NMI(X_discrete; X_fine)
-    # Fine reference quantization with 200 bins
+    # Distortion D_j = 1 - I(X_discrete; X_fine) / H(X_fine), against a fine
+    # reference quantization of at most 200 levels.
     _, fine_edges = np.histogram(arr, bins=min(200, len(np.unique(arr))))
     fine_x = np.digitize(arr, fine_edges[1:-1])
-    
-    nmi_val = normalized_mutual_information(discrete_x, fine_x)
-    distortion = max(0.0, 1.0 - nmi_val)
-    
+
+    table = contingency_table(discrete_x, fine_x)
+    h_fine = entropy_bits_from_counts(table.sum(axis=0))
+    if h_fine <= 1e-12:
+        # Constant feature: the fine reference carries no information, so no
+        # coarsening can lose any. D_j = 0 by definition, not by convention.
+        distortion = 0.0
+    else:
+        retained = mutual_information_bits(table) / h_fine
+        distortion = float(np.clip(1.0 - retained, 0.0, 1.0))
+
     return discrete_x, k_actual, distortion
 
 

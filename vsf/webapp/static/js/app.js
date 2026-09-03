@@ -32,7 +32,7 @@ let isAnimating = false;
 // One-vs-Rest criterion in the dataset in a background job on the server;
 // `scanResultsByColumn` is null until a scan completes (no filter applied,
 // Target Variable shows every column/value as usual), or
-// {colId: [{value, max_nmi, best_d, best_mi, best_features}, ...]} once one
+// {colId: [{value, max_u_adj, best_d, best_mi, best_mi_null, p_value, ...}, ...]} once one
 // has — the catalog is then rebuilt to show ONLY the columns/values that
 // passed. This never touches branch discovery for the currently-analyzed
 // target; it only filters which (column, value) pairs are offered as a
@@ -42,6 +42,12 @@ let scanPollTimer = null;
 let currentDefaultTarget = null;
 
 async function init() {
+    initColorScale();
+    // Defensive, not load-bearing: index.html already ships btnStartScan
+    // with the disabled attribute matching the field's empty default, but
+    // deriving it here too means the two never have to be kept in sync by
+    // hand, and covers a stale bfcache-restored field value on reload.
+    updateScanStartButtonState();
     // Dataset-agnostic default target: resolved from /api/columns' declared
     // default_target (set server-side to the actual configured target column,
     // not necessarily "class"), falling back to the first catalog column, and
@@ -73,8 +79,10 @@ async function init() {
 
 // Rebuilds allColumnsData into a catalog containing only the columns/
 // values a completed scan kept (a no-op copy when no scan filter is
-// active). Surviving criteria get their max NMI/dimensionality appended to
-// their label so the filtered list still carries that information.
+// active). Surviving criteria get their certified coverage, centre count and
+// dimensionality appended to their label so the filtered list still carries
+// that information. v2.2: coverage, not U_adj -- the scan now selects on the
+// quantity the display delivers, and the label must name the same one.
 function buildScanFilteredCatalog() {
     if (!scanResultsByColumn) return allColumnsData;
     const filtered = [];
@@ -89,7 +97,7 @@ function buildScanFilteredCatalog() {
                 const info = passingByValue[c.id];
                 return {
                     id: c.id,
-                    label: `${c.label} · NMI ${(info.max_nmi * 100).toFixed(1)}% (${info.best_d}D)`,
+                    label: `${c.label} · coverage ${(info.coverage * 100).toFixed(1)}% · ${info.n_centers} centre${info.n_centers === 1 ? '' : 's'} (${info.best_d}D, p=${info.p_value === null || info.p_value === undefined ? 'n/a' : info.p_value.toFixed(3)})`,
                 };
             });
         if (criteria.length > 0) {
@@ -109,10 +117,35 @@ function renderCatalog() {
 function setScanControlsRunning(running) {
     const startBtn = document.getElementById('btnStartScan');
     const cancelBtn = document.getElementById('btnCancelScan');
-    const thresholdInput = document.getElementById('scanNmiThreshold');
+    const thresholdInput = document.getElementById('scanCoverageThreshold');
+    const minSamplesInput = document.getElementById('scanMinSamples');
     if (startBtn) startBtn.style.display = running ? 'none' : '';
     if (cancelBtn) cancelBtn.style.display = running ? '' : 'none';
     if (thresholdInput) thresholdInput.disabled = running;
+    if (minSamplesInput) minSamplesInput.disabled = running;
+    // Re-derive btnStartScan's disabled state from the threshold field
+    // rather than force-enabling it here: a scan that just finished with
+    // the field left empty (or emptied while it was running) must NOT
+    // silently become startable again.
+    if (!running) updateScanStartButtonState();
+}
+
+// Coverage threshold starts empty (no implicit default -- see
+// index.html's scan-note) and stays empty until the user types a value,
+// so btnStartScan is disabled whenever the field is blank or not a valid
+// [0, 100] number: running the whole-dataset scan with nothing to filter
+// on would just reproduce the unfiltered catalog at real compute cost.
+// Wired to the field's oninput (index.html) and called once from init()
+// so a page load always reflects the field's actual (empty) content
+// rather than a stale server-rendered default.
+function updateScanStartButtonState() {
+    const startBtn = document.getElementById('btnStartScan');
+    const thresholdInput = document.getElementById('scanCoverageThreshold');
+    if (!startBtn || !thresholdInput) return;
+    const raw = thresholdInput.value.trim();
+    const n = Number(raw);
+    const valid = raw !== '' && Number.isFinite(n) && n >= 0 && n <= 100;
+    startBtn.disabled = !valid;
 }
 
 function showScanStatusMsg(text, kind) {
@@ -128,13 +161,41 @@ function showScanStatusMsg(text, kind) {
     el.style.display = 'block';
 }
 
+// fdr_q = 1.0 and n_permutations_familywise = 0 are not placeholders: they
+// are the values that make the server's Benjamini-Hochberg step a verified
+// no-op (see metrics.py::benjamini_hochberg -- q=1 keeps every hypothesis,
+// since the largest p-value's threshold is q*m/m = 1.0 and p-values are
+// always <= 1) and skip the corrected-p-value computation that would
+// otherwise feed it. Coverage threshold plus the scan's own Min. objects
+// (scanMinSamples, below) are deliberately the ONLY gates here; see
+// index.html's scan-note for what dropping FDR trades away.
+const SCAN_FDR_Q_DISABLED = 1.0;
+const SCAN_N_PERMUTATIONS_FAMILYWISE_DISABLED = 0;
+
 async function startDatasetScan() {
-    const thresholdInput = document.getElementById('scanNmiThreshold');
-    const threshold = thresholdInput ? Number(thresholdInput.value) : 80;
+    const thresholdInput = document.getElementById('scanCoverageThreshold');
+    const rawThreshold = thresholdInput ? thresholdInput.value.trim() : '';
+    const minSamplesInput = document.getElementById('scanMinSamples');
+    const minSamples = minSamplesInput ? Math.round(Number(minSamplesInput.value)) : 1;
     showScanStatusMsg(null);
 
-    if (!Number.isFinite(threshold) || threshold < 0 || threshold >= 100) {
-        showScanStatusMsg('NMI threshold must be a number in [0, 100).', 'error');
+    // Belt-and-suspenders: btnStartScan is disabled whenever the field is
+    // empty (updateScanStartButtonState), so this should be unreachable via
+    // a normal click, but startDatasetScan is also called from nowhere else
+    // that could bypass the disabled state, and a silent Number('') === 0
+    // fallback here would start a real (expensive) scan the user never
+    // configured.
+    if (rawThreshold === '') {
+        showScanStatusMsg('Enter a coverage threshold before scanning.', 'error');
+        return;
+    }
+    const threshold = Number(rawThreshold);
+    if (!Number.isFinite(threshold) || threshold < 0 || threshold > 100) {
+        showScanStatusMsg('Coverage threshold must be a number in [0, 100].', 'error');
+        return;
+    }
+    if (!Number.isFinite(minSamples) || minSamples < 1) {
+        showScanStatusMsg('Min. objects must be a whole number of 1 or more.', 'error');
         return;
     }
 
@@ -142,7 +203,24 @@ async function startDatasetScan() {
         const res = await fetch('/api/scan/start', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ nmi_threshold: threshold }),
+            // The scan is certified with the same tau/alpha the viewport is
+            // showing, so a pair that survives the scan is a pair whose
+            // centres the user will actually see when they click it.
+            body: JSON.stringify({
+                coverage_threshold: threshold,
+                fdr_q: SCAN_FDR_Q_DISABLED,
+                tau: readCertTau(),
+                alpha: readCertAlpha(),
+                rule: readCertRule(),
+                // The scan's OWN Min. objects, not readCertMinSamples() --
+                // tau/alpha ARE shared with the Green/Red sliders
+                // above (readCertTau()/readCertAlpha()), but min_samples is
+                // deliberately not, so mining across the whole dataset can
+                // use a different per-cell floor than the branch you happen
+                // to be looking at.
+                min_samples: minSamples,
+                n_permutations_familywise: SCAN_N_PERMUTATIONS_FAMILYWISE_DISABLED,
+            }),
         });
         if (!res.ok) {
             let detail = `HTTP ${res.status}`;
@@ -223,10 +301,10 @@ function applyScanResults(results, thresholdPct, wasCancelled) {
     const nVals = results.length;
     const prefix = wasCancelled ? 'Scan cancelled — ' : '';
     if (nVals === 0) {
-        showScanStatusMsg(`${prefix}No column/value exceeded NMI > ${thresholdPct}%.`, 'empty');
+        showScanStatusMsg(`${prefix}No column/value cleared U\u2090 > ${thresholdPct}% at the chosen FDR.`, 'empty');
     } else {
         showScanStatusMsg(
-            `${prefix}${nVals} value(s) across ${nCols} column(s) exceed NMI > ${thresholdPct}% — Target Variable filtered.`,
+            `${prefix}${nVals} value(s) across ${nCols} column(s) cleared U\u2090 > ${thresholdPct}% and FDR control — Target Variable filtered.`,
             'ok'
         );
     }
@@ -355,11 +433,86 @@ function showAnalysisError(message) {
     }
 }
 
+// Last analysed (target, criterion), so a certificate change can re-run the
+// same analysis without the user re-picking it from the tree.
+let lastTargetCol = null;
+let lastCriterion = null;
+
+function readCertTau() {
+    const el = document.getElementById('certTau');
+    const v = el ? Number(el.value) / 100 : 0.90;
+    // 1.0 is allowed: "cells that are entirely the target value" is a
+    // well-posed request about the observed table (it is rejected only in
+    // strict mode, where it would be a request to PROVE exact purity).
+    return (Number.isFinite(v) && v > 0 && v <= 1) ? v : 0.90;
+}
+
+function readCertAlpha() {
+    const el = document.getElementById('certAlpha');
+    const v = el ? Number(el.value) : 0.05;
+    return (Number.isFinite(v) && v > 0 && v < 1) ? v : 0.05;
+}
+
+function readCertMinSamples() {
+    const el = document.getElementById('certMinSamples');
+    const v = el ? Math.round(Number(el.value)) : 1;
+    return (Number.isFinite(v) && v >= 1) ? v : 1;
+}
+
+function readCertRule() {
+    const el = document.getElementById('certStrict');
+    return (el && el.checked) ? 'certified' : 'purity';
+}
+
+// The lower colour boundary is cosmetic: it partitions the same cells into
+// the same centres and changes only which of the non-centre cells read brown
+// rather than red. Re-colour in place; do not re-run the analysis.
+function applyColorBoundary() {
+    if (!currentPayload) return;
+    syncColorScaleFromInputs();
+    renderPlot(currentPayload);
+}
+
+// Re-runs the current analysis under a new certificate. tau and alpha are
+// part of the server's cache key, so this is a genuine recomputation, not a
+// client-side re-colouring: the certified set, the coverage and the
+// cross-validated coverage all change with tau.
+async function applyCertificate() {
+    // #certAlpha and #certStrict were removed from Centres & Colour (this
+    // view no longer offers the "certified" rule or a tunable alpha --
+    // readCertRule()/readCertAlpha() degrade to 'purity'/0.05 with the
+    // elements gone), so the strict/alpha validation this function used to
+    // do can never fire and was removed with them. Only tau is still a
+    // live control here.
+    const tauEl = document.getElementById('certTau');
+    const tau = tauEl ? Number(tauEl.value) : 90;
+    if (!Number.isFinite(tau) || tau <= 0 || tau > 100) {
+        showAnalysisError('The green boundary must be in (0, 100] percent.');
+        return;
+    }
+    if (lastTargetCol === null) return;
+    await runAnalysis(lastTargetCol, lastCriterion);
+}
+
+function renderCertificateSummary(response) {
+    const el = document.getElementById('certSummary');
+    if (!el) return;
+    el.innerHTML = '';
+}
+
 async function runAnalysis(targetCol, criterion = null) {
     showLoader(true);
     showAnalysisError(null);
+    lastTargetCol = targetCol;
+    lastCriterion = criterion;
     try {
-        const reqBody = { target: targetCol };
+        const reqBody = {
+            target: targetCol,
+            tau: readCertTau(),
+            alpha: readCertAlpha(),
+            rule: readCertRule(),
+            min_samples: readCertMinSamples(),
+        };
         if (criterion !== null) {
             reqBody.criterion = criterion;
         }
@@ -423,6 +576,7 @@ function selectDefaultBranchAndRender(preserveActiveIfPossible) {
 // branch list and selects the server's default branch.
 function loadBranchesResponse(data) {
     currentBranchesResponse = data;
+    renderCertificateSummary(data);
     stopSlicePlayback();
     activeSliceIndex = null;
     currentRenderedDim = null;
@@ -439,6 +593,17 @@ function loadBranchesResponse(data) {
     selectDefaultBranchAndRender(/* preserveActiveIfPossible */ false);
 }
 
+// Branch-list caption text, keyed by the same `objective_used` the server
+// reports on every /api/analyze response (see server.py, right after its
+// `discover_branches` call). Kept out of the HTML entirely so the two can
+// never drift the way the old static caption did (it kept saying "raw
+// mutual information" long after v2.2 made coverage the default objective
+// for any target with a resolvable positive class).
+const BRANCH_CAPTION_BY_OBJECTIVE = {
+    coverage: '',
+    mi_adj: '',
+};
+
 function renderBranchSelector(response) {
     const container = document.getElementById('branchList');
     const caption = document.getElementById('branchCaption');
@@ -451,23 +616,54 @@ function renderBranchSelector(response) {
         if (caption) caption.style.display = 'none';
         return;
     }
-    if (caption) caption.style.display = 'block';
+    if (caption) {
+        caption.textContent = BRANCH_CAPTION_BY_OBJECTIVE[response.objective_used]
+            || BRANCH_CAPTION_BY_OBJECTIVE.mi_adj;
+        caption.style.display = 'block';
+    }
 
     allDims.forEach(dRaw => {
         const dKey = String(dRaw);
         const branch = response.branches ? response.branches[dKey] : null;
         if (!branch || !branch.metrics) return;
-        const m = branch.metrics;
         const features = (branch.selected_features || []).join(' + ');
 
         const card = document.createElement('div');
         card.className = 'branch-card' + (dKey === activeBranchDim ? ' active' : '');
         card.dataset.dim = dKey;
+        // v2.2: the card leads with what the branch DELIVERS (certified
+        // centres and the share of the target they capture) and keeps the
+        // information-theoretic pair as a secondary diagnostic line. On a
+        // rare target the two disagree by construction -- see
+        // vsf.centers' module docstring -- and the card must not lead with
+        // the number that reads 41.3% while no cell exceeds 2.42% purity.
+        const sc = branch.search_centers;
+        const cc = branch.centers || {};
+        let headline;
+        if (sc && sc.undetermined_reason) {
+            headline = `<span class="branch-uadj" style="color:var(--text-dim);" title="${sc.undetermined_reason}">coverage undetermined</span>`;
+        } else if (cc.n_centers) {
+            headline = `<span class="branch-uadj" title="Share of all target-value samples inside certified centres">coverage ${(cc.coverage * 100).toFixed(1)}% · ${cc.n_centers} centre${cc.n_centers === 1 ? '' : 's'}</span>`;
+        } else {
+            const best = (cc.max_purity_lower !== undefined)
+                ? ` (best lower bound ${(cc.max_purity_lower * 100).toFixed(1)}%)` : '';
+            headline = `<span class="branch-uadj" style="color:var(--text-dim);" title="No cell in this branch reaches the certified purity floor.">no certified centres${best}</span>`;
+        }
+        // MI/E₀/U_adj and the p-value line were dropped from this card
+        // (2026-09, same cleanup pass as the HUD strip's Purity/MI/U_adj/p),
+        // and formatSignificance() was deleted from this file along with
+        // their last call site here -- as clutter on top of the headline
+        // coverage+centres number, which is already what selects and ranks
+        // these branches under objective="coverage". Nothing in the UI now
+        // shows the per-branch p-value: it was the only signal for whether
+        // a coverage/centres number is distinguishable from chance, so a
+        // branch shown here with a high coverage is not thereby shown to be
+        // a real effect rather than noise -- an explicit, user-accepted
+        // trade, not an oversight.
         card.innerHTML = `
             <div class="branch-card-head">
                 <span class="branch-dim-badge">${dKey}D</span>
-                <span class="branch-mi" title="Raw mutual information I(Z;X_S) — not normalized, no significance test">I = ${m.mi.toFixed(3)}</span>
-                <span class="branch-nmi" title="Normalized mutual information of this branch">NMI = ${(m.nmi * 100).toFixed(1)}%</span>
+                ${headline}
             </div>
             <div class="branch-features">${features || '—'}</div>
         `;
@@ -506,30 +702,256 @@ function showLoader(show) {
     else loader.classList.remove('active');
 }
 
-// 4-zone Purity Color Scale (Project_Master_Document.md Section 5.3).
-// Exhaustive, non-overlapping partition of [0, 1]:
-//   [0, 0.25)    -> Red    ("Alternative": target class virtually absent)
-//   [0.25, 0.75] -> Brown  ("Murky Zone": classes physically mixed)
-//   (0.75, 0.85] -> Yellow ("High": target dominant, but with visible admixture)
-//   (0.85, 1.0]  -> Green  ("Target": target class confidently dominant)
+// 3-zone Purity Color Scale with USER-MOVABLE boundaries.
+//
+// History, because the boundaries have now moved twice. v2.0/v2.1 hard-coded
+// 0.25 / 0.75 / 0.85 on the point purity, with a yellow band in between and a
+// "Noise Reduction (minimum samples)" slider bolted on to hide the cell that
+// held one object at 100 %. v2.2's first cut replaced all of that with
+// boundaries derived from a confidence bound -- statistically defensible, and
+// the wrong product: the user asked to move the boundaries themselves.
+//
+// What ships: three zones, no yellow, both boundaries owned by the user.
+//
+//   Green  -> purity >= tau            the discrete centre. tau is the same
+//                                      number the panel's Coverage is computed
+//                                      from, so what is green on screen and
+//                                      what is counted are the same set by
+//                                      construction, not by convention.
+//   Brown  -> redTo <= purity < tau
+//   Red    -> purity < redTo
+//
+// tau therefore changes the METRIC and requires a recomputation; redTo is
+// cosmetic and re-colours instantly. The two are deliberately not the same
+// kind of control, and the UI says so.
+//
+// The confidence interval of every cell is still computed and still shown in
+// its hover text. It no longer decides the colour; it is there so that a cell
+// which is green on one object is visibly green on one object.
 const PROB_COLORS = [
-    '#ef4444', // Red
-    '#92572e', // Brown
-    '#eab308', // Yellow
-    '#22c55e'  // Green
+    '#ef4444', // Red   - below the user's lower boundary
+    '#92572e', // Brown - between the boundaries (cell colour name; the
+               // control that sets this boundary is now called redTo)
+    '#22c55e'  // Green - at or above tau: a discrete centre
 ];
 const PALETTE_COUNT = PROB_COLORS.length;
+const COLOR_CENTER = 2, COLOR_MIXED = 1, COLOR_LOW = 0;
 
-function getColorIndexForPurity(purity) {
-    if (purity < 0.25) return 0;   // Red:    [0, 0.25)
-    if (purity <= 0.75) return 1;  // Brown:  [0.25, 0.75]
-    if (purity <= 0.85) return 2;  // Yellow: (0.75, 0.85]
-    return 3;                      // Green:  (0.85, 1.0]
+// Certificate parameters currently in force, mirrored from the payload so the
+// colour function, the legend and the panel can never disagree about tau.
+let activeTau = 0.90;
+let activeAlpha = 0.05;
+let activeRule = 'purity';
+let activeMinSamples = 1;
+let activePrevalence = 0.0;
+
+function readRedTo() {
+    const el = document.getElementById('colorRedTo');
+    const v = el ? Number(el.value) / 100 : 0.40;
+    return (Number.isFinite(v) && v >= 0 && v <= 1) ? v : 0.40;
+}
+
+function getColorIndexForCell(purity, isCenter, tau, redTo) {
+    // `isCenter` comes from the server and is authoritative: under the strict
+    // rule a cell can sit above tau by point purity and still not be a centre,
+    // and the colour must follow the metric rather than re-deriving it here.
+    if (isCenter === true) return COLOR_CENTER;
+    if (isCenter === false && purity >= tau) return COLOR_MIXED;
+    if (purity >= tau) return COLOR_CENTER;
+    if (purity >= redTo) return COLOR_MIXED;
+    return COLOR_LOW;
+}
+
+// ---------------------------------------------------------------------------
+// Colour-boundary slider (now part of the Global Pattern Scan panel --
+// it used to be its own "Centres & Colour" section, merged in by request
+// since tau/alpha are exactly what the scan certifies against too).
+//
+// Replaces the old renderCertificateLegend()/#purityLegend static legend: the
+// gradient track *is* the legend now (drawn straight from the live tau /
+// redTo values via CSS custom properties), and its two handles are the
+// primary way to move the boundaries. The #certTau / #colorRedTo number
+// inputs remain the source of truth read by readCertTau()/readRedTo()
+// and by applyCertificate(); the slider only ever reads and writes those
+// same inputs, so the two controls can never disagree.
+//
+// tau (green) and redTo (red) are asymmetric in cost, and the slider
+// preserves that asymmetry rather than hiding it:
+//   - dragging the RED handle re-colours instantly (cosmetic, no request);
+//   - dragging the GREEN handle updates the displayed number live but only
+//     commits — i.e. calls applyCertificate() and re-runs the analysis —
+//     when the handle is released (mouseup/touchend/blur), because tau is
+//     part of the server's cache key and changes the reported metric.
+// ---------------------------------------------------------------------------
+const COLOR_SCALE_MIN_GAP = 1; // percentage points; keeps the handles from crossing
+
+function clampPct(value, lo, hi) {
+    return Math.min(hi, Math.max(lo, value));
+}
+
+// Positions the two handles and repaints the gradient from two percentages
+// already known to be valid (0 <= redPct < tauPct <= 100). Pure DOM/CSS
+// update: never reads or writes the number inputs itself.
+function setColorScaleUI(redPct, tauPct) {
+    const track = document.getElementById('colorScaleTrack');
+    const handleRed = document.getElementById('handleRed');
+    const handleGreen = document.getElementById('handleGreen');
+    const redValueEl = document.getElementById('handleRedValue');
+    const greenValueEl = document.getElementById('handleGreenValue');
+    if (!track || !handleRed || !handleGreen) return;
+    track.style.setProperty('--red-pct', `${redPct}%`);
+    track.style.setProperty('--tau-pct', `${tauPct}%`);
+    handleRed.style.left = `${redPct}%`;
+    handleGreen.style.left = `${tauPct}%`;
+    handleRed.setAttribute('aria-valuenow', String(Math.round(redPct)));
+    handleGreen.setAttribute('aria-valuenow', String(Math.round(tauPct)));
+    if (redValueEl) redValueEl.textContent = `${Math.round(redPct)}%`;
+    if (greenValueEl) greenValueEl.textContent = `${Math.round(tauPct)}%`;
+}
+
+// Reflects the current #certTau / #colorRedTo input values onto the
+// slider. Call this whenever those inputs change from ANY source (typed by
+// hand, a payload reload, dragging the other handle) so the slider can never
+// show a stale position.
+function syncColorScaleFromInputs() {
+    const tauEl = document.getElementById('certTau');
+    const redEl = document.getElementById('colorRedTo');
+    const tau = tauEl ? clampPct(Number(tauEl.value), 1, 100) : 90;
+    const red = redEl ? clampPct(Number(redEl.value), 0, 99) : 40;
+    setColorScaleUI(Math.min(red, tau - COLOR_SCALE_MIN_GAP), tau);
+}
+
+let colorScaleDragTarget = null; // 'red' | 'green' | null
+
+function colorScalePctFromEvent(evt) {
+    const track = document.getElementById('colorScaleTrack');
+    if (!track) return 0;
+    const rect = track.getBoundingClientRect();
+    const point = (evt.touches && evt.touches[0]) ? evt.touches[0] : evt;
+    const pct = ((point.clientX - rect.left) / rect.width) * 100;
+    return clampPct(Math.round(pct), 0, 100);
+}
+
+function onColorScalePointerDown(which) {
+    return function (evt) {
+        evt.preventDefault();
+        colorScaleDragTarget = which;
+        document.body.style.userSelect = 'none';
+    };
+}
+
+function onColorScalePointerMove(evt) {
+    if (!colorScaleDragTarget) return;
+    evt.preventDefault();
+    const tauEl = document.getElementById('certTau');
+    const redEl = document.getElementById('colorRedTo');
+    const tau = tauEl ? Number(tauEl.value) : 90;
+    const red = redEl ? Number(redEl.value) : 40;
+    const pct = colorScalePctFromEvent(evt);
+
+    if (colorScaleDragTarget === 'red') {
+        const next = clampPct(pct, 0, tau - COLOR_SCALE_MIN_GAP);
+        if (redEl) redEl.value = String(next);
+        setColorScaleUI(next, tau);
+        applyColorBoundary(); // cosmetic: re-colour live while dragging
+    } else if (colorScaleDragTarget === 'green') {
+        const next = clampPct(pct, Math.max(1, red + COLOR_SCALE_MIN_GAP), 100);
+        if (tauEl) tauEl.value = String(next);
+        setColorScaleUI(red, next);
+        // Deliberately NOT recomputed while dragging — see file header.
+    }
+}
+
+function onColorScalePointerUp() {
+    if (!colorScaleDragTarget) return;
+    const wasGreen = colorScaleDragTarget === 'green';
+    colorScaleDragTarget = null;
+    document.body.style.userSelect = '';
+    if (wasGreen) applyCertificate(); // commit: re-run the analysis at the new tau
+}
+
+// Arrow-key nudge for the focused handle (1 point; Shift = 5 points), so the
+// boundaries stay operable without a mouse or touch.
+function onColorScaleKeyDown(which) {
+    return function (evt) {
+        const step = evt.shiftKey ? 5 : 1;
+        let delta = 0;
+        if (evt.key === 'ArrowLeft' || evt.key === 'ArrowDown') delta = -step;
+        else if (evt.key === 'ArrowRight' || evt.key === 'ArrowUp') delta = step;
+        else return;
+        evt.preventDefault();
+
+        const tauEl = document.getElementById('certTau');
+        const redEl = document.getElementById('colorRedTo');
+        const tau = tauEl ? Number(tauEl.value) : 90;
+        const red = redEl ? Number(redEl.value) : 40;
+
+        if (which === 'red') {
+            const next = clampPct(red + delta, 0, tau - COLOR_SCALE_MIN_GAP);
+            if (redEl) redEl.value = String(next);
+            setColorScaleUI(next, tau);
+            applyColorBoundary();
+        } else {
+            const next = clampPct(tau + delta, Math.max(1, red + COLOR_SCALE_MIN_GAP), 100);
+            if (tauEl) tauEl.value = String(next);
+            setColorScaleUI(red, next);
+            applyCertificate();
+        }
+    };
+}
+
+// Wires the drag/keyboard handlers once at startup and paints the initial
+// handle positions from whatever the number inputs already hold.
+function initColorScale() {
+    const handleRed = document.getElementById('handleRed');
+    const handleGreen = document.getElementById('handleGreen');
+    if (!handleRed || !handleGreen) return;
+
+    handleRed.addEventListener('mousedown', onColorScalePointerDown('red'));
+    handleRed.addEventListener('touchstart', onColorScalePointerDown('red'), { passive: false });
+    handleGreen.addEventListener('mousedown', onColorScalePointerDown('green'));
+    handleGreen.addEventListener('touchstart', onColorScalePointerDown('green'), { passive: false });
+
+    window.addEventListener('mousemove', onColorScalePointerMove);
+    window.addEventListener('touchmove', onColorScalePointerMove, { passive: false });
+    window.addEventListener('mouseup', onColorScalePointerUp);
+    window.addEventListener('touchend', onColorScalePointerUp);
+
+    handleRed.addEventListener('keydown', onColorScaleKeyDown('red'));
+    handleGreen.addEventListener('keydown', onColorScaleKeyDown('green'));
+
+    syncColorScaleFromInputs();
+}
+
+function formatCoverage(payload, d) {
+    // Centre statistics for the CURRENTLY VIEWED dimensionality, from the
+    // displayed partition itself (vsf.vis `view_metrics.*_by_d`). Falls back
+    // to the branch-level block for a payload that predates v2.2.
+    const vm = payload.view_metrics || {};
+    const key = String(d);
+    const pick = (obj, fallback) =>
+        (obj && obj[key] !== undefined && obj[key] !== null) ? obj[key] : fallback;
+    const c = payload.centers || {};
+    return {
+        coverage: pick(vm.coverage_by_d, c.coverage),
+        n_centers: pick(vm.n_centers_by_d, c.n_centers),
+        purity: pick(vm.purity_by_d, c.purity_pooled),
+        max_lower: pick(vm.max_purity_lower_by_d, c.max_purity_lower)
+    };
 }
 
 function updateDashboard(payload) {
     currentPayload = payload;
     const m = payload.metrics;
+    const cert = payload.certificate || {};
+    activeTau = (cert.tau !== undefined && cert.tau !== null) ? cert.tau : 0.90;
+    activeAlpha = (cert.alpha !== undefined && cert.alpha !== null) ? cert.alpha : 0.05;
+    activeRule = cert.rule || 'purity';
+    activeMinSamples = (cert.min_samples !== undefined && cert.min_samples !== null)
+        ? cert.min_samples : 1;
+    activePrevalence = (payload.centers && payload.centers.prevalence !== undefined)
+        ? payload.centers.prevalence : 0.0;
+    syncColorScaleFromInputs();
 
     currentRenderedDim = null; // Force full plot re-render with new axis titles
 
@@ -546,7 +968,22 @@ function updateDashboard(payload) {
         if (sliceCtrl) sliceCtrl.style.display = 'none';
     }
 
-    document.getElementById('totalSamplesVal').innerText = (payload.total_samples || (payload.x ? payload.x.length : 0)).toLocaleString();
+    // v2.2: `total_samples` is the N every reported statistic is computed on;
+    // `rendered_samples` is how many of those rows are drawn as spheres. The
+    // two were silently conflated before, so the panel showed 10 000 beside
+    // numbers computed on 32 561 rows.
+    const nStat = payload.total_samples || (payload.x ? payload.x.length : 0);
+    const nDrawn = (payload.rendered_samples !== undefined && payload.rendered_samples !== null)
+        ? payload.rendered_samples : nStat;
+    const samplesEl = document.getElementById('totalSamplesVal');
+    if (samplesEl) {
+        samplesEl.innerText = (nDrawn < nStat)
+            ? `${nStat.toLocaleString()} (${nDrawn.toLocaleString()} drawn)`
+            : nStat.toLocaleString();
+        samplesEl.title = (nDrawn < nStat)
+            ? `All ${nStat.toLocaleString()} rows are used for every statistic and every cell colour; ${nDrawn.toLocaleString()} of them are drawn as individual spheres.`
+            : 'Every row is both counted and drawn.';
+    }
 
     // Render Dimension Switcher toggle buttons (within-branch collapse/split, 1..branch.metrics.d)
     renderDimensionButtons(payload);
@@ -591,20 +1028,42 @@ function renderDimensionButtons(payload) {
 
 function updateHUDForDimension(d) {
     if (!currentPayload || !currentPayload.metrics) return;
-    const m = currentPayload.metrics;
 
-    // MI/NMI are the BRANCH's own aggregate statistics (computed once, for
-    // its full dimensionality m.d) — not recomputed per within-branch
-    // collapsed view, so they stay fixed as `d` changes via setDimensionality().
-    const miEl = document.getElementById('val-mi');
-    if (miEl) miEl.innerText = `${m.mi.toFixed(3)} bits`;
-
-    const nmiEl = document.getElementById('val-nmi');
-    if (nmiEl) nmiEl.innerText = `${(m.nmi * 100).toFixed(1)}%`;
-
-    const viewEl = document.getElementById('val-viewdim');
-    if (viewEl) {
-        viewEl.innerText = (d === m.d) ? `${d}D (full branch)` : `${d}D (collapsed from ${m.d}D)`;
+    // HUD strip intentionally shows only Coverage and Centres (trimmed from
+    // 7 chips on user request: Purity, MI raw/E₀, U_adj, the raw p-value
+    // chip and the "Viewing" dimensionality label were judged clutter for
+    // this always-visible strip). renderBranchSelector's per-branch cards
+    // went through the same cleanup in the same pass, so MI/U_adj/p are no
+    // longer shown there either -- there is no remaining place in this UI
+    // that surfaces them. Which `d` Coverage/Centres refer to is no longer
+    // stated in text next to them; it is still visible from
+    // dimButtonsGroup's active-button state, just not textually paired
+    // with the values anymore — a deliberate trade the user accepted.
+    const cov = formatCoverage(currentPayload, d);
+    const sc = currentPayload.search_centers;
+    const covEl = document.getElementById('val-coverage');
+    if (covEl) {
+        if (cov.coverage === undefined || cov.coverage === null) {
+            covEl.innerText = 'n/a';
+            covEl.style.color = 'var(--text-dim)';
+            covEl.title = 'The target has more than two values and no positive value was declared, so cell purity is undefined.';
+        } else if (sc && sc.undetermined_reason) {
+            covEl.innerText = 'undetermined';
+            covEl.style.color = 'var(--text-dim)';
+            covEl.title = sc.undetermined_reason;
+        } else {
+            covEl.innerText = `${(cov.coverage * 100).toFixed(1)}%`;
+            covEl.style.color = cov.coverage > 0 ? 'var(--green)' : 'var(--text-dim)';
+            covEl.title = 'Share of all target-value samples that fall inside certified centres.';
+        }
+    }
+    const kEl = document.getElementById('val-centers');
+    if (kEl) {
+        kEl.innerText = (cov.n_centers === undefined || cov.n_centers === null)
+            ? 'n/a' : String(cov.n_centers);
+        kEl.title = (cov.n_centers === 0 && cov.max_lower !== undefined && cov.max_lower !== null)
+            ? `No cell reaches the certified purity floor. The highest lower bound anywhere in this view is ${(cov.max_lower * 100).toFixed(1)}%, against tau = ${(activeTau * 100).toFixed(0)}%.`
+            : 'Number of cells certified to be at least tau pure in the target value. Fewer is better at equal coverage.';
     }
 
     updateAxesList(d);
@@ -798,6 +1257,7 @@ function buildPlotData(payload, dim, sliceIndex) {
     let zCoords = g ? g.z : payload.grid_z;
 
     let currentPurity = g ? g.purity : payload.grid_purity;
+    let currentCertified = g ? g.certified : payload.grid_certified;
     let currentSizes = g ? g.sizes : payload.grid_sizes;
     let currentHover = g ? g.hover_text : payload.grid_hover_text;
     let currentCustomdata = g ? g.customdata : payload.grid_customdata;
@@ -857,8 +1317,10 @@ function buildPlotData(payload, dim, sliceIndex) {
     for (let i = 0; i < totalPts; i++) {
         const p = (currentPurity && currentPurity[i] !== undefined) ? currentPurity[i] : 0.5;
         const n_c = (currentSizes && currentSizes[i] !== undefined) ? currentSizes[i] : 1;
+        const isCenter = (currentCertified && currentCertified[i] !== undefined)
+            ? currentCertified[i] : undefined;
 
-        const colorIndex = getColorIndexForPurity(p);
+        const colorIndex = getColorIndexForCell(p, isCenter, activeTau, readRedTo());
 
         fx.push(xCoords[i]);
         fy.push(yCoords[i]);

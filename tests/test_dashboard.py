@@ -211,8 +211,11 @@ def test_branches_data_keyed_by_dimensionality_and_matches_dashboard_data():
 
     for d_str, payload in branches_data.items():
         assert payload["metrics"]["d"] == int(d_str)
-        # v2.0 metrics shape: exactly {d, mi, nmi} -- no scenario/vir/history.
-        assert set(payload["metrics"].keys()) == {"d", "mi", "nmi"}
+        # v2.1 metrics shape -- no scenario/vir/history, and no `nmi`.
+        assert set(payload["metrics"].keys()) == {
+            "d", "mi", "mi_null", "mi_adj", "u_adj", "h_target",
+            "p_value", "p_value_familywise", "significant",
+        }
 
 
 def test_branches_are_independent_not_required_to_be_nested():
@@ -272,7 +275,13 @@ def test_removed_v1_parameters_are_rejected():
 def test_export_full_dashboard_signature_has_no_v1_parameters():
     sig = inspect.signature(vsf.export_full_dashboard)
     params = set(sig.parameters.keys())
-    assert params == {"df", "target", "criterion", "translations", "title", "max_d"}
+    # v2.2 adds `center_spec`: a static export cannot be re-certified after
+    # the fact, so the certificate it was built under is an explicit
+    # parameter and is stated in the exported page's own legend.
+    assert params == {
+        "df", "target", "criterion", "translations", "title", "max_d",
+        "center_spec",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -315,8 +324,8 @@ def test_select_branch_js_logic():
       {js_source}
 
       BRANCHES_DATA = {{
-        '1': {{ metrics: {{ d: 1, mi: 0.1, nmi: 0.1 }}, slice_axis: null, target_name: 'A' }},
-        '2': {{ metrics: {{ d: 2, mi: 0.9, nmi: 0.9 }}, slice_axis: null, target_name: 'B' }},
+        '1': {{ metrics: {{ d: 1, mi: 0.1, mi_null: 0.01, mi_adj: 0.09, u_adj: 0.1, p_value: 0.5, p_value_familywise: null }}, slice_axis: null, target_name: 'A' }},
+        '2': {{ metrics: {{ d: 2, mi: 0.9, mi_null: 0.02, mi_adj: 0.88, u_adj: 0.9, p_value: 0.001, p_value_familywise: null }}, slice_axis: null, target_name: 'B' }},
       }};
       let updateDashboardCallCount = 0;
       updateDashboard = function(payload) {{ updateDashboardCallCount++; }};

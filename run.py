@@ -4,12 +4,11 @@ Interactive launcher for VSF v2.0.
 import sys
 import pandas as pd
 import vsf
-from examples.mushroom_demo import MUSHROOM_TRANSLATIONS
+
 
 DATASETS = {
-    "1": ("data/adult_census.csv", "Adult Census Income (US Census, 32,561 records -> income >50K)", None),
-    "2": ("data/bank_marketing_cat.csv", "Bank Marketing Campaign (Portuguese Bank, 41,188 client records -> deposit conversion)", None),
-    "3": ("data/mushrooms.csv", "Mushroom Dataset (UCI, 8,124 records -> edibility)", MUSHROOM_TRANSLATIONS),
+    "1": ("data/mushrooms.csv", "Mushroom Dataset (UCI, 8,124 records -> edibility)", None),
+    "2": ("data/adult_census.csv", "Adult Census Income (US Census, 32,561 records -> income >50K)", None),
 }
 
 
