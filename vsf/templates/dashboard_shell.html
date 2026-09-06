@@ -1,6 +1,6 @@
 <!--
   vsf.dashboard body shell — v2.0 "Clean Core"
-  (see Project_Master_Document.md Section 0 / UI_Functional_Spec.md).
+  (see Project_Master_Document.md).
 
   Deliberate cuts relative to v1.0 — all direct product decisions, not
   oversights (see the master doc's revision table for the full list):
@@ -22,7 +22,7 @@
       part of this export and stays out of scope.
 
   What's new: the "Branches" panel below is the Branch Selector
-  (UI_Functional_Spec.md Section 3) — up to 4 independently-discovered
+  — up to 4 independently-discovered
   dimensionalities, each its own feature subset, switched INSTANTLY
   (dashboard.js's selectBranch — no animation, since features may change
   completely). Within one selected branch, the "Dimensionality" buttons in
@@ -52,18 +52,18 @@
     <!-- Master Panel: Branch Selector + Dataset Columns catalog -->
     <aside class="catalog-sidebar">
 
-        <!-- Branch Selector (UI_Functional_Spec.md Section 3): up to 4
+        <!-- Branch Selector: up to 4
              independently-discovered branches, one per dimensionality
              1D-4D. Clicking one is an instant swap (dashboard.js's
              selectBranch) — see the file-level comment above. -->
-        <div class="main-acc-header open" id="headerBranches" onclick="toggleMainAcc('Branches')">
+        <div class="main-acc-header open" id="headerBranches" role="button" tabindex="0" aria-expanded="true" aria-controls="contentBranches" onclick="toggleMainAcc('Branches')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();this.click();}">
             <div class="main-acc-title">🌿 Branches</div>
             <div class="main-acc-icon">▶</div>
         </div>
         <div class="main-acc-content open" id="contentBranches">
             <div class="catalog-subtitle" style="padding: 0.25rem 1.5rem 0.5rem 1.5rem;">
-                Independent Branch Discovery — one exhaustive search per dimensionality, ranked by raw
-                mutual information (no significance test, no single "optimal" d).
+                Independent Branch Discovery — one exhaustive search per dimensionality, ranked by
+                coverage of the target value inside certified centres (no single "optimal" d).
             </div>
 
             <div id="branchesAccordion" class="catalog-accordion" style="padding: 0.5rem 1rem;">
@@ -75,7 +75,7 @@
              exactly one target/criterion — there is no server to refit
              against, so browsing this tree never changes the visualizer
              (see dashboard.js's populateCatalog). -->
-        <div class="main-acc-header" id="headerCatalog" onclick="toggleMainAcc('Catalog')">
+        <div class="main-acc-header" id="headerCatalog" role="button" tabindex="0" aria-expanded="false" aria-controls="contentCatalog" onclick="toggleMainAcc('Catalog')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();this.click();}">
             <div class="main-acc-title">📚 Dataset Columns</div>
             <div class="main-acc-icon">▶</div>
         </div>
@@ -110,15 +110,6 @@
                         <span class="metric-label">Centres:</span>
                         <strong id="val-centers" style="color: var(--green); font-size: 1.05rem;">-</strong>
                         <span class="mi-caption" id="val-purity">purity —</span>
-                    </div>
-                    <div class="metric-chip" style="opacity: 0.72;" title="DIAGNOSTIC. Raw plug-in mutual information I(Z̃; X̃_S) in bits, shown against the noise floor E₀[MI] — the value this same estimator returns when the target is independent of these axes. Raw MI is NOT comparable across branches of different dimensionality: its bias grows with the number of occupied cells.">
-                        <span class="metric-label">MI (raw):</span>
-                        <strong id="val-mi" style="color: var(--accent-cyan); font-size: 1rem;">-</strong>
-                        <span class="mi-caption" id="val-mi-null">noise floor —</span>
-                    </div>
-                    <div class="metric-chip" style="opacity: 0.72;" title="DIAGNOSTIC, not the headline. U_adj = (MI − E₀[MI]) / (H(Z) − E₀[MI]) is the bias-corrected share of the TARGET's entropy that these axes resolve, and it answers 'does an association exist', not 'can a centre be isolated'. 0% on independent data at any class balance; 100% on a deterministic relation, including a micro-class. This replaced NMI_min in v2.1 — NMI_min reads ~66% on provably independent data when the target class is rare.">
-                        <span class="metric-label">U<sub>adj</sub>:</span>
-                        <strong id="val-u-adj" style="color: var(--green); font-size: 1rem;">-</strong>
                     </div>
                     <div class="metric-chip" id="chip-significance" title="Permutation p-value of this branch. Unless it is marked 'family-corrected', it does NOT account for the branch having been selected as the best of C(M,1..4) candidates, and is anti-conservative.">
                         <span class="metric-label">p:</span>

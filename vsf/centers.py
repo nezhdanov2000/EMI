@@ -1,16 +1,18 @@
 """
 VSF Certified Discrete Centers: the decision-theoretic reporting layer.
 
-Why this module exists (read before touching `u_adj`)
+Why this module exists
 -----------------------------------------------------------------------
-`vsf.metrics.adjusted_uncertainty_coefficient` answers "does an association
-exist between Z and the cell partition". The product this package implements
-answers a strictly narrower question: "which cells of the displayed lattice
-are almost purely the target value, and how much of the target do they
-account for". Those two questions have different answers, and on a rare
-target they have OPPOSITE answers.
+The now-deleted `vsf.metrics.adjusted_uncertainty_coefficient` (U_adj)
+answered "does an association exist between Z and the cell partition". The
+product this package implements answers a strictly narrower question:
+"which cells of the displayed lattice are almost purely the target value,
+and how much of the target do they account for". Those two questions have
+different answers, and on a rare target they have OPPOSITE answers -- which
+is the reason this module exists, even though the MI/U_adj path it was
+built to correct is itself gone now too (v2.3, see `vsf.avr`'s docstring).
 
-Worked example, reproducible from `data/adult_census.csv` (N = 32 561,
+Worked example, reproducible from the UCI Adult / Census Income dataset (N = 32 561,
 Z = [occupation == "Armed-Forces"], 9 positives, prevalence 0.0276 %):
 
     branch                             MI      E_0     U_adj
@@ -27,9 +29,12 @@ zero uncertainty. In that same branch:
   * 8 of the 9 positives sit in ONE cell of 330 samples.
 
 No colour threshold can make that display green, and the headline "41.3 %"
-tells the analyst the opposite. U_adj is retained (it is the right statistic
-for detection, and `discover_branches` still ranks by MI_adj by default) but
-it is no longer the reportable headline; the quantities defined here are.
+tells the analyst the opposite. This was the case for retaining U_adj as a
+detection diagnostic even after coverage became the headline in v2.2 -- but
+v2.3 removed U_adj (and MI_adj branch ranking) from the codebase entirely
+(see `vsf.avr`'s module docstring): `discover_branches` now ranks only by
+the quantities defined in this module, unconditionally, with no MI-based
+fallback left to fall back to.
 
 What a "discrete centre" is
 -----------------------------------------------------------------------
@@ -124,8 +129,7 @@ a publishable claim:
     over-resolved.
   * `coverage_null` / `coverage_p_value` - the permutation distribution of
     the coverage statistic itself, drawn exactly from the multivariate
-    hypergeometric law of the cell counts given both margins (the same null
-    that underlies `vsf.metrics.expected_mutual_information_bits`). Because
+    hypergeometric law of the cell counts given both margins. Because
     the branch reported by `vsf.avr.discover_branches` is an argmax over a
     candidate family, `familywise_max_coverage_null` gives the
     look-elsewhere-corrected version, which is the one a paper must quote.
@@ -207,7 +211,7 @@ def _log_beta(a: np.ndarray, b: np.ndarray) -> np.ndarray:
 
 
 def _betacf(a: np.ndarray, b: np.ndarray, x: np.ndarray,
-            max_iter: int = 400, eps: float = 3e-16, check_every: int = 16) -> np.ndarray:
+            max_iter: int = 400, eps: float = 3e-16, check_every: int = 8) -> np.ndarray:
     """
     Continued-fraction expansion of the incomplete beta function, evaluated by
     the modified Lentz algorithm (Press et al., Numerical Recipes 3rd ed.,
@@ -216,7 +220,34 @@ def _betacf(a: np.ndarray, b: np.ndarray, x: np.ndarray,
     Converges only for x < (a + 1) / (a + b + 2); `_betainc` applies the
     symmetry transform before calling this, and does not rely on the caller
     to have done so.
+
+    Active-set evaluation: every `check_every` iterations the elements whose
+    last multiplicative correction `delta` is within `eps` of 1 are written to
+    the output and REMOVED from the working arrays, so the loop's cost is
+    driven by the sum of per-element iteration counts rather than by the
+    slowest element times the whole array. On a real lattice the median cell
+    converges in 2-5 iterations while a handful of large cells (n >= 1000,
+    x near the mean) need hundreds; without compaction every cell paid for
+    those hundreds. Measured on a 41 188-row branch: 5.8x on
+    `purity_bounds`, with the returned bounds unchanged. A converged element
+    stops being multiplied by further `delta` factors that are all within
+    `eps` (i.e. within about one ulp) of 1, so the value it is left with can
+    differ from the fully-iterated one by at most that rounding.
     """
+    a = np.asarray(a, dtype=np.float64).ravel()
+    b = np.asarray(b, dtype=np.float64).ravel()
+    x = np.asarray(x, dtype=np.float64).ravel()
+    if x.shape[0] == 1:
+        # A single element pays ~30 us of ufunc dispatch per iteration in the
+        # array loop below and nothing for its vectorisation; the same IEEE
+        # arithmetic in plain Python floats is two orders of magnitude
+        # cheaper and produces the same doubles.
+        return np.array(
+            [_betacf_scalar(float(a[0]), float(b[0]), float(x[0]), max_iter, eps, check_every)],
+            dtype=np.float64,
+        )
+    out = np.empty(x.shape, dtype=np.float64)
+    active = np.arange(x.shape[0], dtype=np.int64)
     qab = a + b
     qap = a + 1.0
     qam = a - 1.0
@@ -242,14 +273,54 @@ def _betacf(a: np.ndarray, b: np.ndarray, x: np.ndarray,
         d = 1.0 / d
         delta = d * c
         h = h * delta
-        # The convergence test is a full reduction over the whole array and
-        # the loop is driven by its slowest element, so testing every
-        # iteration costs more than the iterations it saves: profiling a
-        # single 4-D payload showed ~450 000 `np.all` calls accounting for a
-        # tenth of the total. Testing every 16th iteration keeps the same
-        # termination point to within 15 iterations of a converged fraction,
-        # whose terms are already below `eps`.
-        if m % check_every == 0 and np.all(np.abs(delta - 1.0) < eps):
+        if m % check_every == 0:
+            converged = np.abs(delta - 1.0) < eps
+            if np.any(converged):
+                out[active[converged]] = h[converged]
+                keep = ~converged
+                if not np.any(keep):
+                    return out
+                active = active[keep]
+                a, b, x = a[keep], b[keep], x[keep]
+                qab, qap, qam = qab[keep], qap[keep], qam[keep]
+                c, d, h = c[keep], d[keep], h[keep]
+    out[active] = h
+    return out
+
+
+def _betacf_scalar(a: float, b: float, x: float, max_iter: int, eps: float, check_every: int) -> float:
+    """`_betacf` for one element, operation for operation, in Python floats."""
+    qab = a + b
+    qap = a + 1.0
+    qam = a - 1.0
+    c = 1.0
+    d = 1.0 - qab * x / qap
+    if abs(d) < _TINY:
+        d = _TINY
+    d = 1.0 / d
+    h = d
+    for m in range(1, max_iter + 1):
+        m2 = 2.0 * m
+        aa = m * (b - m) * x / ((qam + m2) * (a + m2))
+        d = 1.0 + aa * d
+        if abs(d) < _TINY:
+            d = _TINY
+        c = 1.0 + aa / c
+        if abs(c) < _TINY:
+            c = _TINY
+        d = 1.0 / d
+        h = h * d * c
+        aa = -(a + m) * (qab + m) * x / ((a + m2) * (qap + m2))
+        d = 1.0 + aa * d
+        if abs(d) < _TINY:
+            d = _TINY
+        c = 1.0 + aa / c
+        if abs(c) < _TINY:
+            c = _TINY
+        d = 1.0 / d
+        delta = d * c
+        h = h * delta
+        if m % check_every == 0 and abs(delta - 1.0) < eps:
             break
     return h
 
@@ -439,10 +510,57 @@ def purity_bounds(
         empty = np.zeros(shape, dtype=np.float64)
         return empty, empty.copy()
     uniq, inverse = np.unique(flat, axis=0, return_inverse=True)
-    lower = clopper_pearson_lower(uniq[:, 0], uniq[:, 1], alpha)
-    upper = clopper_pearson_upper(uniq[:, 0], uniq[:, 1], alpha)
+    lower, upper = _cached_clopper_pearson(uniq[:, 0], uniq[:, 1], alpha)
     inverse = inverse.ravel()
     return lower[inverse].reshape(shape), upper[inverse].reshape(shape)
+
+
+#: Process-wide memo of Clopper-Pearson (lower, upper) pairs, keyed by alpha
+#: and then by (k, n). The bounds are a pure function of three numbers, and
+#: one analysis asks for the same (k, n, alpha) many times over: the renderer
+#: recomputes the bounds per view dimensionality, per 4-D slice and per
+#: branch, and the branches' prefix views share most of their cells.
+#: Measured on the 41 188-row bank-marketing branch set: 7 843 cell bounds
+#: requested, 1 681 distinct. Bounded by `_CP_CACHE_MAX_ENTRIES`; when
+#: exceeded the whole cache is dropped rather than evicted piecemeal.
+_CP_CACHE: dict[float, dict[tuple[int, int], tuple[float, float]]] = {}
+_CP_CACHE_MAX_ENTRIES: Final[int] = 2_000_000
+_cp_cache_size = 0
+
+
+def _cached_clopper_pearson(
+    k: np.ndarray, n: np.ndarray, alpha: float
+) -> Tuple[np.ndarray, np.ndarray]:
+    """(lower, upper) Clopper-Pearson bounds for distinct (k, n) rows, memoised."""
+    global _cp_cache_size
+    k_arr = np.asarray(k, dtype=np.int64).ravel()
+    n_arr = np.asarray(n, dtype=np.int64).ravel()
+    table = _CP_CACHE.setdefault(float(alpha), {})
+    lower = np.empty(k_arr.shape, dtype=np.float64)
+    upper = np.empty(k_arr.shape, dtype=np.float64)
+    missing: list[int] = []
+    for i, (kk, nn) in enumerate(zip(k_arr.tolist(), n_arr.tolist())):
+        hit = table.get((kk, nn))
+        if hit is None:
+            missing.append(i)
+        else:
+            lower[i], upper[i] = hit
+    if missing:
+        idx = np.asarray(missing, dtype=np.int64)
+        lo = clopper_pearson_lower(k_arr[idx], n_arr[idx], alpha)
+        up = clopper_pearson_upper(k_arr[idx], n_arr[idx], alpha)
+        lower[idx] = lo
+        upper[idx] = up
+        if _cp_cache_size + idx.shape[0] > _CP_CACHE_MAX_ENTRIES:
+            _CP_CACHE.clear()
+            _cp_cache_size = 0
+            table = _CP_CACHE.setdefault(float(alpha), {})
+        for kk, nn, l, u in zip(
+            k_arr[idx].tolist(), n_arr[idx].tolist(), lo.tolist(), up.tolist()
+        ):
+            table[(kk, nn)] = (l, u)
+        _cp_cache_size += idx.shape[0]
+    return lower, upper
 
 
 # --------------------------------------------------------------------------
@@ -571,25 +689,60 @@ def min_successes_to_certify(
         raise ValueError(f"alpha_eff must be in (0, 1), got {alpha_eff}")
     n_arr = np.asarray(n_values, dtype=np.int64)
     out = np.zeros(n_arr.shape, dtype=np.int64)
-    log_tau = float(np.log(tau))
-    log_1mtau = float(np.log1p(-tau))
     uniq = np.unique(n_arr[n_arr > 0])
-    table: dict[int, int] = {}
-    for n in uniq.tolist():
-        k = np.arange(n + 1, dtype=np.float64)
-        log_choose = (
-            lgamma(n + 1.0)
-            - np.array([lgamma(v + 1.0) for v in k.tolist()])
-            - np.array([lgamma(n - v + 1.0) for v in k.tolist()])
-        )
-        pmf = np.exp(log_choose + k * log_tau + (n - k) * log_1mtau)
-        survival = np.cumsum(pmf[::-1])[::-1]
-        hit = np.nonzero(survival <= alpha_eff)[0]
-        table[int(n)] = int(hit[0]) if hit.size > 0 else int(n) + 1
-    for n, k_min in table.items():
-        out[n_arr == n] = k_min
-    out[n_arr <= 0] = 1  # an empty cell holds no successes and never certifies
+    if uniq.size == 0:
+        out[n_arr <= 0] = 1
+        return out
+    memo = _CERTIFY_MEMO.setdefault((float(tau), float(alpha_eff)), {})
+    missing = [n for n in uniq.tolist() if n not in memo]
+    if missing:
+        lg = _lgamma_table(int(max(missing)) + 1)
+        log_tau = float(np.log(tau))
+        log_1mtau = float(np.log1p(-tau))
+        for n in missing:
+            k = np.arange(n + 1, dtype=np.float64)
+            k_int = np.arange(n + 1, dtype=np.int64)
+            # lgamma(n + 1) - lgamma(k + 1) - lgamma(n - k + 1), read from
+            # the shared table: the same `math.lgamma` doubles the previous
+            # per-element list comprehensions produced, without 2(n + 1)
+            # Python calls per distinct cell size.
+            log_choose = lg[n + 1] - lg[k_int + 1] - lg[n - k_int + 1]
+            pmf = np.exp(log_choose + k * log_tau + (n - k) * log_1mtau)
+            survival = np.cumsum(pmf[::-1])[::-1]
+            hit = np.nonzero(survival <= alpha_eff)[0]
+            memo[int(n)] = int(hit[0]) if hit.size > 0 else int(n) + 1
+        if len(_CERTIFY_MEMO) > 4096:  # bound the number of (tau, alpha) keys
+            _CERTIFY_MEMO.clear()
+            _CERTIFY_MEMO[(float(tau), float(alpha_eff))] = memo
+    lookup = np.fromiter((memo[n] for n in uniq.tolist()), dtype=np.int64, count=uniq.size)
+    positive = n_arr > 0
+    out[positive] = lookup[np.searchsorted(uniq, n_arr[positive])]
+    out[~positive] = 1  # an empty cell holds no successes and never certifies
     return out
+
+
+#: `min_successes_to_certify` thresholds, keyed by (tau, alpha_eff) and then
+#: by cell size. The threshold is a pure function of those three numbers,
+#: and the search asks for it once per candidate at the same alpha_eff for
+#: every candidate with the same occupied-cell count, while cross-validation
+#: asks for it once per fold.
+_CERTIFY_MEMO: dict[tuple[float, float], dict[int, int]] = {}
+
+_LGAMMA_TABLE: np.ndarray = np.zeros(0, dtype=np.float64)
+
+
+def _lgamma_table(n_max: int) -> np.ndarray:
+    """`math.lgamma(i)` for i = 0 .. n_max + 1 (entry 0 is unused, set to inf)."""
+    global _LGAMMA_TABLE
+    if _LGAMMA_TABLE.shape[0] < n_max + 2:
+        size = max(n_max + 2, 2 * _LGAMMA_TABLE.shape[0], 1024)
+        table = np.empty(size, dtype=np.float64)
+        table[0] = np.inf
+        table[1:] = np.fromiter(
+            (lgamma(float(i)) for i in range(1, size)), dtype=np.float64, count=size - 1
+        )
+        _LGAMMA_TABLE = table
+    return _LGAMMA_TABLE
 
 
 def min_successes_to_select(
@@ -835,6 +988,42 @@ def _coverage_from_counts(
     return coverage, mass, purity
 
 
+def center_summary(
+    z_binary: np.ndarray,
+    cell_codes: np.ndarray,
+    n_cells: Optional[int] = None,
+    spec: CenterSpec = CenterSpec(),
+) -> Tuple[float, int, float]:
+    """
+    (coverage, n_centers, pooled purity) of one (binary target, cell
+    partition) pair - the three in-sample scalars of `center_report`, from
+    the same `_cell_counts` / `select_centers` / `_coverage_from_counts`
+    chain, without the per-cell confidence bounds, the centre tuple, the
+    cross-validation or the permutation null. For callers that only need
+    the scalars (`vsf.avr`'s per-branch prefix series) the bounds were the
+    whole cost: 40 continued-fraction bisections per distinct cell shape,
+    discarded on return.
+    """
+    z = np.asarray(z_binary).ravel().astype(np.int8)
+    codes = np.asarray(cell_codes).ravel().astype(np.int64)
+    if z.shape[0] != codes.shape[0]:
+        raise ValueError(f"sample count mismatch: {z.shape[0]} vs {codes.shape[0]}")
+    total_cells = int(codes.max()) + 1 if codes.size > 0 else 0
+    if n_cells is None:
+        n_cells = total_cells
+    elif n_cells < total_cells:
+        raise ValueError(f"n_cells={n_cells} is smaller than the observed code max")
+    n_samples = int(z.shape[0])
+    n_positive = int(z.sum())
+    k_cell, n_cell = _cell_counts(z, codes, n_cells)
+    occupied = int(np.count_nonzero(n_cell > 0))
+    mask, _ = select_centers(k_cell, n_cell, spec, occupied)
+    coverage, _, purity_pooled = _coverage_from_counts(
+        k_cell, n_cell, mask, n_positive, n_samples
+    )
+    return coverage, int(mask.sum()), purity_pooled
+
+
 def center_report(
     z_binary: np.ndarray,
     cell_codes: np.ndarray,
@@ -844,6 +1033,7 @@ def center_report(
     n_repeats: int = 5,
     n_permutations: int = 0,
     random_state: Optional[int] = 0,
+    cell_bounds: bool = True,
 ) -> CenterReport:
     """
     Full centre report for one (binary target, cell partition) pair.
@@ -857,6 +1047,16 @@ def center_report(
     `n_permutations > 0` attaches the coverage null and its uncorrected
     p-value; for a discovered branch use `familywise_max_coverage_null`
     instead, for the same look-elsewhere reason that applies to MI_adj.
+
+    `cell_bounds=False` skips the per-cell Clopper-Pearson intervals, which
+    are the dominant cost of a report on a fine lattice and which a bulk
+    consumer (the Global Pattern Scan) never reads. Every selection decision,
+    coverage, K, purity, the two pooled lower bounds, the cross-validated
+    estimate and the permutation null are unaffected - certification never
+    goes through the bounds (see `certified_centers`). What changes: each
+    `Center.purity_lower` / `purity_upper` reads 0.0 / 1.0,
+    `max_purity_lower` is 0.0, and `centers` is ordered by descending point
+    purity (then cell index) instead of by descending lower bound.
     """
     z = np.asarray(z_binary).ravel().astype(np.int8)
     codes = np.asarray(cell_codes).ravel().astype(np.int64)
@@ -877,9 +1077,15 @@ def center_report(
     occupied = int(np.count_nonzero(n_cell > 0))
 
     mask, alpha_eff = select_centers(k_cell, n_cell, spec, occupied)
-    lower, upper = purity_bounds(k_cell, n_cell, alpha_eff, spec.method)
     with np.errstate(invalid="ignore", divide="ignore"):
         purity_point = np.where(n_cell > 0, k_cell / np.maximum(n_cell, 1), 0.0)
+    if cell_bounds:
+        lower, upper = purity_bounds(k_cell, n_cell, alpha_eff, spec.method)
+        order = np.argsort(-(lower * mask))
+    else:
+        lower = np.zeros(k_cell.shape, dtype=np.float64)
+        upper = np.ones(k_cell.shape, dtype=np.float64)
+        order = np.argsort(-(purity_point * mask), kind="stable")
 
     coverage, mass, purity_pooled = _coverage_from_counts(
         k_cell, n_cell, mask, n_positive, n_samples
@@ -887,13 +1093,14 @@ def center_report(
     k_sel = int(k_cell[mask].sum())
     n_sel = int(n_cell[mask].sum())
     coverage_lower = (
-        float(clopper_pearson_lower(k_sel, n_positive, spec.alpha)) if n_positive > 0 else 0.0
+        float(_cached_clopper_pearson([k_sel], [n_positive], spec.alpha)[0][0])
+        if n_positive > 0 else 0.0
     )
     purity_pooled_lower = (
-        float(clopper_pearson_lower(k_sel, n_sel, spec.alpha)) if n_sel > 0 else 0.0
+        float(_cached_clopper_pearson([k_sel], [n_sel], spec.alpha)[0][0])
+        if n_sel > 0 else 0.0
     )
 
-    order = np.argsort(-(lower * mask))
     centers = tuple(
         Center(
             cell=int(c),
@@ -946,7 +1153,7 @@ def center_report(
         purity_pooled_lower=purity_pooled_lower,
         lift=float(purity_pooled / prevalence) if prevalence > _EPS else 0.0,
         max_purity_point=float(purity_point.max()) if purity_point.size else 0.0,
-        max_purity_lower=float(lower.max()) if lower.size else 0.0,
+        max_purity_lower=float(lower.max()) if (lower.size and cell_bounds) else 0.0,
         coverage_cv=cv,
         coverage_null_mean=null_mean,
         coverage_p_value=p_value,
@@ -1151,7 +1358,7 @@ def coverage_null(
     Conditional on the cell sizes and the total number of positives, the
     permutation null of the per-cell positive counts is exactly the
     multivariate hypergeometric law - the same null underlying Fisher's exact
-    test and `vsf.metrics.expected_mutual_information_bits`. Sampling it
+    test. Sampling it
     directly is exact, not an approximation of permutation, and costs O(C)
     per replicate instead of O(N).
 
@@ -1282,8 +1489,9 @@ def coverage_score(
     spec: CenterSpec = CenterSpec(),
 ) -> Tuple[float, float, float, float]:
     """
-    Ranking key for `vsf.avr.discover_branches(objective="coverage")`:
-    `(coverage, -n_centers, -mass, max_purity_lower)`, compared
+    Ranking key for `vsf.avr.discover_branches` (v2.3: the only ranking
+    there is, not an `objective=` choice -- see `vsf.avr`'s module
+    docstring): `(coverage, -n_centers, -mass, max_purity_lower)`, compared
     lexicographically by `max`.
 
     Rationale for the tie-breaks, in the stated product order: capture as
@@ -1317,8 +1525,10 @@ def coverage_score(
     k_cell, n_cell = _cell_counts(z, codes, n_cells)
     mask, alpha_eff = select_centers(k_cell, n_cell, spec)
     coverage, mass, _ = _coverage_from_counts(k_cell, n_cell, mask, n_positive, n_samples)
-    # Wilson, not Clopper-Pearson, for the tie-break ONLY. This function is
-    # evaluated once per candidate subset inside the exhaustive search --
+    # Wilson, not Clopper-Pearson, for the tie-break ONLY. This key is
+    # evaluated once per candidate subset inside the exhaustive search
+    # (`vsf.avr._exhaustive_search` computes the same tuple from a fused
+    # contingency table and only evaluates this fourth component on ties) --
     # C(M,1) + ... + C(M,4) times per target, and once per (column, value)
     # pair in a Global Pattern Scan -- and the Clopper-Pearson bound costs an
     # 80-step bisection over a continued fraction per cell, which measured

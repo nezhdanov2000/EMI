@@ -1,185 +1,103 @@
 """
-VSF PMD Module: Perceptually-Matched Discretization
-Implements rate-distortion optimal quantization, visual channel limits,
-and grid capacity protection against Miller-Madow bias.
+VSF PMD: categorical encoding and grid-capacity control.
 
-Note on `check_grid_capacity`: the prod(k_j) <= N / 10 ceiling bounds the
-VARIANCE of the plug-in entropy estimates but does not remove their BIAS. At
-the ceiling itself (N = 32 561 -> 3 256 cells, ~10 samples per cell) the
-expected plug-in mutual information between a binary target and an
-independently generated feature grid is ~0.08 bits. That floor is subtracted
-explicitly by `vsf.metrics`; it is NOT small enough to ignore, and any number
-taken straight from `vsf.math` at this grid density is dominated by it.
+VSF is a CATEGORICAL framework. Every feature column is a set of discrete
+categories, and every value in it -- string, boolean, integer or float -- is
+one category, encoded by its position in the column's sorted distinct
+values. There is no binning, no continuous-feature model and no
+rate-distortion machinery here: a numeric column is not "quantized into k
+intervals", it is read as the finite set of values it actually contains.
+
+What this module used to do, and why it is gone
+-----------------------------------------------
+`discretize_feature` used to branch on dtype: strings and booleans were
+label-encoded (as above), while numeric columns went through a
+Freedman-Diaconis bin count, quantile cut points, per-channel level caps
+(`CHANNEL_LIMITS`), and a rate-distortion "distortion" figure
+`D_j = 1 - I(X_discrete; X_fine) / H(X_fine)` computed with the plug-in
+mutual information of `vsf.metrics`. That was the last consumer of mutual
+information anywhere in this package.
+
+It was removed rather than kept behind a flag, for three reasons, in the
+order they matter:
+
+1.  It contradicted the product. A discrete centre is a statement about a
+    combination of category values; an interval boundary chosen from the
+    data by a density heuristic is not a category, and an axis tick reading
+    "(3.7, 4.1]" is not a value the analyst can act on.
+2.  Nothing consumed its output. `D_j` was computed for every column on
+    every analysis and discarded at every call site
+    (`X_discrete, bin_counts, _ = discretize_dataset(...)` in `vsf.avr`).
+    It was pure cost.
+3.  It was an uncorrected statistical exposure. Bin edges chosen from the
+    same data that the search then ranks on are a selection effect nobody
+    was accounting for. Encoding distinct values removes it by
+    construction, since nothing about the encoding depends on the target.
+
+Consequence, stated plainly: a genuinely continuous column (thousands of
+distinct floats) now produces thousands of categories rather than <=200
+quantile bins. It is not silently rejected and not silently truncated -- it
+is encoded exactly as it stands, and `adaptively_coarsen_bins` below is what
+keeps the joint grid estimable when such a column enters a candidate
+combination. Feeding continuous measurements to a categorical framework
+gives an axis with thousands of ticks; that is a data-preparation decision
+for the caller, made visible rather than papered over.
+
+What remains here is grid-capacity control: `prod(k_j) <= N / 10`, enforced
+per candidate combination by merging levels, so that cell counts stay
+estimable in the exhaustive search (Project_Master_Document.md Section 2.3).
 """
-
-import warnings
 
 import numpy as np
 
-from .metrics import contingency_table, entropy_bits_from_counts, mutual_information_bits
-
-# 7 Visual Channels Limits (Lv) from VSF Spec Table Section 2.2
-CHANNEL_LIMITS: dict[str, int] = {
-    "position_x": 500,
-    "position_y": 500,
-    "position_z": 20,
-    "color_hue": 12,
-    "color_saturation": 7,
-    "color_lightness": 9,
-    "motion_time": 200,
-    "default": 200,
-}
+__all__ = [
+    "adaptively_coarsen_bins",
+    "check_grid_capacity",
+    "coarsen_column",
+    "discretize_dataset",
+    "discretize_feature",
+    "max_bins_per_dimension",
+]
 
 
-def freedman_diaconis_bins(X: np.ndarray, max_bins: int = 200) -> int:
-    """Computes recommended number of bins using Freedman-Diaconis rule."""
-    arr = np.asarray(X, dtype=float)
-    arr = arr[~np.isnan(arr)]
-    if len(arr) < 2:
-        return 2
-        
-    q75, q25 = np.percentile(arr, [75, 25])
-    iqr = q75 - q25
-    
-    if iqr == 0:
-        # Fallback to Sturges rule if IQR is 0
-        n_bins = int(np.ceil(np.log2(len(arr)) + 1))
-    else:
-        bin_width = 2.0 * iqr / (len(arr) ** (1 / 3))
-        if bin_width <= 0:
-            n_bins = 10
-        else:
-            data_range = np.ptp(arr)
-            n_bins = int(np.ceil(data_range / bin_width))
-            
-    return max(2, min(max_bins, n_bins))
-
-
-def discretize_feature(
-    X: np.ndarray,
-    n_bins: int | None = None,
-    channel_name: str = "default",
-    strategy: str = "quantile",
-    user_bins: list[float] | None = None,
-) -> tuple[np.ndarray, int, float]:
+def discretize_feature(X: np.ndarray) -> tuple[np.ndarray, int]:
     """
-    Discretizes a 1D continuous feature X into k discrete bins.
-    
+    Encodes one column as integer category codes.
+
+    Every distinct value becomes one category. Codes are assigned in the
+    column's sorted distinct-value order (`np.unique`), which makes the
+    encoding a deterministic function of the column's contents alone --
+    independent of row order, of the target, and of every other column.
+
+    Works for any dtype. An object column holding values that cannot be
+    ordered against each other (mixed strings and numbers, or NaN beside
+    strings) falls back to comparing their string forms, so that such a
+    column encodes rather than raising; note that `1` and `"1"` then become
+    the same category, which is the only sane reading of a column that
+    contains both.
+
     Returns:
-        (discrete_X, k_actual, distortion D_j)
-        where D_j = 1 - I(X_discrete; X_fine) / H(X_fine), the fraction of the
-        fine-grained quantization's information that this coarser code fails
-        to carry.
-
-    The definition changed in v2.1. It was previously
-    `1 - NMI_min(X_discrete, X_fine)` = `1 - I / min(H(X_discrete), H(X_fine))`,
-    which is not a rate-distortion quantity at all: X_discrete is (up to bin-
-    edge ties) a deterministic function of X_fine, so I = H(X_discrete) and
-    the ratio collapses to ~1 whenever H(X_discrete) <= H(X_fine), leaving D_j
-    to be driven entirely by residual tie noise. Measured consequence: for a
-    standard normal feature the old formula returned D_j = 0.034 at k = 12 but
-    D_j = 0.121 at k = 101 - MORE bins scored as MORE distortion, inverting
-    the monotonicity that Project_Master_Document.md Section 2 relies on when
-    it trades L_v against D_j. Normalizing by H(X_fine) - the information
-    actually available to be preserved - restores
-    D_j(k) in [0, 1], non-increasing in k, and 0 iff the coarse code is
-    lossless with respect to the fine reference.
+        (codes, k) -- integer codes in [0, k) and the number of categories.
     """
-    raw_arr = np.asarray(X)
-    if raw_arr.ndim > 1:
-        raw_arr = raw_arr.ravel()
-        
-    is_str_or_bool = False
-    if raw_arr.dtype.kind in ('U', 'S', 'b'):
-        is_str_or_bool = True
-    elif raw_arr.dtype.kind == 'O':
-        elem = raw_arr.ravel()[0] if len(raw_arr) > 0 else None
-        if isinstance(elem, (str, bool)):
-            is_str_or_bool = True
-
-    if is_str_or_bool:
-        _, discrete_x = np.unique(raw_arr, return_inverse=True)
-        k_actual = len(np.unique(discrete_x))
-        return discrete_x.astype(int), k_actual, 0.0
-
-    arr = np.asarray(raw_arr, dtype=float)
-    l_v = CHANNEL_LIMITS.get(channel_name, CHANNEL_LIMITS["default"])
-
-    # Human-in-the-loop custom user bins
-    if user_bins is not None:
-        bins = np.sort(np.unique(user_bins))
-        if len(bins) > l_v + 1:
-            warnings.warn(
-                f"User defined bins ({len(bins)-1}) exceed channel capacity limit L_v ({l_v})."
-            )
-        discrete_x = np.digitize(arr, bins) - 1
-        k_actual = len(bins) - 1
-    elif len(np.unique(arr)) <= l_v:
-        # Low-cardinality numeric feature (e.g. a binary 0/1 indicator, or a
-        # small integer count taking few distinct values): map directly to
-        # its own distinct values rather than approximating via
-        # percentile-based quantile bins.
-        #
-        # This is not just a simplification, it fixes a real correctness
-        # bug the quantile path below has for exactly this case: for a
-        # feature with few unique values (e.g. 2), `np.percentile` at
-        # `k_actual + 1` evenly-spaced quantile points routinely returns
-        # only those 2 endpoint values for MOST of the requested quantiles
-        # once k_actual+1 > (number of unique values), so
-        # `np.unique(bins)` collapses to length 2 — which passes the
-        # `len(bins) < 2` guard below unmodified, yet `bins[1:-1]` (the
-        # digitize inner-edge array) comes out EMPTY, so every sample digitizes
-        # into bin 0 and a fully informative binary feature silently
-        # becomes a CONSTANT (k_actual=1, zero downstream signal). Direct
-        # unique-value mapping has no such failure mode: it is exact, not
-        # an approximation, whenever the raw cardinality already fits
-        # within this channel's capacity `l_v`.
-        unique_vals = np.unique(arr)
-        discrete_x = np.searchsorted(unique_vals, arr)
-        k_actual = len(unique_vals)
-    else:
-        if n_bins is None:
-            k_target = freedman_diaconis_bins(arr, max_bins=l_v)
-        else:
-            k_target = n_bins
-            
-        k_actual = min(l_v, max(2, k_target))
-        
-        if strategy == "quantile":
-            quantiles = np.linspace(0, 100, k_actual + 1)
-            bins = np.percentile(arr, quantiles)
-            bins = np.unique(bins)  # remove duplicate quantiles
-            if len(bins) < 2:
-                bins = np.linspace(arr.min(), arr.max(), k_actual + 1)
-            discrete_x = np.digitize(arr, bins[1:-1])
-            k_actual = len(bins) - 1
-        else:
-            # Equal width
-            _, bin_edges = np.histogram(arr, bins=k_actual)
-            discrete_x = np.digitize(arr, bin_edges[1:-1])
-            
-    # Distortion D_j = 1 - I(X_discrete; X_fine) / H(X_fine), against a fine
-    # reference quantization of at most 200 levels.
-    _, fine_edges = np.histogram(arr, bins=min(200, len(np.unique(arr))))
-    fine_x = np.digitize(arr, fine_edges[1:-1])
-
-    table = contingency_table(discrete_x, fine_x)
-    h_fine = entropy_bits_from_counts(table.sum(axis=0))
-    if h_fine <= 1e-12:
-        # Constant feature: the fine reference carries no information, so no
-        # coarsening can lose any. D_j = 0 by definition, not by convention.
-        distortion = 0.0
-    else:
-        retained = mutual_information_bits(table) / h_fine
-        distortion = float(np.clip(1.0 - retained, 0.0, 1.0))
-
-    return discrete_x, k_actual, distortion
+    arr = np.asarray(X)
+    if arr.ndim > 1:
+        arr = arr.ravel()
+    if arr.size == 0:
+        return np.zeros(0, dtype=int), 0
+    try:
+        _, codes = np.unique(arr, return_inverse=True)
+    except TypeError:
+        # Unorderable mix inside an object column (e.g. str beside float).
+        _, codes = np.unique(arr.astype(str), return_inverse=True)
+    codes = np.asarray(codes).ravel().astype(int)
+    return codes, int(codes.max()) + 1
 
 
 def check_grid_capacity(bin_counts: list[int], n_samples: int) -> bool:
     """
-    Checks if hypervolume grid capacity prod(k_j) <= N / 10 (Section 2.3).
-    Returns True if grid capacity limit is satisfied, False if exceeded.
+    Checks the hypervolume grid capacity prod(k_j) <= N / 10
+    (Project_Master_Document.md Section 2.3). Returns True when the limit is
+    satisfied, False when it is exceeded.
     """
     total_cells = int(np.prod(bin_counts))
     max_allowed = max(1, n_samples // 10)
@@ -190,80 +108,109 @@ def adaptively_coarsen_bins(
     discrete_features: np.ndarray, n_samples: int, target_max_cells: int | None = None
 ) -> np.ndarray:
     """
-    If hypervolume grid prod(k_j) > N/10, adaptively coarsens discrete bin levels
-    for high-dimensional joint entropy calculation to prevent Miller-Madow bias.
+    Merges category levels until the joint grid satisfies
+    prod(k_j) <= N / 10, so that the cell counts the search is ranked on stay
+    estimable. Returns the input unchanged when the limit already holds.
     """
     arr = np.asarray(discrete_features)
     if arr.ndim == 1:
         arr = arr.reshape(-1, 1)
-        
+
     n_rows, n_cols = arr.shape
     if target_max_cells is None:
         target_max_cells = max(1, n_samples // 10)
-        
-    # Get current bin counts per column
+
     k_counts = [len(np.unique(arr[:, j])) for j in range(n_cols)]
     prod_k = np.prod(k_counts)
-    
+
     if prod_k <= target_max_cells:
         return arr
-        
-    # Determine max bins per dimension k_max = floor( (N/10) ^ (1/d) )
-    k_max_per_dim = max(1, int(np.floor(target_max_cells ** (1.0 / n_cols))))
-    if (k_max_per_dim ** n_cols) > target_max_cells and k_max_per_dim > 1:
-        k_max_per_dim = max(1, k_max_per_dim - 1)
-    
+
+    k_max_per_dim = max_bins_per_dimension(n_cols, n_samples, target_max_cells)
+
     coarsened = np.zeros_like(arr)
     for j in range(n_cols):
-        col = arr[:, j]
-        unique_vals = np.sort(np.unique(col))
-        if len(unique_vals) > k_max_per_dim:
-            if k_max_per_dim == 1:
-                coarsened[:, j] = 0
-            else:
-                # Map values into k_max_per_dim equal groups
-                groups = np.array_split(unique_vals, k_max_per_dim)
-                val_map = {}
-                for group_idx, grp in enumerate(groups):
-                    for val in grp:
-                        val_map[val] = group_idx
-                coarsened[:, j] = np.vectorize(val_map.get)(col)
-        else:
-            coarsened[:, j] = col
-            
+        coarsened[:, j] = coarsen_column(arr[:, j], k_max_per_dim)
+
     return coarsened
 
 
-def discretize_dataset(
-    X_matrix: np.ndarray,
-    feature_channels: list[str] | None = None,
-    strategy: str = "quantile",
-) -> tuple[np.ndarray, list[int], list[float]]:
+def max_bins_per_dimension(n_cols: int, n_samples: int, target_max_cells: int | None = None) -> int:
     """
-    Discretizes a full feature matrix X (N x M) into a discrete integer matrix.
-    
+    The per-axis level cap `adaptively_coarsen_bins` applies to a `n_cols`-
+    dimensional grid: the largest k with k ** n_cols <= max(1, N // 10)
+    (or `target_max_cells`). Exposed so callers that score many subsets of
+    the same dimensionality can coarsen each column once instead of once per
+    subset - the cap depends only on (n_cols, N), never on which columns are
+    combined.
+    """
+    if target_max_cells is None:
+        target_max_cells = max(1, n_samples // 10)
+    k_max = max(1, int(np.floor(target_max_cells ** (1.0 / n_cols))))
+    if (k_max ** n_cols) > target_max_cells and k_max > 1:
+        k_max = max(1, k_max - 1)
+    return k_max
+
+
+def coarsen_column(col: np.ndarray, k_max: int) -> np.ndarray:
+    """
+    One column of `adaptively_coarsen_bins`: if the column has more than
+    `k_max` distinct levels, its sorted distinct values are split into
+    `k_max` near-equal consecutive groups (`np.array_split`) and each value
+    is replaced by its group index; otherwise the column is returned
+    unchanged. `k_max == 1` collapses the column to a constant 0.
+
+    Merging ADJACENT codes means merging adjacent entries of the column's
+    sorted distinct values, which is meaningful for an ordered category set
+    and arbitrary (though deterministic) for an unordered one. It is applied
+    only when a candidate combination would otherwise exceed the capacity
+    limit, i.e. only where the alternative is scoring cells that hold a
+    handful of rows each.
+
+    Implemented as a lookup table indexed by the (non-negative integer)
+    level, which is what `discretize_dataset` produces; the previous
+    `np.vectorize(dict.get)` did the same mapping one Python call per row.
+    """
+    col = np.asarray(col)
+    unique_vals = np.unique(col)
+    if len(unique_vals) <= k_max:
+        return col
+    if k_max == 1:
+        return np.zeros_like(col)
+    groups = np.array_split(unique_vals, k_max)
+    if col.dtype.kind in ("i", "u") and unique_vals.min() >= 0:
+        lut = np.empty(int(unique_vals.max()) + 1, dtype=col.dtype)
+        for group_idx, grp in enumerate(groups):
+            lut[grp] = group_idx
+        return lut[col]
+    val_map = {}
+    for group_idx, grp in enumerate(groups):
+        for val in grp.tolist():
+            val_map[val] = group_idx
+    return np.vectorize(val_map.get, otypes=[col.dtype])(col)
+
+
+def discretize_dataset(X_matrix: np.ndarray) -> tuple[np.ndarray, list[int]]:
+    """
+    Encodes a full (N, M) feature matrix as integer category codes,
+    column by column (`discretize_feature`).
+
     Returns:
-        (X_discrete, bin_counts, distortions)
+        (X_discrete, category_counts)
     """
     X_arr = np.asarray(X_matrix, dtype=object)
     if X_arr.ndim == 1:
         X_arr = X_arr.reshape(-1, 1)
-        
+
     n_rows, n_cols = X_arr.shape
-    if feature_channels is None:
-        feature_channels = ["default"] * n_cols
-        
+
     discrete_cols = []
-    bin_counts = []
-    distortions = []
-    
+    category_counts = []
+
     for j in range(n_cols):
-        col = X_arr[:, j]
-        ch = feature_channels[j] if j < len(feature_channels) else "default"
-        disc_col, k_act, dist = discretize_feature(col, channel_name=ch, strategy=strategy)
-        discrete_cols.append(disc_col)
-        bin_counts.append(k_act)
-        distortions.append(dist)
-        
+        codes, k = discretize_feature(X_arr[:, j])
+        discrete_cols.append(codes)
+        category_counts.append(k)
+
     X_discrete = np.column_stack(discrete_cols).astype(int)
-    return X_discrete, bin_counts, distortions
+    return X_discrete, category_counts

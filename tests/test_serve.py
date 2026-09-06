@@ -54,7 +54,7 @@ Covers:
      cancel with nothing running is a harmless no-op; scan state is
      per-`_VSFServer`-instance, not shared.
 
-v2.0 "Clean Core" note (Project_Master_Document.md Section 0): `/api/analyze`
+Note: `/api/analyze`
 now runs Independent Branch Discovery and returns UP TO `MAX_BRANCH_D`
 branches in one response (`{target, criterion, branches, branch_dims,
 default_branch}`) instead of a single AVR-fit payload with a `target_name`
@@ -232,13 +232,18 @@ class TestThreadSafetyAndCORS(_LiveServerTestBase):
         self.assertIsNone(resp.headers.get("Access-Control-Allow-Origin"))
 
     def test_concurrent_analyze_requests_for_different_targets_do_not_cross_contaminate(self):
-        targets = ["color", "outcome"]
+        # v2.3: a branch search always requires a resolvable positive class
+        # (see vsf.avr's module docstring). "color" is 3-valued, so it needs
+        # an explicit criterion; "outcome" is naturally 2-valued and
+        # resolves on its own -- both are genuinely different requests,
+        # which is what this test is actually about.
+        payloads = [{"target": "color", "criterion": "red"}, {"target": "outcome"}]
         results = [None, None]
         errors = [None, None]
 
         def call(idx):
             try:
-                resp = self._post("/api/analyze", {"target": targets[idx]})
+                resp = self._post("/api/analyze", payloads[idx])
                 results[idx] = json.loads(resp.read())
             except Exception as e:  # pragma: no cover - failure path
                 errors[idx] = e
@@ -278,20 +283,39 @@ class TestDatasetAgnosticDefaultTargetFallback(_LiveServerTestBase):
         self.assertNotIn("class", self.df.columns)
         self.assertEqual(data["default_target"], "color")
 
-    def test_analyze_without_explicit_target_uses_server_default(self):
-        resp = self._post("/api/analyze", {})
+    def test_analyze_without_explicit_target_falls_back_to_server_default_column(self):
+        # v2.3: a branch search always requires a resolvable positive class
+        # (see vsf.avr's module docstring), so exercising the "no explicit
+        # target" fallback needs a criterion -- "color" (the resolved
+        # default, 3-valued) cannot auto-resolve one on its own (see the
+        # sibling test below for that case).
+        resp = self._post("/api/analyze", {"criterion": "red"})
         self.assertEqual(resp.status, 200)
         data = json.loads(resp.read())
         # `target` falls back to the server's resolved default column, and
-        # the v2.0 response shape carries up to MAX_BRANCH_D branches keyed
-        # by dimensionality rather than a single AVR-fit payload.
+        # the response shape carries up to MAX_BRANCH_D branches keyed by
+        # dimensionality rather than a single AVR-fit payload.
         self.assertEqual(data["target"], "color")
-        self.assertIsNone(data["criterion"])
+        self.assertEqual(data["criterion"], "red")
         self.assertIn("branches", data)
         self.assertIn("branch_dims", data)
         self.assertIn("default_branch", data)
         self.assertTrue(set(data["branches"].keys()).issubset({"1", "2", "3"}))
         self.assertEqual(data["default_branch"], str(max(data["branch_dims"])))
+
+    def test_analyze_without_target_or_criterion_on_a_multivalued_default_is_rejected(self):
+        # THE product decision this session's redesign exists for (see
+        # vsf/webapp/index.html's welcome-state comment and vsf.avr's module
+        # docstring): a branch search never runs without an interesting
+        # class already named. The server default column ("color") has 3
+        # values and no criterion was given, so there is no positive class
+        # to resolve -- this must be a 400 with a clear reason, never a
+        # silent fallback to some other ranking.
+        resp = self._post("/api/analyze", {})
+        self.assertEqual(resp.status, 400)
+        data = json.loads(resp.read())
+        self.assertIn("error", data)
+        self.assertIn("positive class", data["error"])
 
     def test_analyze_rejects_unknown_target_instead_of_silently_falling_back(self):
         # server.py silently rewrites an unknown target to "class" (which
@@ -501,9 +525,12 @@ class TestGlobalPatternScan(unittest.TestCase):
                 self.assertGreater(r["n_centers"], 0)
                 self.assertTrue(r["fdr_significant"])
                 self.assertLessEqual(r["p_value"], 0.05)
-                # The raw MI must clear its own noise floor, not merely be
-                # large: `mi > mi_null` is the property v2.0 could not state.
-                self.assertGreater(r["best_mi"], r["best_mi_null"])
+                # The in-sample coverage must survive cross-validation, not
+                # merely be large: an out-of-sample estimate near zero would
+                # mean the "pattern" is an artifact of the fold it was found
+                # in, not a real one -- the property raw MI could not state.
+                self.assertIsNotNone(r["coverage_cv"])
+                self.assertGreater(r["coverage_cv"], 0.5)
                 self.assertIn(r["column"], {"a", "b", "target"})  # c/d are pure noise, must not survive
 
             # Results are sorted by coverage descending.
@@ -545,16 +572,16 @@ class TestGlobalPatternScan(unittest.TestCase):
         httpd, thread = self._start_server(self._xor_df())
         try:
             port = httpd.server_address[1]
-            # Slow discover_branches down so the first scan is still
-            # "running" when the second /api/scan/start arrives — avoids a
-            # dataset-size/CPU-speed-dependent race.
-            real_discover_branches = vserve.discover_branches
+            # Slow the scan's per-column search down so the first scan is
+            # still "running" when the second /api/scan/start arrives —
+            # avoids a dataset-size/CPU-speed-dependent race.
+            real_search = vserve.discover_branches_by_value
 
-            def _slow_discover_branches(*args, **kwargs):
+            def _slow_search(*args, **kwargs):
                 time.sleep(0.5)
-                return real_discover_branches(*args, **kwargs)
+                return real_search(*args, **kwargs)
 
-            with mock.patch.object(vserve, "discover_branches", _slow_discover_branches):
+            with mock.patch.object(vserve, "discover_branches_by_value", _slow_search):
                 resp1 = self._post(port, "/api/scan/start", {"coverage_threshold": 50})
                 self.assertEqual(resp1.status, 200)
                 time.sleep(0.05)  # let the background thread actually start
@@ -572,13 +599,15 @@ class TestGlobalPatternScan(unittest.TestCase):
         httpd, thread = self._start_server(self._xor_df())
         try:
             port = httpd.server_address[1]
-            real_discover_branches = vserve.discover_branches
+            # The scan searches one COLUMN per call now (all of its values
+            # at once) and checks the cancel flag between columns.
+            real_search = vserve.discover_branches_by_value
 
-            def _slow_discover_branches(*args, **kwargs):
+            def _slow_search(*args, **kwargs):
                 time.sleep(0.3)
-                return real_discover_branches(*args, **kwargs)
+                return real_search(*args, **kwargs)
 
-            with mock.patch.object(vserve, "discover_branches", _slow_discover_branches):
+            with mock.patch.object(vserve, "discover_branches_by_value", _slow_search):
                 resp = self._post(port, "/api/scan/start", {"coverage_threshold": 50})
                 self.assertEqual(resp.status, 200)
                 time.sleep(0.15)  # ensure it's mid-flight, not finished or unstarted
@@ -631,7 +660,7 @@ class TestGlobalPatternScan(unittest.TestCase):
 
 # ---------------------------------------------------------------------------
 # Removed endpoints (v1.0 Auto-Discovery / dirty-center mining / Graph
-# Inference — Project_Master_Document.md Section 0) must now 404, not just
+# Inference — removed features) must now 404, not just
 # behave differently.
 # ---------------------------------------------------------------------------
 
@@ -673,7 +702,7 @@ class TestPackagedStaticAssets(_LiveServerTestBase):
 
     def test_graph_html_route_is_404(self):
         # graph.html and its dedicated static assets are gone entirely
-        # (Project_Master_Document.md Section 0), not just unlinked.
+        # (removed feature), not just unlinked.
         with self.assertRaises(urllib.error.HTTPError) as ctx:
             self._get("/graph.html")
         self.assertEqual(ctx.exception.code, 404)
@@ -784,3 +813,126 @@ class TestServeFunction(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ---------------------------------------------------------------------------
+# Analyze-response cache and sibling-value prefetch (2026-09)
+# ---------------------------------------------------------------------------
+
+class TestAnalyzeCacheAndPrefetch(unittest.TestCase):
+    """
+    The live server keeps a multi-entry LRU of serialised `/api/analyze`
+    responses and, after a criterion-mode analysis, computes the responses
+    for the column's other values in a background thread
+    (`_prefetch_sibling_values`). Neither may change a single byte of what a
+    direct request returns.
+    """
+
+    @staticmethod
+    def _df(seed: int = 3, n: int = 240) -> pd.DataFrame:
+        rng = np.random.RandomState(seed)
+        a = rng.randint(0, 3, n)
+        b = rng.randint(0, 2, n)
+        colour = np.where(a == 0, "red", np.where(b == 1, "green", "blue"))
+        colour = np.where(rng.rand(n) < 0.1, "grey", colour)
+        return pd.DataFrame({
+            "colour": colour,
+            "a": a.astype(str),
+            "b": b.astype(str),
+            "c": rng.randint(0, 3, n).astype(str),
+        })
+
+    @staticmethod
+    def _start(df, prefetch):
+        httpd = _build_server(df, host="127.0.0.1", port=0, translations=None, prefetch=prefetch)
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        return httpd, thread
+
+    @staticmethod
+    def _post(port, payload, timeout=120):
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/api/analyze",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.read()
+
+    def test_prefetched_responses_are_byte_identical_to_direct_ones(self):
+        df = self._df()
+        with_pf, t1 = self._start(df, prefetch=True)
+        without_pf, t2 = self._start(df, prefetch=False)
+        try:
+            values = [str(v) for v in df["colour"].dropna().unique()]
+            self._post(with_pf.server_address[1], {"target": "colour", "criterion": values[0]})
+            deadline = time.time() + 120
+            while with_pf.prefetch_thread is not None and with_pf.prefetch_thread.is_alive():
+                self.assertLess(time.time(), deadline, "prefetch did not finish")
+                time.sleep(0.05)
+            self.assertEqual(len(with_pf.analyze_cache), len(values))
+            self.assertEqual(len(without_pf.analyze_cache), 0)
+            for v in values:
+                t0 = time.time()
+                a = self._post(with_pf.server_address[1], {"target": "colour", "criterion": v})
+                cached_seconds = time.time() - t0
+                b = self._post(without_pf.server_address[1], {"target": "colour", "criterion": v})
+                self.assertEqual(a, b, f"prefetched response for {v!r} differs from a direct one")
+                self.assertLess(cached_seconds, 1.0)
+            self.assertEqual(len(without_pf.analyze_cache), len(values))
+        finally:
+            for httpd, thread in ((with_pf, t1), (without_pf, t2)):
+                httpd.shutdown()
+                thread.join(timeout=5)
+                httpd.server_close()
+
+    def test_cache_is_keyed_by_certificate_parameters_too(self):
+        httpd, thread = self._start(self._df(), prefetch=False)
+        try:
+            port = httpd.server_address[1]
+            a = self._post(port, {"target": "colour", "criterion": "red", "tau": 0.9})
+            b = self._post(port, {"target": "colour", "criterion": "red", "tau": 0.6})
+            self.assertEqual(len(httpd.analyze_cache), 2)
+            self.assertNotEqual(a, b)
+            self.assertEqual(self._post(port, {"target": "colour", "criterion": "red", "tau": 0.9}), a)
+            self.assertEqual(len(httpd.analyze_cache), 2)
+            self.assertEqual(httpd.analyze_cache_bytes, sum(len(v) for v in httpd.analyze_cache.values()))
+            self.assertEqual(httpd.inflight, {})
+        finally:
+            httpd.shutdown()
+            thread.join(timeout=5)
+            httpd.server_close()
+
+    def test_concurrent_identical_requests_compute_once(self):
+        httpd, thread = self._start(self._df(), prefetch=False)
+        try:
+            port = httpd.server_address[1]
+            calls = []
+            real = vserve.discover_branches
+
+            def counting(*args, **kwargs):
+                calls.append(1)
+                time.sleep(0.3)
+                return real(*args, **kwargs)
+
+            results = []
+            with mock.patch.object(vserve, "discover_branches", counting):
+                workers = [
+                    threading.Thread(target=lambda: results.append(
+                        self._post(port, {"target": "colour", "criterion": "green"})
+                    ))
+                    for _ in range(4)
+                ]
+                for w in workers:
+                    w.start()
+                for w in workers:
+                    w.join(timeout=120)
+            self.assertEqual(len(results), 4)
+            self.assertEqual(len(set(results)), 1)
+            self.assertEqual(len(calls), 1, "identical concurrent requests must share one computation")
+            self.assertEqual(httpd.inflight, {})
+        finally:
+            httpd.shutdown()
+            thread.join(timeout=5)
+            httpd.server_close()

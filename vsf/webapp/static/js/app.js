@@ -1,6 +1,6 @@
 // VSF v2.0 "Clean Core" frontend — Independent Branch Discovery UI
-// (see Project_Master_Document.md Section 0 for what changed vs v1.0, and
-// UI_Functional_Spec.md for the exact UX this file implements).
+// (see Project_Master_Document.md for the specification this file
+// implements).
 //
 // State model:
 //   currentBranchesResponse — the raw /api/analyze response: { target,
@@ -32,7 +32,7 @@ let isAnimating = false;
 // One-vs-Rest criterion in the dataset in a background job on the server;
 // `scanResultsByColumn` is null until a scan completes (no filter applied,
 // Target Variable shows every column/value as usual), or
-// {colId: [{value, max_u_adj, best_d, best_mi, best_mi_null, p_value, ...}, ...]} once one
+// {colId: [{value, best_d, best_features, p_value, p_value_familywise, ...}, ...]} once one
 // has — the catalog is then rebuilt to show ONLY the columns/values that
 // passed. This never touches branch discovery for the currently-analyzed
 // target; it only filters which (column, value) pairs are offered as a
@@ -48,6 +48,13 @@ async function init() {
     // deriving it here too means the two never have to be kept in sync by
     // hand, and covers a stale bfcache-restored field value on reload.
     updateScanStartButtonState();
+    // No analysis runs until the user picks a target + value (see
+    // showWelcomeState()): a target has no interesting class until the user
+    // names one, so there is nothing yet for discover_branches to search
+    // for. #loader ships without the "active" class in index.html for the
+    // same reason -- it is turned on only once runAnalysis() actually
+    // starts a request.
+    showWelcomeState(true);
     // Dataset-agnostic default target: resolved from /api/columns' declared
     // default_target (set server-side to the actual configured target column,
     // not necessarily "class"), falling back to the first catalog column, and
@@ -65,16 +72,98 @@ async function init() {
             // page load (e.g. a reload mid-scan) rather than losing it.
             await checkExistingScanOnLoad();
             renderCatalog();
+            // Off the critical path: while the user reads the guide, feed
+            // every catalog label through gl3d's text pipeline once, so the
+            // first real render does not pay for it (see
+            // warmUpPlotlyTextCache()).
+            warmUpPlotlyTextCache(allColumnsData);
         } else {
             showAnalysisError(`Failed to load dataset catalog (HTTP ${colRes.status}).`);
         }
-
-        await runAnalysis(defaultTarget, null);
     } catch (err) {
         console.error("Initialization error:", err);
         showAnalysisError('Initialization failed: ' + err.message);
-        await runAnalysis(defaultTarget, null);
     }
+}
+
+// -- WebGL text warm-up -------------------------------------------------
+// Plotly's gl3d renders axis titles and tick labels as triangulated text
+// meshes (vectorize-text), memoised per unique (string, font). Measured on
+// adult_census in the desktop browser: the FIRST render of a target pays
+// 2.7-3.1 s inside Plotly.newPlot, of which ~2.5 s is that triangulation
+// of the tick labels and axis titles; re-rendering the same labels costs
+// ~0.1-0.3 s, and a target whose labels are new costs ~0.7 s. Every label
+// the renderer can ever show is a catalog label (vsf.vis uses the same
+// humanize_* functions for both), so they can all be pushed through the
+// pipeline once, in an off-screen plot, while the welcome guide is up.
+// Done in small batches with the event loop yielded in between so the page
+// never freezes for more than a fraction of a second; abandoned as soon as
+// the user starts an analysis, since the real render then triangulates
+// what it needs anyway. Measured: first-render 2.7-3.1 s -> 0.26 s.
+const _PLOTLY_WARMUP_BATCH = 12;
+const _PLOTLY_WARMUP_MAX_LABELS = 400;
+let _plotlyWarmupCancelled = false;
+
+async function warmUpPlotlyTextCache(columns) {
+    if (typeof Plotly === 'undefined' || !Array.isArray(columns)) return;
+    const titles = [];
+    const ticks = [];
+    const seen = new Set();
+    columns.forEach(col => {
+        if (col.label && !seen.has('c' + col.label)) { seen.add('c' + col.label); titles.push(col.label); }
+        (col.criteria || []).forEach(v => {
+            if (v.label && !seen.has('v' + v.label)) { seen.add('v' + v.label); ticks.push(v.label); }
+        });
+    });
+    if (ticks.length > _PLOTLY_WARMUP_MAX_LABELS) ticks.length = _PLOTLY_WARMUP_MAX_LABELS;
+    const holder = document.createElement('div');
+    holder.setAttribute('aria-hidden', 'true');
+    holder.style.cssText = 'position:absolute;left:-9999px;top:0;width:320px;height:320px;overflow:hidden;';
+    document.body.appendChild(holder);
+    const axis = (labels, title) => ({
+        title: { text: title || '', font: { color: '#c084fc', size: 13 } },
+        tickvals: labels.map((_, i) => i), ticktext: labels,
+        range: [-0.5, Math.max(labels.length, 1) - 0.5],
+        tickfont: { color: '#e2e8f0', size: 11 },
+        backgroundcolor: '#090d1a', showgrid: false, zeroline: false, showspikes: false
+    });
+    try {
+        let ti = 0, vi = 0;
+        while ((vi < ticks.length || ti < titles.length) && !_plotlyWarmupCancelled) {
+            const batch = ticks.slice(vi, vi + _PLOTLY_WARMUP_BATCH);
+            vi += _PLOTLY_WARMUP_BATCH;
+            const third = Math.ceil(batch.length / 3);
+            const axes = [batch.slice(0, third), batch.slice(third, 2 * third), batch.slice(2 * third)];
+            const t = [titles[ti], titles[ti + 1], titles[ti + 2]];
+            ti += 3;
+            await Plotly.newPlot(holder, [{
+                type: 'scatter3d', mode: 'markers', x: [0], y: [0], z: [0], marker: { size: 2 }
+            }], {
+                paper_bgcolor: '#070a13', showlegend: false,
+                scene: { aspectmode: 'cube', xaxis: axis(axes[0], t[0]), yaxis: axis(axes[1], t[1]), zaxis: axis(axes[2], t[2]) },
+                margin: { l: 0, r: 0, b: 0, t: 0 }, font: { family: 'Inter', color: '#94a3b8' }
+            }, { displayModeBar: false, staticPlot: true });
+            await new Promise(resolve => setTimeout(resolve, 0));
+        }
+    } catch (err) {
+        console.warn('Plotly text warm-up skipped:', err);
+    } finally {
+        try { Plotly.purge(holder); } catch (_) { /* nothing to purge */ }
+        holder.remove();
+    }
+}
+
+// Toggles between the pre-selection guide (#welcomeState) and the results
+// area (#resultsArea, the toolbar + axes bar + plot). Called with true from
+// init() and with false the moment the user's first click starts
+// runAnalysis() -- never flips back to true afterwards, since lastTargetCol
+// (and therefore applyCertificate()'s re-run) only makes sense once a
+// target has actually been analysed at least once.
+function showWelcomeState(show) {
+    const welcome = document.getElementById('welcomeState');
+    const results = document.getElementById('resultsArea');
+    if (welcome) welcome.style.display = show ? '' : 'none';
+    if (results) results.style.display = show ? 'none' : '';
 }
 
 // Rebuilds allColumnsData into a catalog containing only the columns/
@@ -501,6 +590,8 @@ function renderCertificateSummary(response) {
 }
 
 async function runAnalysis(targetCol, criterion = null) {
+    _plotlyWarmupCancelled = true; // the real render triangulates what it needs
+    showWelcomeState(false);
     showLoader(true);
     showAnalysisError(null);
     lastTargetCol = targetCol;
@@ -593,33 +684,19 @@ function loadBranchesResponse(data) {
     selectDefaultBranchAndRender(/* preserveActiveIfPossible */ false);
 }
 
-// Branch-list caption text, keyed by the same `objective_used` the server
-// reports on every /api/analyze response (see server.py, right after its
-// `discover_branches` call). Kept out of the HTML entirely so the two can
-// never drift the way the old static caption did (it kept saying "raw
-// mutual information" long after v2.2 made coverage the default objective
-// for any target with a resolvable positive class).
-const BRANCH_CAPTION_BY_OBJECTIVE = {
-    coverage: '',
-    mi_adj: '',
-};
-
+// v2.3: `discover_branches` always ranks by coverage now (see
+// vsf.avr's module docstring), so there is no longer a second objective a
+// caption would need to distinguish -- #branchCaption was removed from
+// index.html rather than left permanently hidden.
 function renderBranchSelector(response) {
     const container = document.getElementById('branchList');
-    const caption = document.getElementById('branchCaption');
     if (!container) return;
     container.innerHTML = '';
 
     const allDims = response.branch_dims || [];
     if (allDims.length === 0) {
         container.innerHTML = '<div style="color: var(--text-dim); font-size: 0.85rem; padding: 1rem;">No branches available.</div>';
-        if (caption) caption.style.display = 'none';
         return;
-    }
-    if (caption) {
-        caption.textContent = BRANCH_CAPTION_BY_OBJECTIVE[response.objective_used]
-            || BRANCH_CAPTION_BY_OBJECTIVE.mi_adj;
-        caption.style.display = 'block';
     }
 
     allDims.forEach(dRaw => {
@@ -654,7 +731,8 @@ function renderBranchSelector(response) {
         // and formatSignificance() was deleted from this file along with
         // their last call site here -- as clutter on top of the headline
         // coverage+centres number, which is already what selects and ranks
-        // these branches under objective="coverage". Nothing in the UI now
+        // these branches under the coverage-only ranking (vsf.avr.discover_branches,
+        // v2.3). Nothing in the UI now
         // shows the per-branch p-value: it was the only signal for whether
         // a coverage/centres number is distinguishable from chance, so a
         // branch shown here with a high coverage is not thereby shown to be
@@ -1797,8 +1875,10 @@ function toggleMainAcc(id) {
     if (header.classList.contains('open')) {
         header.classList.remove('open');
         content.classList.remove('open');
+        header.setAttribute('aria-expanded', 'false');
     } else {
         header.classList.add('open');
+        header.setAttribute('aria-expanded', 'true');
         content.classList.add('open');
     }
 }

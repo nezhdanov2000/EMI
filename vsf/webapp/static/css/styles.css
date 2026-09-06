@@ -18,13 +18,6 @@
     --amber: #f59e0b;
     --red: #ef4444;
 
-    /* 4-zone Purity Color Scale (Project_Master_Document.md Section 5.3) —
-       kept as CSS custom properties so the legend swatches and any future
-       styling stay in lockstep with static/js/app.js's PROB_COLORS array. */
-    --purity-green: #22c55e;
-    --purity-yellow: #eab308;
-    --purity-brown: #92572e;
-    --purity-red: #ef4444;
 }
 
 * {
@@ -375,6 +368,38 @@ main {
     pointer-events: auto;
 }
 
+/* Shown in .viz-viewport before the user has picked a target + value
+   (see index.html's #welcomeState and app.js's showWelcomeState()). Fills
+   the same area #resultsArea occupies once an analysis is loaded. */
+.welcome-state {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    gap: 0.75rem;
+    padding: 2rem;
+    color: var(--text-dim);
+}
+
+.welcome-state-icon {
+    font-size: 2.5rem;
+    opacity: 0.8;
+}
+
+.welcome-state-title {
+    font-size: 1.1rem;
+    font-weight: 600;
+    color: #f8fafc;
+}
+
+.welcome-state-body {
+    max-width: 32rem;
+    font-size: 0.9rem;
+    line-height: 1.5;
+}
+
 .spinner {
     width: 40px;
     height: 40px;
@@ -445,15 +470,6 @@ main {
 .main-acc-content::-webkit-scrollbar-thumb {
     background: rgba(255, 255, 255, 0.1);
     border-radius: 4px;
-}
-
-/* Branch Selector (UI_Functional_Spec.md Section 3) — a flat, parallel list
-   of up to 4 independently-discovered branches, not a nested Pareto front. */
-.branch-caption {
-    font-size: 0.78rem;
-    line-height: 1.45;
-    color: var(--text-dim);
-    padding: 0.9rem 1.5rem 0.6rem 1.5rem;
 }
 
 .analysis-error {
@@ -845,4 +861,34 @@ select {
 select:focus {
     border-color: var(--accent-purple);
     box-shadow: 0 0 12px rgba(168, 85, 247, 0.3);
+}
+
+/* ---------------------------------------------------------------------
+   Responsive layout (2026-09): below ~1100px the fixed 360px/1fr/340px
+   three-column grid no longer fits (360 + 340 = 700px of fixed columns
+   alone), and since the page has `overflow-x: hidden`, the overflow
+   was silently clipped instead of scrolled -- the catalog/plot/settings
+   columns became unreachable rather than visibly broken. Below the
+   breakpoint we stack the three columns instead, in source order
+   (catalog -> plot -> settings), and relax the viewport-height-locked
+   sizing that only made sense for a side-by-side layout.
+   ------------------------------------------------------------------- */
+@media (max-width: 1100px) {
+    main {
+        grid-template-columns: 1fr;
+        max-width: 720px;
+    }
+
+    .catalog-sidebar {
+        max-height: none;
+    }
+
+    .settings-sidebar {
+        height: auto;
+        max-height: none;
+    }
+
+    #plot-container {
+        min-height: 420px;
+    }
 }

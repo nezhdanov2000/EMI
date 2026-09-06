@@ -1,6 +1,6 @@
 /* ============================================================
    vsf.dashboard combined stylesheet — v2.0 "Clean Core"
-   (Project_Master_Document.md Section 0).
+   (Project_Master_Document.md).
 
    Ported from static/css/styles.css (the live app's "3D Visualizer" view)
    — the 4D time/frame controller and every other rule below target bare
@@ -110,7 +110,7 @@ header {
 
 /* Header target badge (replaces v1.0's removed Scenario A/B/C/D pill —
    scenario routing no longer exists, see Project_Master_Document.md
-   Section 0). Purely informational: names the single target/criterion
+   the master doc). Purely informational: names the single target/criterion
    this export was built for. */
 .target-badge {
     padding: 0.4rem 1rem;
@@ -241,7 +241,7 @@ main {
 
 /* Direct, low-key acknowledgement (not a warning banner) that branch MI is
    ranked with no significance test attached — Project_Master_Document.md
-   Section 4.5 / UI_Functional_Spec.md Section 3 requires this note sit
+   Section 4.5 requires this note sit
    right next to the MI value, without implying the result is "proven". */
 .mi-caption {
     font-size: 0.7rem;
@@ -747,4 +747,34 @@ main {
     font-size: 0.7rem;
     opacity: 0.7;
     margin-left: 4px;
+}
+
+/* ---------------------------------------------------------------------
+   Responsive layout (2026-09): below ~1100px the fixed 360px/1fr/340px
+   three-column grid no longer fits (360 + 340 = 700px of fixed columns
+   alone), and since the page has `overflow-x: hidden`, the overflow
+   was silently clipped instead of scrolled -- the catalog/plot/settings
+   columns became unreachable rather than visibly broken. Below the
+   breakpoint we stack the three columns instead, in source order
+   (catalog -> plot -> settings), and relax the viewport-height-locked
+   sizing that only made sense for a side-by-side layout.
+   ------------------------------------------------------------------- */
+@media (max-width: 1100px) {
+    main {
+        grid-template-columns: 1fr;
+        max-width: 720px;
+    }
+
+    .catalog-sidebar {
+        max-height: none;
+    }
+
+    .settings-sidebar {
+        height: auto;
+        max-height: none;
+    }
+
+    #plot-container {
+        min-height: 420px;
+    }
 }

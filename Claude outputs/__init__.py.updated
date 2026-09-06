@@ -30,6 +30,7 @@ from .avr import (
     discover_branches,
     select_branch_dimensionality,
 )
+from .complement import discover_complement_branches
 from .centers import (
     MIN_POSITIVES_FOR_CV,
     CVCoverage,
@@ -89,6 +90,7 @@ __all__ = [
     "coverage_score",
     "crossvalidated_coverage",
     "discover_branches",
+    "discover_complement_branches",
     "discretize_dataset",
     "discretize_feature",
     "benjamini_hochberg",

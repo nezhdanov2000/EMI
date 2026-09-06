@@ -1,7 +1,7 @@
 """
 vsf.dashboard: standalone, self-contained HTML dashboard export.
 
-v2.0 "Clean Core" (see Project_Master_Document.md Section 0): `export_full_dashboard()`
+`export_full_dashboard()`
 bakes up to 4 independently-discovered branches (Project_Master_Document.md
 Section 4, `vsf.avr.discover_branches`) — one per dimensionality 1D-4D — for
 a SINGLE chosen target/criterion into one self-contained HTML file that
@@ -182,7 +182,13 @@ def export_full_dashboard(
         target: the column to analyze. Default "class" matches the demo
             app; pass the actual target column name for any other dataset.
         criterion: a specific value of `target` to binarize against (e.g.
-            "p"), or `None` for the raw (possibly multiclass) column.
+            "p"), or `None` to use the raw column directly -- valid only
+            when `target` itself has exactly two distinct values (the higher
+            one is then the positive class, matching the live app). A
+            multiclass `target` with `criterion=None` raises `ValueError`
+            from `discover_branches`: v2.3 requires a resolvable positive
+            class always (see `vsf.avr`'s module docstring) -- there is no
+            longer an association-based ranking to fall back to.
         translations: optional dataset-specific display table (see
             `vsf.vis.Translations`); falls back to raw column/value strings
             with none, same as every other `vsf` function.
@@ -226,17 +232,16 @@ def export_full_dashboard(
     feature_names = list(X_df.columns)
     X = X_df.values
 
-    # A static export is produced once and then read many times with no way
-    # to re-run anything, so it carries the permutation p-value rather than
-    # leaving the reader with an uncalibrated effect size.
-    # v2.2: the export carries the certified-centre layer too. A static
-    # page cannot re-run anything, so it must ship the certificate it was
-    # built under; `spec` is baked into every payload and into the legend.
+    # v2.2: the export carries the certified-centre layer, which is what
+    # v2.3 also ranks branches by. A static page cannot re-run anything, so
+    # it must ship the certificate it was built under; `spec` is baked into
+    # every payload and into the legend. `discover_branches` raises
+    # ValueError when `criterion=None` and `target` is not itself
+    # two-valued -- see this function's docstring.
     spec = center_spec if center_spec is not None else CenterSpec()
     positive_class = 1 if criterion is not None else None
     branches = discover_branches(
-        X, Z, feature_names=feature_names, max_d=max_d,
-        n_permutations=DEFAULT_N_PERMUTATIONS, random_state=0,
+        X, Z, feature_names=feature_names, max_d=max_d, random_state=0,
         positive_class=positive_class, center_spec=spec,
         n_permutations_centers=DEFAULT_N_PERMUTATIONS,
     )

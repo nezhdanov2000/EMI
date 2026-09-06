@@ -211,11 +211,10 @@ def test_branches_data_keyed_by_dimensionality_and_matches_dashboard_data():
 
     for d_str, payload in branches_data.items():
         assert payload["metrics"]["d"] == int(d_str)
-        # v2.1 metrics shape -- no scenario/vir/history, and no `nmi`.
-        assert set(payload["metrics"].keys()) == {
-            "d", "mi", "mi_null", "mi_adj", "u_adj", "h_target",
-            "p_value", "p_value_familywise", "significant",
-        }
+        # v2.3 "Coverage Only" metrics shape -- no scenario/vir/history, no
+        # MI/U_adj/p_value (see vsf.avr's module docstring). Coverage-search
+        # statistics live in `search_centers`/`centers`, not here.
+        assert set(payload["metrics"].keys()) == {"d"}
 
 
 def test_branches_are_independent_not_required_to_be_nested():

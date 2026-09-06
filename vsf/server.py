@@ -3,7 +3,7 @@ vsf.server: `vsf.serve(df)` — an installable, in-process interactive VSF web
 application for an ARBITRARY pandas DataFrame with one call, the way
 `streamlit.run`/`gradio.Interface.launch` do.
 
-v2.0 "Clean Core" (see Project_Master_Document.md Section 0 for the full
+(see Project_Master_Document.md for the full
 revision history): the legacy top-level `server.py` demo script (a
 single-CSV, single-dataset script duplicating this module's request
 dispatch for the bundled mushroom dataset) has been deleted outright rather
@@ -14,32 +14,31 @@ point; `tests/test_server.py` (which asserted on the legacy script's
 internals) was deleted alongside it.
 
 Removed relative to v1.0 (all four are the same product decisions recorded
-in Project_Master_Document.md Section 0, applied here to the live-server
+in Project_Master_Document.md, applied here to the live-server
 surface):
   - `/api/mine_center` (dirty-center conjunctive-filter mining) — its sole
     implementation, `vsf.mining.mine_dirty_center`, no longer exists.
   - `/api/top_columns` (Auto-Discovery / Universal Propositional Screening)
     — its implementation, `vsf.mining.compute_top_insights`, no longer
     exists; the user now picks the target column and criterion directly
-    from the dropdown populated by `/api/columns` (UI_Functional_Spec.md
-    Section 2), never from a "here's what's interesting" catalog.
+    from the dropdown populated by `/api/columns`, never from a "here's
+    what's interesting" catalog.
   - `/api/graph_inference` and `/api/mine_graph_links` (Graph Inference /
     Knowledge-Base chain mining) and the `graph.html` /
     `static/{css,js}/graph_reasoning.*` assets that rendered them — the
     reasoning-graph feature is gone, not just its route.
   - `composite_target` support inside `/api/analyze` (the composite AND
     -filter target builder) — a target is now always a single column
-    (+ optional single criterion value), matching `UI_Functional_Spec.md`
-    Section 2's plain dropdown.
+    (+ optional single criterion value), matching the webapp's plain
+    dropdown.
 
 `/api/analyze` itself changed shape, not just scope: it used to fit ONE
 `AVRResult` (a single adaptively-chosen `d_star`) per request. It now runs
 Independent Branch Discovery (`vsf.avr.discover_branches`,
 Project_Master_Document.md Section 4) and returns UP TO `MAX_BRANCH_D`
 independently-found branches in one response — one visualization payload
-per dimensionality — so the frontend's branch selector
-(UI_Functional_Spec.md Section 3) can switch between them instantly,
-client-side, with no further request (mirroring how `vsf.dashboard.
+per dimensionality — so the frontend's branch selector can switch between
+them instantly, client-side, with no further request (mirroring how `vsf.dashboard.
 export_full_dashboard` already bakes all branches into its static export).
 
 Per-instance isolation: this server keeps its dataframe, translations
@@ -67,33 +66,42 @@ Global Pattern Scan (`/api/scan/start` / `/api/scan/status` /
 each of its observed values as a One-vs-Rest binary criterion (exactly
 `/api/analyze`'s `criterion` shape), runs Independent Branch Discovery
 against every OTHER column for it, and keeps the (column, value) pair only
-if the MAXIMUM `u_adj` across its up-to-4 branches exceeds a caller-chosen
-threshold AND the pair survives Benjamini-Hochberg FDR control across every
-pair scanned in that run.
-
-Two things changed here in v2.1, both mandatory rather than cosmetic. The
-filter used to be `max NMI > threshold`, and NMI_min is precisely the metric
-that saturates toward 100 % on a rare One-vs-Rest criterion with no signal
-(see `vsf.math.normalized_mutual_information`) — a scan that enumerates every
-(column, value) pair generates rare criteria by the hundred, so the old scan
-selected FOR the artifact it was most exposed to. And a sweep of k targets at
-a nominal alpha yields ~alpha*k spurious "patterns" by construction, so FDR
-control across the swept family is not optional; `metric_fdr_q` sets the rate.
+if the MAXIMUM certified COVERAGE across its up-to-4 branches is at least a
+caller-chosen `coverage_threshold` AND the pair survives Benjamini-Hochberg
+FDR control across every pair scanned in that run (see `_run_dataset_scan`'s
+docstring for why coverage is the filter: an association statistic can read
+high on a target with zero certified centres, which is precisely what this
+scan must not select for).
+A sweep of k targets at a nominal alpha yields ~alpha*k spurious "patterns"
+by construction, so the FDR control is not optional; `fdr_q` sets the rate.
 
 This is still NOT a return of v1.0's removed Auto-Discovery/Universal
-Propositional Screening (see Section 0 of the master doc for why that was
+Propositional Screening (see the master doc for why that was
 cut): v1.0 used permutation tests to GATE greedy feature selection inside a
 single analysis, whereas the scan tests already-selected, exhaustively
 searched branches and corrects only for the multiplicity the scan itself
 creates. That looping makes it genuinely expensive
-— one `discover_branches` call per pair, each itself an exhaustive 1D-4D
-search (see `vsf.avr`'s module docstring on cost) — so it runs in a
-background thread (`_run_dataset_scan`), polled via `/api/scan/status`
-rather than returned synchronously, with `/api/scan/cancel` to stop early.
+— one exhaustive 1D-4D search per COLUMN (`discover_branches_by_value`
+scores every value of the column in the same enumeration, since the
+candidate partitions do not depend on the target; the result per
+(column, value) pair is identical to a per-pair `discover_branches` call),
+plus a per-pair reporting stage — so it runs in a background thread
+(`_run_dataset_scan`), polled via `/api/scan/status` rather than returned
+synchronously, with `/api/scan/cancel` to stop early.
 Only one scan may run at a time per server instance; state lives on
 `_VSFServer.scan_job`/`.scan_lock`/`.scan_cancel_event`, so — like
 everything else in this module — two concurrently-running `serve()` calls
 never share a scan.
+
+Analyze-response cache and sibling prefetch (2026-09): `/api/analyze`
+responses are cached serialised, several at a time (`_VSFServer.analyze_cache`,
+LRU keyed by target, value and certificate parameters), identical concurrent
+requests are computed once (`_VSFServer.inflight`), and after a
+criterion-mode analysis the other values of the same column are computed in
+a background thread (`_prefetch_sibling_values`, one shared exhaustive search
+via `vsf.avr.iter_branches_by_value`) so the user's next clicks in that
+column are served from the cache. `serve(prefetch=False)` disables the
+prefetch; responses are byte-identical either way.
 """
 
 from __future__ import annotations
@@ -104,8 +112,9 @@ import threading
 import time
 import urllib.parse
 import webbrowser
+from collections import OrderedDict
 from importlib import resources
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as _np
 import pandas as pd
@@ -115,6 +124,8 @@ from .avr import (
     DEFAULT_N_PERMUTATIONS,
     MAX_BRANCH_D,
     discover_branches,
+    discover_branches_by_value,
+    iter_branches_by_value,
     select_branch_dimensionality,
 )
 from .centers import CenterSpec
@@ -140,6 +151,15 @@ _SCAN_RANDOM_STATE = 0
 # v1.0 there is no alpha/vir_threshold to pin
 # here.
 _MAX_D = MAX_BRANCH_D
+
+#: Analyze-response cache: number of serialised `/api/analyze` responses
+#: kept per server instance, and a ceiling on their total size. A response
+#: is 10-20 MB of JSON for a 10 000-point render of four branches; the
+#: cache holds the SERIALISED bytes, not the Python payload (which is
+#: several times larger in memory), so a user stepping back and forth
+#: between the values of one column pays the computation once per value.
+_ANALYZE_CACHE_MAX_ENTRIES = 16
+_ANALYZE_CACHE_MAX_BYTES = 512 * 1024 * 1024
 
 # Static asset content-types served from the packaged `vsf.webapp` resources.
 _STATIC_ROUTES: Dict[str, tuple] = {
@@ -184,7 +204,14 @@ class _VSFServer(http.server.ThreadingHTTPServer):
 
     allow_reuse_address = True
 
-    def __init__(self, server_address, RequestHandlerClass, df: pd.DataFrame, translations: Optional[Translations]):
+    def __init__(
+        self,
+        server_address,
+        RequestHandlerClass,
+        df: pd.DataFrame,
+        translations: Optional[Translations],
+        prefetch: bool = True,
+    ):
         super().__init__(server_address, RequestHandlerClass)
         self.df = df
         self.translations = translations
@@ -192,6 +219,24 @@ class _VSFServer(http.server.ThreadingHTTPServer):
         self.cache_lock = threading.Lock()
         self.last_params: Optional[Dict[str, Any]] = None
         self.last_branches_payload: Optional[Dict[str, Any]] = None
+        # Multi-entry LRU of serialised responses keyed by the full request
+        # key (target, criterion, certificate parameters) - see
+        # `_ANALYZE_CACHE_MAX_ENTRIES`. `last_params`/`last_branches_payload`
+        # above still mirror the most recent one for callers that inspect
+        # it (tests, `vsf.dashboard`-style consumers).
+        self.analyze_cache: "OrderedDict[Tuple[Any, ...], bytes]" = OrderedDict()
+        self.analyze_cache_bytes = 0
+        # Requests being computed right now, so two clicks on the same key
+        # (or a click racing the background prefetch of that key) compute it
+        # once: the second waits on the first's Event and reads the cache.
+        self.inflight: Dict[Tuple[Any, ...], threading.Event] = {}
+        # Background prefetch of the OTHER values of the column the user just
+        # analysed (`_prefetch_sibling_values`). One worker at a time; a new
+        # analyze request for a different column cancels the running one.
+        self.prefetch_enabled = prefetch
+        self.prefetch_lock = threading.Lock()
+        self.prefetch_thread: Optional[threading.Thread] = None
+        self.prefetch_cancel: Optional[threading.Event] = None
         # Global Pattern Scan state (see module docstring). `scan_job` is
         # None until the first scan starts; `scan_cancel_event` is a fresh
         # threading.Event() per scan, set by `/api/scan/cancel` and polled
@@ -199,6 +244,93 @@ class _VSFServer(http.server.ThreadingHTTPServer):
         self.scan_lock = threading.Lock()
         self.scan_job: Optional[Dict[str, Any]] = None
         self.scan_cancel_event: Optional[threading.Event] = None
+
+    # -- analyze-response cache ---------------------------------------------
+    def cache_get(self, key: Tuple[Any, ...]) -> Optional[bytes]:
+        """Serialised response for `key`, marking it most recently used."""
+        with self.cache_lock:
+            body = self.analyze_cache.get(key)
+            if body is not None:
+                self.analyze_cache.move_to_end(key)
+            return body
+
+    def cache_put(self, key: Tuple[Any, ...], params: Dict[str, Any],
+                  payload: Dict[str, Any], body: bytes) -> None:
+        with self.cache_lock:
+            old = self.analyze_cache.pop(key, None)
+            if old is not None:
+                self.analyze_cache_bytes -= len(old)
+            self.analyze_cache[key] = body
+            self.analyze_cache_bytes += len(body)
+            while self.analyze_cache and (
+                len(self.analyze_cache) > _ANALYZE_CACHE_MAX_ENTRIES
+                or self.analyze_cache_bytes > _ANALYZE_CACHE_MAX_BYTES
+            ):
+                _, evicted = self.analyze_cache.popitem(last=False)
+                self.analyze_cache_bytes -= len(evicted)
+            self.last_params = params
+            self.last_branches_payload = payload
+
+    def claim(self, key: Tuple[Any, ...]) -> Tuple[Optional[bytes], Optional[threading.Event], bool]:
+        """
+        Atomically: a cached body if present; otherwise the Event of a
+        computation already in flight for `key`; otherwise a fresh Event
+        registered for `key` with `owner=True`, meaning the caller must
+        compute it and call `release`.
+        """
+        with self.cache_lock:
+            body = self.analyze_cache.get(key)
+            if body is not None:
+                self.analyze_cache.move_to_end(key)
+                return body, None, False
+            event = self.inflight.get(key)
+            if event is not None:
+                return None, event, False
+            event = threading.Event()
+            self.inflight[key] = event
+            return None, event, True
+
+    def release(self, key: Tuple[Any, ...], event: threading.Event) -> None:
+        with self.cache_lock:
+            if self.inflight.get(key) is event:
+                del self.inflight[key]
+        event.set()
+
+    # -- background prefetch ------------------------------------------------
+    def start_prefetch(self, target_col: str, criterion: str, center_spec: CenterSpec) -> None:
+        """
+        After a criterion-mode analysis of (`target_col`, `criterion`),
+        compute and cache the responses for the column's other values in a
+        background thread, so the user's next clicks in the same column are
+        served from the cache. Superseded (cancelled between values) by the
+        next analysis of a different column; skipped entirely while a
+        Global Pattern Scan is running, which would otherwise share the CPU
+        with it.
+        """
+        if not self.prefetch_enabled:
+            return
+        with self.scan_lock:
+            scanning = self.scan_job is not None and self.scan_job["status"] == "running"
+        if scanning:
+            return
+        with self.prefetch_lock:
+            if self.prefetch_cancel is not None:
+                self.prefetch_cancel.set()
+            cancel = threading.Event()
+            self.prefetch_cancel = cancel
+            thread = threading.Thread(
+                target=_prefetch_sibling_values,
+                args=(self, target_col, criterion, center_spec, cancel),
+                daemon=True,
+                name="vsf-prefetch",
+            )
+            self.prefetch_thread = thread
+            thread.start()
+
+    def cancel_prefetch(self) -> None:
+        with self.prefetch_lock:
+            if self.prefetch_cancel is not None:
+                self.prefetch_cancel.set()
 
 
 class VSFRequestHandler(http.server.BaseHTTPRequestHandler):
@@ -257,10 +389,14 @@ class VSFRequestHandler(http.server.BaseHTTPRequestHandler):
         read this dataset and every analysis result over
         `http://127.0.0.1:<port>`, not just the served frontend.
         """
+        self._send_json_bytes(status_code, json.dumps(payload).encode("utf-8"))
+
+    def _send_json_bytes(self, status_code: int, body: bytes) -> None:
         self.send_response(status_code)
         self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(json.dumps(payload).encode("utf-8"))
+        self.wfile.write(body)
 
     def _serve_static(self, path: str) -> None:
         relative_path, content_type = _STATIC_ROUTES[path]
@@ -269,6 +405,12 @@ class VSFRequestHandler(http.server.BaseHTTPRequestHandler):
         except (FileNotFoundError, ModuleNotFoundError) as exc:
             self.send_error(404, f"Asset not found: {exc}")
             return
+        if relative_path == "index.html":
+            # Lazy import: vsf/__init__.py sets __version__ *after* importing
+            # .server, so a module-level `from . import __version__` here
+            # would raise ImportError on a partially-initialized package.
+            from . import __version__ as _vsf_version
+            body = body.replace("{{VSF_VERSION}}", _vsf_version)
         encoded = body.encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", content_type)
@@ -313,7 +455,7 @@ class VSFRequestHandler(http.server.BaseHTTPRequestHandler):
         payload per dimensionality, keyed by dimensionality as a string
         (matching `vsf.dashboard.export_full_dashboard`'s `BRANCHES_DATA`
         shape) — plus `branch_dims`/`default_branch` so the frontend's
-        branch selector (UI_Functional_Spec.md Section 3) can render and
+        branch selector can render and
         preselect without guessing. Switching branches afterward is a pure
         client-side re-render against this same response — no further
         request.
@@ -390,125 +532,67 @@ class VSFRequestHandler(http.server.BaseHTTPRequestHandler):
                 "rule": rule,
                 "min_samples": min_samples,
             }
+            key = _analyze_key(cache_key)
 
-            # Same rationale as before: holding `cache_lock` across the
-            # check-and-fit means two concurrent requests for different
-            # targets never interleave a read of one target's half-written
-            # cache with another's write — the second request just waits
-            # instead of racing.
-            with self.server.cache_lock:
-                if self.server.last_params == cache_key and self.server.last_branches_payload is not None:
-                    response_payload = self.server.last_branches_payload
-                else:
-                    # `n_permutations` costs ~0.25 s per branch at B = 999 on
-                    # a 32k-row dataset (the null is sampled directly from the
-                    # multiple hypergeometric law, not by shuffling labels), so
-                    # the interactive path can afford the p-value that the HUD
-                    # needs to tell a real association from a bias artifact.
-                    # `n_permutations_familywise` is NOT set here: it costs B
-                    # times the whole search and belongs to an offline run, not
-                    # to a click. The HUD labels the p-value it shows
-                    # accordingly.
-                    # v2.2: `positive_class` is the value the certified
-                    # centres are measured against. In criterion mode Z is
-                    # literally 0/1 and the positive value is 1. Without a
-                    # criterion the target may have K > 2 values, which have
-                    # no single purity; `discover_branches` then returns
-                    # `centers=None` and the panel says so rather than
-                    # certifying an arbitrary class.
+            # A request for a different column supersedes any prefetch of
+            # the previous column's values (checked between values there).
+            if criterion is None or self.server.last_params is None or (
+                self.server.last_params.get("target_col") != target_col
+            ):
+                self.server.cancel_prefetch()
+
+            body, event, owner = self.server.claim(key)
+            if body is None and event is not None and not owner:
+                # Someone else (another request, or the prefetch worker) is
+                # computing exactly this response: wait for it rather than
+                # computing it twice.
+                event.wait()
+                body = self.server.cache_get(key)
+            if body is None:
+                if not owner:
+                    # The other computation failed before caching; own it.
+                    body, event, owner = self.server.claim(key)
+                    if body is None and event is not None and not owner:
+                        event.wait()
+                        body = self.server.cache_get(key)
+            if body is None:
+                assert event is not None
+                try:
+                    # v2.3: `discover_branches` always ranks by coverage and
+                    # always requires a resolvable positive class (see
+                    # `vsf.avr`'s module docstring) -- `positive_class=1` in
+                    # criterion mode, where Z is literally 0/1; without a
+                    # criterion, only a naturally two-valued target resolves
+                    # one automatically, and a K>2-valued target raises
+                    # ValueError, caught below and reported as 400 rather
+                    # than crashing the request.
                     positive_class = 1 if criterion is not None else None
                     branches = discover_branches(
                         X,
                         Z,
                         feature_names=feature_names,
                         max_d=_MAX_D,
-                        n_permutations=DEFAULT_N_PERMUTATIONS,
                         random_state=_SCAN_RANDOM_STATE,
                         positive_class=positive_class,
                         center_spec=center_spec,
                         n_permutations_centers=DEFAULT_N_PERMUTATIONS,
                     )
-                    # `discover_branches` is called with objective="auto"
-                    # (the default -- never overridden here), which resolves
-                    # to "coverage" exactly when a positive class was
-                    # resolvable and to "mi_adj" otherwise (see
-                    # `avr._resolve_positive_indicator`'s docstring). Rather
-                    # than re-deriving that condition here and risking it
-                    # drifting from what the search actually did, read it
-                    # off the same signal `discover_branches` itself gates
-                    # `BranchResult.centers` on: centers is not None on some
-                    # branch iff a positive class was resolved for this call.
-                    objective_used = (
-                        "coverage" if any(b.centers is not None for b in branches.values())
-                        else "mi_adj"
+                    response_payload = _build_analyze_response(
+                        self.server, target_col, criterion, center_spec, branches
                     )
-                    branches_data: Dict[str, Any] = {}
-                    for d, branch in branches.items():
-                        branches_data[str(d)] = prepare_visualization_payload(
-                            branch,
-                            X,
-                            Z,
-                            feature_names=feature_names,
-                            target_name=display_target_name,
-                            # Z is a One-vs-Rest 0/1 vector in criterion mode,
-                            # so its class labels must read as the criterion
-                            # and its negation, not as "0" and "1".
-                            target_is_indicator=criterion is not None,
-                            sort_Z=sort_Z,
-                            translations=translations,
-                            positive_value=(
-                                1 if criterion is not None
-                                else (
-                                    _np.unique(Z)[-1] if len(_np.unique(Z)) else None
-                                )
-                            ),
-                            center_spec=center_spec,
-                        )
-                    selected_d = select_branch_dimensionality(branches)
-                    response_payload = {
-                        "target": target_col,
-                        "criterion": criterion,
-                        "branches": branches_data,
-                        "branch_dims": sorted(branches.keys()),
-                        # v2.2: the branch opened first is the SMALLEST
-                        # SUFFICIENT one, not the widest available. The
-                        # product goal is the fewest cells that capture the
-                        # target value, and `max(branches)` is the opposite
-                        # of that: on `relationship = Husband` the 4-D branch
-                        # certifies 3 centres for 98.6 % coverage where the
-                        # 2-D branch certifies 1 for 99.9 %. Falls back to the
-                        # widest branch only when no dimensionality certifies
-                        # anything, since there is then nothing to prefer.
-                        "default_branch": (
-                            str(selected_d) if selected_d in branches
-                            else (str(max(branches.keys())) if branches else None)
-                        ),
-                        # Which objective the search actually maximised for
-                        # THIS response (see the comment above where this is
-                        # computed) -- consumed by the frontend so the
-                        # branch-list caption describes reality instead of
-                        # being a static, version-drifting string.
-                        "objective_used": objective_used,
-                        # v2.2: the answer to "how many characteristics does
-                        # it take to describe this value" -- the smallest
-                        # sufficient dimensionality by out-of-sample certified
-                        # coverage, or None when no dimensionality certifies
-                        # anything. The frontend must render None as "none",
-                        # never as 1.
-                        "sufficient_d": None if selected_d is None else int(selected_d),
-                        "certificate": {
-                            "tau": center_spec.tau,
-                            "alpha": center_spec.alpha,
-                            "rule": center_spec.rule,
-                            "min_samples": center_spec.min_samples,
-                            "method": center_spec.method,
-                            "multiplicity": center_spec.multiplicity,
-                        },
-                    }
-                    self.server.last_params = cache_key
-                    self.server.last_branches_payload = response_payload
+                    body = json.dumps(response_payload).encode("utf-8")
+                    self.server.cache_put(key, cache_key, response_payload, body)
+                finally:
+                    self.server.release(key, event)
+                if criterion is not None:
+                    self.server.start_prefetch(target_col, str(criterion), center_spec)
 
-            self._send_json_response(200, response_payload)
+            self._send_json_bytes(200, body)
+        except ValueError as exc:
+            # A resolvable-positive-class failure (see the discover_branches
+            # call above) or a bad certificate value -- both are client
+            # input problems, not server faults.
+            self._send_json_response(400, {"error": str(exc)})
         except Exception as e:
             self._send_json_response(500, {"error": str(e)})
 
@@ -525,26 +609,21 @@ class VSFRequestHandler(http.server.BaseHTTPRequestHandler):
             if "nmi_threshold" in req:
                 self._send_json_response(400, {
                     "error": (
-                        "nmi_threshold was removed in v2.1. NMI_min saturates toward "
-                        "100% on rare One-vs-Rest criteria with no signal, which is "
-                        "exactly what a dataset-wide scan produces in bulk. Use "
-                        "coverage_threshold (share of the target value captured by "
-                        "certified centres, same [0, 100) percent scale)."
+                        "nmi_threshold no longer exists: this scan filters on "
+                        "certified-centre coverage, not on an association "
+                        "statistic. Use coverage_threshold (share of the target "
+                        "value captured by certified centres, percent)."
                     )
                 })
                 return
             if "u_adj_threshold" in req and "coverage_threshold" not in req:
                 self._send_json_response(400, {
                     "error": (
-                        "u_adj_threshold was replaced in v2.2 by coverage_threshold. "
-                        "u_adj measures whether an association EXISTS; the scan's "
-                        "purpose is to find (column, value) pairs that produce "
-                        "certified discrete centres, and the two select different "
-                        "pairs. On data/adult_census.csv, income='>50K' reaches "
-                        "u_adj = 34.0% with zero certified centres at tau = 0.90, "
-                        "and occupation='Armed-Forces' reaches 44.4% with a highest "
-                        "cell purity of 2.42%. Pass coverage_threshold (percent), "
-                        "and optionally tau and alpha."
+                        "u_adj_threshold no longer exists: it measured whether an "
+                        "association EXISTS, while this scan looks for (column, "
+                        "value) pairs that produce certified discrete centres - the "
+                        "two select different pairs. Pass coverage_threshold "
+                        "(percent), and optionally tau and alpha."
                     )
                 })
                 return
@@ -625,6 +704,8 @@ class VSFRequestHandler(http.server.BaseHTTPRequestHandler):
                 if self.server.scan_job is not None and self.server.scan_job["status"] == "running":
                     self._send_json_response(409, {"error": "A scan is already in progress on this server."})
                     return
+                # The scan needs the CPU; a running prefetch yields to it.
+                self.server.cancel_prefetch()
                 cancel_event = threading.Event()
                 self.server.scan_cancel_event = cancel_event
                 self.server.scan_job = {
@@ -675,9 +756,9 @@ class VSFRequestHandler(http.server.BaseHTTPRequestHandler):
     def _handle_scan_cancel_api(self) -> None:
         """
         Signals the running scan's background thread to stop after its
-        CURRENT (column, value) pair finishes — `discover_branches` itself
-        isn't interrupted mid-search, so cancellation lands within one
-        pair's worth of time, not instantly. A no-op (200) if no scan is
+        CURRENT column finishes — the per-column search
+        (`discover_branches_by_value`) isn't interrupted mid-search, so
+        cancellation lands within one column's worth of time, not instantly. A no-op (200) if no scan is
         currently running.
         """
         with self.server.scan_lock:
@@ -688,6 +769,224 @@ class VSFRequestHandler(http.server.BaseHTTPRequestHandler):
                 return
             event.set()
         self._send_json_response(200, {"status": "cancelling"})
+
+
+def _analyze_key(params: Dict[str, Any]) -> Tuple[Any, ...]:
+    """Hashable cache key of an `/api/analyze` request's parameters."""
+    return tuple(sorted((str(k), repr(v)) for k, v in params.items()))
+
+
+def _build_analyze_response(
+    server: "_VSFServer",
+    target_col: str,
+    criterion: Optional[object],
+    center_spec: CenterSpec,
+    branches: Dict[int, Any],
+) -> Dict[str, Any]:
+    """
+    The `/api/analyze` response body for discovered `branches`: one
+    visualisation payload per dimensionality plus the branch selector's
+    metadata. Shared by the request handler and the background prefetch so
+    the two can never disagree on a field.
+    """
+    df = server.df
+    translations = server.translations
+    sort_Z = df[target_col].values
+    if criterion is not None:
+        Z = (df[target_col].astype(str) == str(criterion)).astype(int).values
+        human_criterion = _vis.humanize_val(target_col, str(criterion), translations)
+        human_col = _vis.humanize_col(target_col, translations)
+        display_target_name = f"{human_col} = {human_criterion}"
+    else:
+        Z = df[target_col].values
+        display_target_name = target_col
+    X_df = df.drop(columns=[target_col])
+    feature_names = list(X_df.columns)
+    X = X_df.values
+
+    branches_data: Dict[str, Any] = {}
+    for d, branch in branches.items():
+        branches_data[str(d)] = prepare_visualization_payload(
+            branch,
+            X,
+            Z,
+            feature_names=feature_names,
+            target_name=display_target_name,
+            # Z is a One-vs-Rest 0/1 vector in criterion mode, so its class
+            # labels must read as the criterion and its negation, not as "0"
+            # and "1".
+            target_is_indicator=criterion is not None,
+            sort_Z=sort_Z,
+            translations=translations,
+            positive_value=(
+                1 if criterion is not None
+                else (_np.unique(Z)[-1] if len(_np.unique(Z)) else None)
+            ),
+            center_spec=center_spec,
+        )
+    selected_d = select_branch_dimensionality(branches)
+    return {
+        "target": target_col,
+        "criterion": criterion,
+        "branches": branches_data,
+        "branch_dims": sorted(branches.keys()),
+        # v2.2: the branch opened first is the SMALLEST SUFFICIENT one, not
+        # the widest available. The product goal is the fewest cells that
+        # capture the target value, and `max(branches)` is the opposite of
+        # that: on `relationship = Husband` the 4-D branch certifies 3
+        # centres for 98.6 % coverage where the 2-D branch certifies 1 for
+        # 99.9 %. Falls back to the widest branch only when no
+        # dimensionality certifies anything, since there is then nothing to
+        # prefer.
+        "default_branch": (
+            str(selected_d) if selected_d in branches
+            else (str(max(branches.keys())) if branches else None)
+        ),
+        # v2.2: the answer to "how many characteristics does it take to
+        # describe this value" -- the smallest sufficient dimensionality by
+        # out-of-sample certified coverage, or None when no dimensionality
+        # certifies anything. The frontend must render None as "none",
+        # never as 1.
+        "sufficient_d": None if selected_d is None else int(selected_d),
+        "certificate": {
+            "tau": center_spec.tau,
+            "alpha": center_spec.alpha,
+            "rule": center_spec.rule,
+            "min_samples": center_spec.min_samples,
+            "method": center_spec.method,
+            "multiplicity": center_spec.multiplicity,
+        },
+    }
+
+
+def _prefetch_sibling_values(
+    server: "_VSFServer",
+    target_col: str,
+    criterion: str,
+    center_spec: CenterSpec,
+    cancel: threading.Event,
+) -> None:
+    """
+    Background worker of `_VSFServer.start_prefetch`: computes and caches
+    the `/api/analyze` response for every other observed value of
+    `target_col` (same certificate parameters), one value at a time through
+    `vsf.avr.iter_branches_by_value`, so the exhaustive search over the
+    column's feature set runs once for all of them. Each cached body is
+    byte-identical to what a direct request for that value would produce:
+    the branches are the same objects `discover_branches` returns for the
+    0/1 indicator (pinned in `tests/test_fastpaths.py`), and the response is
+    built by the same `_build_analyze_response`.
+
+    Stops between values as soon as `cancel` is set. Values already cached
+    or already being computed by a foreground request are skipped; a value
+    this worker is computing is registered in `server.inflight`, so a
+    foreground click on it waits for this result instead of duplicating it.
+    """
+    df = server.df
+    try:
+        values = [
+            str(v) for v in df[target_col].dropna().unique().tolist()
+            if str(v) != criterion
+        ]
+        params_of: Dict[str, Dict[str, Any]] = {}
+        keys_of: Dict[str, Tuple[Any, ...]] = {}
+        todo: List[str] = []
+        for v in values:
+            params = {
+                "target_col": target_col, "criterion": v,
+                "tau": center_spec.tau, "alpha": center_spec.alpha,
+                "rule": center_spec.rule, "min_samples": center_spec.min_samples,
+            }
+            key = _analyze_key(params)
+            if server.cache_get(key) is not None:
+                continue
+            params_of[v] = params
+            keys_of[v] = key
+            todo.append(v)
+        if not todo or cancel.is_set():
+            return
+        X_df = df.drop(columns=[target_col])
+        feature_names = list(X_df.columns)
+        X = X_df.values
+        for v, branches in iter_branches_by_value(
+            X,
+            df[target_col].values,
+            todo,
+            feature_names=feature_names,
+            max_d=_MAX_D,
+            random_state=_SCAN_RANDOM_STATE,
+            center_spec=center_spec,
+            n_permutations_centers=DEFAULT_N_PERMUTATIONS,
+        ):
+            if cancel.is_set():
+                return
+            key = keys_of[v]
+            body, event, owner = server.claim(key)
+            if not owner:
+                continue  # cached meanwhile, or a foreground request owns it
+            assert event is not None
+            try:
+                if branches:
+                    payload = _build_analyze_response(server, target_col, v, center_spec, branches)
+                    server.cache_put(key, params_of[v], payload, json.dumps(payload).encode("utf-8"))
+            finally:
+                server.release(key, event)
+    except Exception:  # pragma: no cover - a prefetch failure must never surface
+        return
+
+
+def _append_scan_record(
+    scanned: List[Dict[str, Any]], col: str, val: object, branches: Dict[int, Any]
+) -> None:
+    """One scan row for a (column, value) pair from its discovered branches."""
+    # Winner within the pair: highest coverage, ties broken toward
+    # FEWER certified centres and then toward the LOWER
+    # dimensionality — the same order as
+    # `vsf.centers.coverage_score`, extended with a preference for
+    # the simpler display when two branches are otherwise identical.
+    best_d, best = max(
+        branches.items(),
+        key=lambda kv: (
+            kv[1].centers.coverage if kv[1].centers else 0.0,
+            -(kv[1].centers.n_centers if kv[1].centers else 0),
+            -kv[0],
+        ),
+    )
+    centers = best.centers
+    p_used = (
+        best.coverage_p_value_familywise
+        if best.coverage_p_value_familywise is not None
+        else (centers.coverage_p_value if centers else None)
+    )
+    cv = centers.coverage_cv if centers else None
+    scanned.append({
+        "column": col,
+        "value": str(val),
+        "coverage": float(centers.coverage) if centers else 0.0,
+        "n_centers": int(centers.n_centers) if centers else 0,
+        "purity_pooled": float(centers.purity_pooled) if centers else 0.0,
+        "mass": float(centers.mass) if centers else 0.0,
+        "lift": float(centers.lift) if centers else 0.0,
+        "n_positive": int(centers.n_positive) if centers else 0,
+        "coverage_cv": None if cv is None else float(cv.mean),
+        "coverage_cv_se": None if cv is None else float(cv.se),
+        "undetermined": bool(centers.is_undetermined) if centers else True,
+        "best_d": best_d,
+        "best_features": best.selected_feature_names,
+        "p_value": (
+            None if centers is None or centers.coverage_p_value is None
+            else float(centers.coverage_p_value)
+        ),
+        "p_value_familywise": (
+            None if best.coverage_p_value_familywise is None
+            else float(best.coverage_p_value_familywise)
+        ),
+        # 1.0 rather than None so a pair that produced no p-value is
+        # carried through BH as an automatic non-rejection instead of
+        # silently shrinking the family size m and inflating everyone
+        # else's critical value.
+        "_p": 1.0 if p_used is None else float(p_used),
+    })
 
 
 def _run_dataset_scan(
@@ -717,18 +1016,18 @@ def _run_dataset_scan(
         certified to be at least `spec.tau` pure at simultaneous level
         `1 - spec.alpha`.
 
-        v2.2 changed this from `u_adj`, and the search objective with it, for
-        one reason: the scan's product is a list of (column, value) pairs
-        worth DISPLAYING as discrete centres, and u_adj does not measure
-        that. On `data/adult_census.csv`, income = ">50K" reaches
+        v2.2 changed this from `u_adj` (an association statistic, "does
+        knowing this pair's features tell you anything about the target");
+        v2.3 removed `u_adj` from the codebase entirely (see `vsf.avr`'s
+        module docstring). The scan's product is a list of (column, value)
+        pairs worth DISPLAYING as discrete centres, and association is not
+        that: on the UCI Adult / Census Income dataset, income = ">50K" used to read
         u_adj = 34.0% with zero certified centres at tau = 0.90, and
-        occupation = "Armed-Forces" reaches 44.4% while the highest cell
-        purity anywhere in its best branch is 2.42%. A scan filtered on
-        u_adj returns both; a scan filtered on coverage returns neither, and
-        that is the correct behaviour for the question being asked. u_adj is
-        still recorded per pair as a diagnostic, so the divergence between
-        "an association exists" and "a centre exists" stays visible in the
-        results rather than being decided silently.
+        occupation = "Armed-Forces" read 44.4% while the highest cell purity
+        anywhere in its best branch was 2.42%. A scan filtered on
+        association would have returned both; filtering on coverage returns
+        neither, which is the correct behaviour for the question being
+        asked.
 
     2.  SIGNIFICANCE, FDR-controlled over the whole swept family. Every pair
         contributes its winning branch's COVERAGE permutation p-value to one
@@ -748,106 +1047,72 @@ def _run_dataset_scan(
     search cost. Any published scan result must set it.
 
     Runs entirely in a background thread started by `_handle_scan_start_api`;
-    progress is written to `server.scan_job` under `server.scan_lock` after
-    every pair so `/api/scan/status` always reflects the latest state. Checks
-    `cancel_event` between pairs (not mid-`discover_branches` — see
-    `_handle_scan_cancel_api`'s docstring); a cancelled scan reports the pairs
+    progress is written to `server.scan_job` under `server.scan_lock` before
+    every column so `/api/scan/status` always reflects the latest state.
+
+    Search cost: the candidate partitions of a column's feature set do not
+    depend on which of its values is the positive class, so all values of one
+    column are searched in ONE enumeration of the family
+    (`vsf.avr.discover_branches_by_value`) - one `bincount` per candidate
+    yields the (cells x values) table every value's ranking key is read
+    from. Each (column, value) pair's result is exactly what the per-pair
+    `discover_branches` call produced; only the reporting stage (the
+    per-branch permutation null, cross-validation and, when requested, the
+    familywise null) remains per pair. Consequently `cancel_event` is checked
+    between COLUMNS, not between pairs: a cancelled scan reports the columns
     it did complete, with BH applied to that completed family only.
     """
     df = server.df
     pairs: List[tuple] = []
+    values_by_col: Dict[str, List[object]] = {}
     for col in df.columns:
-        for val in df[col].dropna().unique().tolist():
+        vals = df[col].dropna().unique().tolist()
+        values_by_col[col] = vals
+        for val in vals:
             pairs.append((col, val))
     total = len(pairs)
 
     scanned: List[Dict[str, Any]] = []
     try:
-        for i, (col, val) in enumerate(pairs):
+        done = 0
+        for col in df.columns:
+            vals = values_by_col[col]
+            if not vals:
+                continue
             if cancel_event.is_set():
                 break
 
             with server.scan_lock:
-                server.scan_job["progress"] = {"current": i, "total": total, "label": f"{col} = {val}"}
+                server.scan_job["progress"] = {
+                    "current": done, "total": total, "label": f"{col} = {vals[0]}",
+                }
 
-            Z = (df[col].astype(str) == str(val)).astype(int).values
             X_df = df.drop(columns=[col])
             feature_names = list(X_df.columns)
             X = X_df.values
 
-            branches = discover_branches(
+            by_value = discover_branches_by_value(
                 X,
-                Z,
+                df[col].values,
+                vals,
                 feature_names=feature_names,
                 max_d=_MAX_D,
-                n_permutations=n_permutations,
-                n_permutations_familywise=n_permutations_familywise,
                 random_state=_SCAN_RANDOM_STATE,
-                objective="coverage",
-                positive_class=1,
                 center_spec=spec,
                 n_permutations_centers=n_permutations,
                 n_permutations_familywise_coverage=n_permutations_familywise,
+                # The scan record reads no per-cell interval (see
+                # `_append_scan_record`); skipping them is the difference
+                # between a scan bounded by the search and one bounded by
+                # continued-fraction inversions it throws away.
+                cell_bounds=False,
             )
-            if not branches:
-                continue
-
-            # Winner within the pair: highest coverage, ties broken toward
-            # FEWER certified centres and then toward the LOWER
-            # dimensionality — the same order as
-            # `vsf.centers.coverage_score`, extended with a preference for
-            # the simpler display when two branches are otherwise identical.
-            best_d, best = max(
-                branches.items(),
-                key=lambda kv: (
-                    kv[1].centers.coverage if kv[1].centers else 0.0,
-                    -(kv[1].centers.n_centers if kv[1].centers else 0),
-                    -kv[0],
-                ),
-            )
-            centers = best.centers
-            p_used = (
-                best.coverage_p_value_familywise
-                if best.coverage_p_value_familywise is not None
-                else (centers.coverage_p_value if centers else None)
-            )
-            cv = centers.coverage_cv if centers else None
-            scanned.append({
-                "column": col,
-                "value": str(val),
-                "coverage": float(centers.coverage) if centers else 0.0,
-                "n_centers": int(centers.n_centers) if centers else 0,
-                "purity_pooled": float(centers.purity_pooled) if centers else 0.0,
-                "mass": float(centers.mass) if centers else 0.0,
-                "lift": float(centers.lift) if centers else 0.0,
-                "n_positive": int(centers.n_positive) if centers else 0,
-                "coverage_cv": None if cv is None else float(cv.mean),
-                "coverage_cv_se": None if cv is None else float(cv.se),
-                "undetermined": bool(centers.is_undetermined) if centers else True,
-                # Diagnostic only: retained so that the divergence between
-                # "an association exists" and "a centre exists" is visible in
-                # the scan output instead of being resolved silently.
-                "max_u_adj": float(best.u_adj),
-                "best_d": best_d,
-                "best_mi": float(best.mi),
-                "best_mi_null": float(best.mi_null),
-                "best_mi_adj": float(best.mi_adj),
-                "best_features": best.selected_feature_names,
-                "p_value": (
-                    None if centers is None or centers.coverage_p_value is None
-                    else float(centers.coverage_p_value)
-                ),
-                "p_value_familywise": (
-                    None if best.coverage_p_value_familywise is None
-                    else float(best.coverage_p_value_familywise)
-                ),
-                "p_value_mi": None if best.p_value is None else float(best.p_value),
-                # 1.0 rather than None so a pair that produced no p-value is
-                # carried through BH as an automatic non-rejection instead of
-                # silently shrinking the family size m and inflating everyone
-                # else's critical value.
-                "_p": 1.0 if p_used is None else float(p_used),
-            })
+            done += len(vals)
+            for val in vals:
+                branches = by_value.get(str(val), {})
+                if not branches:
+                    continue
+                _append_scan_record(scanned, col, val, branches)
 
         # BH over the ENTIRE completed family, before any effect-size filter.
         rejected = benjamini_hochberg([r["_p"] for r in scanned], q=fdr_q)
@@ -881,6 +1146,7 @@ def _build_server(
     host: str = "127.0.0.1",
     port: int = 8000,
     translations: Optional[Translations] = None,
+    prefetch: bool = True,
 ) -> _VSFServer:
     """
     Constructs (binds + listens, does NOT `serve_forever()`) the
@@ -897,7 +1163,9 @@ def _build_server(
     if len(df.columns) == 0:
         raise ValueError("df must have at least one column")
 
-    return _VSFServer((host, port), VSFRequestHandler, df=df, translations=translations)
+    return _VSFServer(
+        (host, port), VSFRequestHandler, df=df, translations=translations, prefetch=prefetch
+    )
 
 
 def serve(
@@ -906,6 +1174,7 @@ def serve(
     port: int = 8000,
     open_browser: bool = True,
     translations: Optional[Dict] = None,
+    prefetch: bool = True,
 ) -> None:
     """
     Starts a local HTTP server and opens the browser with the full
@@ -949,8 +1218,14 @@ def serve(
             for the catalog and analysis output. `None` (the default)
             falls back to raw column/value strings, same as every other
             `vsf` function.
+        prefetch: if `True` (default), after each criterion-mode analysis
+            the server computes the responses for the column's other values
+            in a background thread (`_prefetch_sibling_values`) so that the
+            next clicks in that column are served from the response cache.
+            Pass `False` on a machine whose CPU must stay free between
+            requests; results are identical either way.
     """
-    httpd = _build_server(df, host=host, port=port, translations=translations)
+    httpd = _build_server(df, host=host, port=port, translations=translations, prefetch=prefetch)
     url = f"http://{host}:{port}/"
     try:
         print("=" * 70)

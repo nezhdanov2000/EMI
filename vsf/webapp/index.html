@@ -28,7 +28,7 @@
             <div class="brand-title">Visual Sufficiency Framework</div>
         </div>
         <div class="header-status">
-            <span class="header-subtitle">Independent Branch Discovery — Clean Core v2.0</span>
+            <span class="header-subtitle">Independent Branch Discovery — Coverage Only v{{VSF_VERSION}}</span>
         </div>
     </header>
 
@@ -37,7 +37,7 @@
         <aside class="catalog-sidebar">
 
             <!-- Target Selector -->
-            <div class="main-acc-header open" id="headerCatalog" onclick="toggleMainAcc('catalog')">
+            <div class="main-acc-header open" id="headerCatalog" role="button" tabindex="0" aria-expanded="true" aria-controls="contentCatalog" onclick="toggleMainAcc('catalog')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();this.click();}">
                 <div class="main-acc-title">🎯 Target Variable</div>
                 <div class="main-acc-icon">▶</div>
             </div>
@@ -50,18 +50,11 @@
             </div>
 
             <!-- Branch Selector -->
-            <div class="main-acc-header open" id="headerBranches" onclick="toggleMainAcc('branches')">
+            <div class="main-acc-header open" id="headerBranches" role="button" tabindex="0" aria-expanded="true" aria-controls="contentBranches" onclick="toggleMainAcc('branches')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();this.click();}">
                 <div class="main-acc-title">🌿 Branches</div>
                 <div class="main-acc-icon">▶</div>
             </div>
             <div class="main-acc-content open" id="contentBranches">
-                <!-- Populated by renderBranchSelector() in app.js from the
-                     response's own `objective_used`, so this can never say
-                     something the server didn't actually do (the old static
-                     text here kept claiming "raw mutual information" long
-                     after coverage became the default search objective). -->
-                <div class="branch-caption" id="branchCaption" style="display: none;"></div>
-
                 <div id="analysisError" class="analysis-error" style="display: none;"></div>
                 <div id="branchList" class="branch-list">
 
@@ -71,11 +64,32 @@
 
         <!-- Visualization Area -->
         <section class="viz-viewport">
-            <div id="loader" class="loader-overlay active">
+            <div id="loader" class="loader-overlay">
                 <div class="spinner"></div>
                 <div style="font-size: 0.9rem; color: #94a3b8;">Running Independent Branch Discovery...</div>
             </div>
 
+            <!-- Shown until the user picks a target + value in Target Variable.
+                 No target has an interesting class until the user names one, so
+                 nothing is computed and no branch is drawn here by default -- a
+                 branch search always requires a resolvable positive class
+                 (vsf.avr.discover_branches, v2.3); the old behaviour (auto-
+                 analysing a default target/no criterion on page load) hit that
+                 requirement head-on for any target without one. Hidden by
+                 showWelcomeState(false) the moment the first analysis starts
+                 (app.js, runAnalysis()). -->
+            <div id="welcomeState" class="welcome-state">
+                <div class="welcome-state-icon">🎯</div>
+                <div class="welcome-state-title">Choose a target and a value to begin</div>
+                <div class="welcome-state-body">
+                    Open a characteristic in <strong>Target Variable</strong> on the left and click one of its
+                    values. VSF then searches, independently for 1D&ndash;4D, every combination of the remaining
+                    columns for the one that concentrates that value most inside certified (green) discrete
+                    centres, at the purity floor set by the Green slider in Display Settings.
+                </div>
+            </div>
+
+            <div id="resultsArea" style="display: none;">
             <div class="viewport-toolbar">
                 <div style="display: flex; gap: 1.25rem; align-items: center; width: 100%; flex-wrap: wrap;">
                     <div
@@ -129,6 +143,7 @@
                     </select>
                 </div>
             </div>
+            </div><!-- /#resultsArea -->
         </section>
 
         <!-- Visual Settings Sidebar -->
@@ -170,13 +185,11 @@
                  the catalog's active filter are deliberately decoupled state).
                  No FDR/significance filtering is applied here BY CHOICE
                  (app.js's startDatasetScan sends fdr_q=1.0, a verified
-                 no-op -- see metrics.py::benjamini_hochberg): the pre-v2.1
-                 filter (max NMI) saturated toward 100% on exactly the rare
-                 One-vs-Rest criteria this scan manufactures in bulk, and a
-                 sweep of k targets with no significance test at all will
-                 clear a coverage threshold on some of them by chance alone
-                 -- Min. objects is the only guard against that once FDR is
-                 off. Genuinely expensive regardless (one honest exhaustive
+                 no-op -- see metrics.py::benjamini_hochberg). The trade is
+                 real and one-directional: a sweep of k targets with no
+                 significance test will clear a coverage threshold on some of
+                 them by chance alone, and Min. objects is the only guard
+                 against that once FDR is off. Genuinely expensive regardless (one honest exhaustive
                  discover_branches call plus a permutation null per pair --
                  see vsf/server.py's module docstring) so it runs as a
                  polled background job with a cancel button, not a blocking

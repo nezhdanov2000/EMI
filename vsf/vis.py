@@ -13,9 +13,8 @@ Project_Master_Document.md Section 5.6 for why that distinction matters for
 the collapse/split animation built on top of this payload.
 """
 
-import json
 import numpy as np
-from typing import Dict, List, Optional, Sequence, Tuple, Union
+from typing import Dict, List, Optional, Sequence
 from .avr import BranchResult
 from .centers import CenterSpec, purity_bounds, select_centers
 
@@ -207,7 +206,7 @@ class _FullCellStatistics:
     by `vsf.avr` on all 32 561 rows, and the cell purities drawn on screen
     were computed on a 30 % sample of each cell. Both numbers were defensible
     in isolation and their combination was not reproducible: on
-    `data/adult_census.csv` with target `occupation = Armed-Forces`, three of
+    the UCI Adult / Census Income dataset with target `occupation = Armed-Forces`, three of
     the nine positives are absent from the default subsample entirely, so the
     displayed purity of the cell holding them is a different quantity from
     the one behind the reported metric.
@@ -232,20 +231,44 @@ class _FullCellStatistics:
         # latency there. The lookup dict is built from the DISTINCT rows only
         # (hundreds) instead of from all N of them.
         pos = np.asarray(positive_mask).astype(bool)
-        matrix = np.stack([np.asarray(c).astype(str) for c in columns], axis=1)
+        str_cols = [np.asarray(c).astype(str) for c in columns]
         if row_mask is not None:
             keep = np.asarray(row_mask).astype(bool)
-            matrix = matrix[keep]
+            str_cols = [c[keep] for c in str_cols]
             pos = pos[keep]
-        if matrix.shape[0] == 0:
-            uniq = matrix[:0]
+        n_rows = int(str_cols[0].shape[0]) if str_cols else 0
+        if n_rows == 0:
+            uniq_rows: List[tuple] = []
             codes = np.zeros(0, dtype=np.int64)
         else:
-            uniq, codes = np.unique(matrix, axis=0, return_inverse=True)
+            # Row-wise `np.unique(matrix, axis=0)` sorts N string tuples;
+            # coding each column with its own (sorted) `np.unique` and
+            # combining the per-column codes mixed-radix gives the SAME
+            # ordering of the distinct rows - lexicographic on the string
+            # tuple, because per-column codes are monotone in the strings -
+            # so the cell numbering, and with it every downstream index, is
+            # unchanged, at the cost of one integer sort instead of a string
+            # one.
+            levels: List[np.ndarray] = []
+            flat = None
+            for c in str_cols:
+                lv, code = np.unique(c, return_inverse=True)
+                code = np.asarray(code, dtype=np.int64).ravel()
+                levels.append(lv)
+                flat = code if flat is None else flat * int(lv.shape[0]) + code
+            assert flat is not None
+            uniq_flat, codes = np.unique(flat, return_inverse=True)
             codes = np.asarray(codes, dtype=np.int64).ravel()
-        index: Dict[tuple, int] = {
-            tuple(row): i for i, row in enumerate(uniq.tolist())
-        }
+            # Decode the distinct flat codes back into their string tuples.
+            digits: List[np.ndarray] = []
+            rest = uniq_flat.copy()
+            for lv in reversed(levels):
+                radix = int(lv.shape[0])
+                digits.append(lv[rest % radix])
+                rest //= radix
+            digits.reverse()
+            uniq_rows = list(zip(*[d.tolist() for d in digits]))
+        index: Dict[tuple, int] = {row: i for i, row in enumerate(uniq_rows)}
         n_cells = len(index)
         self.index = index
         self.n_per_cell = np.bincount(codes, minlength=n_cells).astype(np.int64)
@@ -403,7 +426,12 @@ def prepare_visualization_payload(
     x_human = [humanize_val(x_name, v, translations) for v in x_vals]
     y_human = [humanize_val(y_name, v, translations) for v in y_vals]
     z_human = [humanize_val(z_name, v, translations) for v in z_vals]
-    w_human = [humanize_val(w_name, v, translations) for v in w_vals] if has_4d else None
+    # NOT built: a `w_human` per-point label for the 4th axis. Every point
+    # rendered under a given 4D slice tab already shares that slice's single
+    # w-value (the tab itself displays it, e.g. "4D Slice: sex -> Female"),
+    # so a per-point line would only repeat on-screen information -- the same
+    # redundant-info reasoning already applied to the certified-centre hover
+    # box below (its 2026-09 trim; see `hov` in `build_grid`).
     # One label map, built from the FULL target vector and reused for the
     # per-sample labels, the legend and the per-class breakdown, so the three
     # can never disagree.
@@ -458,19 +486,20 @@ def prepare_visualization_payload(
             # Clean spacing so individual spheres are clearly visible with gaps
             step = min(0.052, 0.78 / max(S - 1, 1))
 
-        for rank, idx_in_sub in enumerate(cell_indices):
-            # Compute 3D lattice indices (i, j, k)
-            i = rank % S
-            j = (rank // S) % S
-            k = rank // (S * S)
-
-            off_x = (i - (S - 1) / 2.0) * step
-            off_y = (j - (S - 1) / 2.0) * step
-            off_z = (k - (S - 1) / 2.0) * step
-
-            x_cube[idx_in_sub] = np.round(cx + off_x, 4)
-            y_cube[idx_in_sub] = np.round(cy + off_y, 4)
-            z_cube[idx_in_sub] = np.round(cz + off_z, 4)
+        # 3D lattice indices (i, j, k) of every sample's rank within the
+        # cell, vectorised per cell: the same integer and floating-point
+        # expressions as the previous per-sample loop, evaluated on arrays
+        # (an int64 - float subtraction and a float multiply are the same
+        # IEEE operations either way, and `np.round` is the same ufunc).
+        rank = np.arange(N_cell, dtype=np.int64)
+        i = rank % S
+        j = (rank // S) % S
+        k = rank // (S * S)
+        half = (S - 1) / 2.0
+        members = np.asarray(cell_indices, dtype=np.int64)
+        x_cube[members] = np.round(cx + (i - half) * step, 4)
+        y_cube[members] = np.round(cy + (j - half) * step, 4)
+        z_cube[members] = np.round(cz + (k - half) * step, 4)
 
     coords = list(zip(x_num, y_num, z_num))
     cell_counts = Counter(coords)
@@ -568,7 +597,7 @@ def prepare_visualization_payload(
             # "50% positive" for a cell containing ZERO positive-class
             # samples — not a purity measure at all for K > 2, and
             # incompatible with the frontend's discrete 4-zone purity color
-            # banding (`getColorIndexForPurity` in static/js/app.js, see
+            # banding (`getColorIndexForCell` in webapp/static/js/app.js, see
             # Project_Master_Document.md Section 5.3), which assumes this
             # value IS a positive-class probability.
             #
@@ -594,20 +623,24 @@ def prepare_visualization_payload(
             gk.append(int(cell["k"]))
 
             
-            # v2.2 hover trim (2026-09, user request): title, the point-estimate
-            # Share line, the CERTIFIED verdict, and X/Y/Z/4D-slice were all
-            # dropped as redundant with information already on screen when
-            # this box is open -- cell colour already encodes
-            # certified/mixed/low, and the axis labels plus the currently
-            # selected slice tab already identify which cell this is. Only
-            # the confidence bound (the actual statistical claim behind the
-            # colour) and the sample count behind it survive. `n_rendered`
-            # is appended only when the plot is subsampling for render (it
-            # then differs from `N_c`, the full-data count everything else
-            # here is computed on) -- in the common unsampled case the two
-            # are equal and repeating both is exactly the kind of
-            # duplication this trim removes.
+            # v2.2 hover trim (2026-09, user request): title, the CERTIFIED
+            # verdict, and X/Y/Z/4D-slice were dropped as redundant with
+            # information already on screen when this box is open -- cell
+            # colour already encodes certified/mixed/low, and the axis
+            # labels plus the currently selected slice tab already identify
+            # which cell this is. The point-estimate purity line was
+            # dropped in that same trim but restored below (2026-09,
+            # follow-up user request): the confidence bound alone makes the
+            # user do the (lower+upper)/2 arithmetic themselves to see what
+            # share of the data they care about actually sits in this
+            # centre -- showing `pur` directly answers that in one read.
+            # `n_rendered` is appended only when the plot is subsampling for
+            # render (it then differs from `N_c`, the full-data count
+            # everything else here is computed on) -- in the common
+            # unsampled case the two are equal and repeating both is
+            # exactly the kind of duplication this trim removes.
             hov = (
+                f"🎯 <b>Purity:</b> {pur*100:.1f}%<br>"
                 f"📏 <b>Confidence bound:</b> [{cell['purity_lower']*100:.1f}%, "
                 f"{cell['purity_upper']*100:.1f}%]<br>"
                 f"📦 <b>Objects:</b> {N_c} pcs."
@@ -709,12 +742,6 @@ def prepare_visualization_payload(
             "counts": slice_counts,
         }
 
-    # Map `BranchResult.per_class` code indices back onto observed target
-    # values. `vsf.avr._discretize_target` integer-codes categorical and
-    # low-cardinality targets in `np.unique` order over the FULL vector, so
-    # the mapping is exact whenever the code count matches the number of
-    # distinct raw values; it does not when the target was PMD-binned, and
-    # the label is then omitted rather than guessed.
     # Which partition the panel's headline describes: the branch's own, i.e.
     # the joint partition over all `branch.d` displayed axes. `_headline_grid_key`
     # is the grid whose cell list backs the "top centres" listing; for a 4-D
@@ -723,25 +750,6 @@ def prepare_visualization_payload(
     # partition -- the listing is illustrative, the counts are the report.
     _headline_key = "4" if ("4" in cell_stats and branch.d >= 4) else str(min(branch.d, 3))
     _headline_grid_key = str(min(branch.d, 3))
-
-    full_unique_targets = np.unique(Z_arr)
-    labels_align = len(full_unique_targets) == len(branch.per_class)
-    full_target_labels = [_label_of(t) for t in full_unique_targets] if labels_align else []
-    class_breakdown = [
-        {
-            "label_index": ci.label_index,
-            "label": (
-                full_target_labels[ci.label_index] if labels_align
-                else f"class {ci.label_index}"
-            ),
-            "count": int(ci.count),
-            "prevalence": float(ci.prevalence),
-            "contribution_bits": float(ci.contribution_bits),
-            "contribution_share": float(ci.contribution_share),
-            "u_adj_one_vs_rest": float(ci.u_adj_one_vs_rest),
-        }
-        for ci in branch.per_class
-    ]
 
     return {
         "x": x_num.tolist(),
@@ -792,33 +800,17 @@ def prepare_visualization_payload(
         # No scenario/vir/l_target/l_feat/xai_message/history. `d` is this
         # branch's dimensionality, not a globally "optimal" d* chosen by the
         # algorithm — the caller (or user) picked which branch to render.
-        #
-        # v2.1 replaced the reported `nmi` (= MI / min(H(Z), H(X_S))) with
-        # `u_adj`. NMI_min is not a reportable quantity: it divides a
-        # positively-biased numerator by a denominator that collapses toward
-        # zero for a rare target, so it reads ~66 % on a target that is
-        # provably independent of the features. `u_adj` subtracts the exact
-        # permutation expectation `mi_null` from both numerator and
-        # denominator and is 0 % on that same input. `mi` is retained
-        # alongside `mi_null` precisely so the frontend can show the raw
-        # number against the noise floor it has to clear.
+        # v2.3 dropped mi/mi_null/mi_adj/u_adj/h_target/p_value(_familywise)/
+        # significant along with `BranchResult`'s mutual-information fields
+        # (see `vsf.avr`'s module docstring) — `d` is what remains of this
+        # dict; `search_centers`/`centers` below carry the coverage-search
+        # statistics the branch is actually ranked and displayed by.
         #
         # The frontend's WITHIN-branch dimensionality collapse (Section 5.6,
         # case 2) must NOT read this dict for a view dimensionality other
         # than `branch.d` itself; see `view_metrics` below for that.
         "metrics": {
             "d": branch.d,
-            "mi": float(branch.mi),
-            "mi_null": float(branch.mi_null),
-            "mi_adj": float(branch.mi_adj),
-            "u_adj": float(branch.u_adj),
-            "h_target": float(branch.h_target),
-            "p_value": None if branch.p_value is None else float(branch.p_value),
-            "p_value_familywise": (
-                None if branch.p_value_familywise is None
-                else float(branch.p_value_familywise)
-            ),
-            "significant": bool(branch.is_significant()),
         },
         # v2.2 headline. `certificate` describes the rule; `centers` is what
         # it produced on the DISPLAYED partition over all rows;
@@ -892,48 +884,18 @@ def prepare_visualization_payload(
                 "undetermined_reason": branch.centers.undetermined_reason,
             }
         ),
-        # Exact additive decomposition of `metrics.mi` over the target's
-        # classes: sum_z p(z) * D_KL(p(x|z) || p(x)) = I(Z; X). The frontend
-        # shows this because no scalar can answer the question it answers —
-        # whether the headline number is carried by the class the user cares
-        # about or entirely by the majority class. A 0.1 %-prevalence class
-        # typically contributes < 1 % of the total however large the headline.
-        # `label` falls back to the bare class index when the target went
-        # through PMD binning (`vsf.avr._discretize_target`), where code
-        # indices no longer correspond 1:1 to observed target values.
-        "class_breakdown": class_breakdown,
-        # Per-collapsed-view metrics for THIS branch's own axes, keyed by
-        # view dimensionality "1".."{branch.d}" as strings (JSON object
-        # keys are always strings). `view_metrics["mi_by_d"][str(k)]` is
-        # I(Z; X_{S[:k]}) for this branch's own first k selected features —
-        # a marginal/projection of this branch's own joint distribution,
-        # NOT `discover_branches`'s independently-optimal k-dimensional
-        # branch (see `vsf.avr.BranchResult.mi_by_prefix_d`'s docstring).
-        # The frontend's dimensionality toggle (`setDimensionality`/
-        # `updateHUDForDimension`) must read THESE values for the currently
-        # viewed d, not the fixed `metrics` scalars above — using
-        # the latter for a collapsed (d < branch.d) view silently overstates
-        # the association actually carried by the visible axes.
-        #
-        # Empty prefix lists (i.e. a `BranchResult` built by hand rather than
-        # via `discover_branches`, as some unit tests do) fall back to a
-        # single entry at the branch's own `d`, matching `metrics` above.
+        # Per-collapsed-view centre statistics for THIS branch's own axes,
+        # keyed by view dimensionality "1".."4" as strings (JSON object keys
+        # are always strings). The frontend's dimensionality toggle
+        # (`setDimensionality`/`updateHUDForDimension`) must read THESE
+        # values for the currently viewed d, not a fixed branch-level
+        # scalar — using a full-branch number for a collapsed (d < branch.d)
+        # view would silently overstate what the visible axes alone carry.
+        # v2.3 dropped mi_by_d/mi_adj_by_d/u_adj_by_d along with
+        # `BranchResult.mi_adj_by_prefix_d`/`u_adj_by_prefix_d` (see
+        # `vsf.avr`'s module docstring) — coverage_by_d below is the
+        # equivalent for the statistic the branch is actually ranked by.
         "view_metrics": {
-            "mi_by_d": (
-                {str(k + 1): v for k, v in enumerate(branch.mi_by_prefix_d)}
-                if branch.mi_by_prefix_d
-                else {str(branch.d): float(branch.mi)}
-            ),
-            "mi_adj_by_d": (
-                {str(k + 1): v for k, v in enumerate(branch.mi_adj_by_prefix_d)}
-                if branch.mi_adj_by_prefix_d
-                else {str(branch.d): float(branch.mi_adj)}
-            ),
-            "u_adj_by_d": (
-                {str(k + 1): v for k, v in enumerate(branch.u_adj_by_prefix_d)}
-                if branch.u_adj_by_prefix_d
-                else {str(branch.d): float(branch.u_adj)}
-            ),
             # Centre statistics for each collapsed view, computed on the SAME
             # displayed partition the user is looking at (so a 1-D view's
             # coverage is the coverage of the 1-D lattice on screen, not a

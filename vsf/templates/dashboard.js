@@ -1,5 +1,5 @@
 // vsf.dashboard client-side driver — v2.0 "Clean Core" (see
-// Project_Master_Document.md Section 0). There is no server to fetch from:
+// Project_Master_Document.md). There is no server to fetch from:
 // everything is precomputed in Python and embedded as DASHBOARD_DATA /
 // BRANCHES_DATA (see vsf/dashboard.py). DASHBOARD_DATA.branch_dims lists
 // every dimensionality (1..4) for which Independent Branch Discovery
@@ -10,7 +10,7 @@
 // branch d=1's or d=3's (feature synergy, Section 4.4).
 //
 // Two interactions this file must keep visually distinct
-// (Project_Master_Document.md Section 5.6 / UI_Functional_Spec.md Section 4):
+// (Project_Master_Document.md Section 5.6):
 //   1. Branch selection (selectBranch): swaps `currentPayload` to a whole
 //      new independently-discovered branch. INSTANT — no animation, since
 //      the axes/features may be completely different and Object Constancy
@@ -22,7 +22,7 @@
 //      circle sizes (Object Constancy) — it never changes which branch/
 //      features are in play.
 //
-// Removed relative to v1.0 (Project_Master_Document.md Section 0 — do not
+// Removed relative to v1.0 (see git history — do not
 // re-add): the Scenario A/B/C/D picker and per-column "live scenario"
 // switching (SCENARIOS_DATA/selectScenario), the Top Insights auto-
 // discovery sidebar (TOP_INSIGHTS_DATA/populateTopCatalog), dirty-center
@@ -133,15 +133,6 @@ function applyColorBoundary() {
     renderPlot(currentPayload);
 }
 
-// Retained ONLY for the legacy purity-range filter (`checkMatch`), which
-// selects cells by point purity and is a display filter, not a claim.
-function getColorIndexForPurity(purity) {
-    if (purity < 0.25) return 0;
-    if (purity < 0.75) return 1;
-    if (purity <= 0.85) return 2;
-    return 3;
-}
-
 // ---------------------------------------------------------------------
 // Boot
 function init() {
@@ -247,7 +238,6 @@ function populateBranches() {
         const key = String(d);
         const branch = BRANCHES_DATA[key];
         if (!branch) return;
-        const m = branch.metrics;
         const featuresText = (branch.selected_features || []).join(' + ');
 
         const item = document.createElement('div');
@@ -257,17 +247,14 @@ function populateBranches() {
             <div class="branch-item-header">
                 <span class="branch-item-dim">${d}D</span>
                 <span class="branch-item-metrics">
-                    <span class="branch-mi" title="Raw plug-in mutual information in bits, against this branch's own noise floor E₀[MI]">MI ${m.mi.toFixed(3)} / E₀ ${m.mi_null.toFixed(3)}</span>
-                    <span class="branch-uadj" title="Share of all target-value samples inside certified discrete centres. This is what the branch delivers; U_adj below is a diagnostic of whether an association exists at all, and on a rare target the two diverge completely.">${
+                    <span class="branch-uadj" title="Share of all target-value samples inside certified discrete centres. This is what the branch is ranked and delivered by.">${
                         (branch.centers && branch.centers.n_centers)
                             ? `coverage ${(branch.centers.coverage * 100).toFixed(1)}% · ${branch.centers.n_centers} centre${branch.centers.n_centers === 1 ? '' : 's'}`
                             : 'no certified centres'
                     }</span>
-                    <span class="branch-uadj" style="opacity:0.7;" title="DIAGNOSTIC. Bias-corrected share of the target's entropy resolved by these axes.">U<sub>adj</sub> ${(m.u_adj * 100).toFixed(1)}%</span>
                 </span>
             </div>
             <div class="branch-item-features">${featuresText || '(no features selected)'}</div>
-            <div class="branch-mi-caption">${formatSignificance(m)}</div>
         `;
         item.onclick = () => selectBranch(d);
         container.appendChild(item);
@@ -285,7 +272,7 @@ function _markActiveBranch(key) {
 // export was baked for exactly one target/criterion; there is no server
 // to refit against, so clicking a column/criterion here never changes the
 // visualizer (unlike v1.0's live per-column scenario switching, which is
-// removed — see Project_Master_Document.md Section 0). Only expand/collapse
+// removed — see git history). Only expand/collapse
 // and a static note on the baked-in target/criterion.
 function populateCatalog(cols) {
     const accordion = document.getElementById('catalogAccordion');
@@ -351,8 +338,9 @@ function toggleMainAcc(suffix) {
     const header = document.getElementById('header' + suffix);
     const content = document.getElementById('content' + suffix);
     if (!header || !content) return;
-    header.classList.toggle('open');
+    const nowOpen = header.classList.toggle('open');
     content.classList.toggle('open');
+    header.setAttribute('aria-expanded', nowOpen ? 'true' : 'false');
 }
 
 function showLoader(show) {
@@ -432,28 +420,17 @@ function renderDimensionButtons(payload) {
     }
 }
 
-// Formats a branch's significance statement. Deliberately explicit about
-// WHICH p-value is being shown: `p_value` is the uncorrected permutation
-// p-value of a subset that was CHOSEN as the argmax over C(M,1..4)
-// candidates, so it is anti-conservative and must not be presented as the
-// significance of a discovery. `p_value_familywise` is the corrected one and
-// is only present when the caller paid for it.
-function formatSignificance(m) {
-    if (m.p_value_familywise !== null && m.p_value_familywise !== undefined) {
-        return `p = ${m.p_value_familywise.toFixed(3)} (family-corrected over the full 1D–4D search)`;
-    }
-    if (m.p_value !== null && m.p_value !== undefined) {
-        return `p = ${m.p_value.toFixed(3)} (uncorrected — this branch was selected as an argmax)`;
-    }
-    return 'no significance test run';
-}
-
+// v2.3: `formatSignificance` (raw-MI p-value formatting) was removed along
+// with `BranchResult.mi`/`p_value`/`p_value_familywise` (see vsf.avr's
+// module docstring) -- the coverage-search p-value this export still ships
+// is `search_centers.coverage_p_value(_familywise)`, read directly below.
+//
 // HUD metrics — every readout must track the CURRENTLY VIEWED collapsed
 // dimensionality `viewD`, not the branch's fixed full-d aggregate: a
 // viewD < m.d readout is a projection of this branch's own axes onto its
 // first `viewD` of them, and generally carries LESS information than the
 // full branch (see vsf.vis's `view_metrics` and
-// vsf.avr.BranchResult.mi_by_prefix_d docstrings) — showing the full-branch
+// vsf.avr.BranchResult.coverage_by_prefix_d docstrings) — showing the full-branch
 // values while collapsed silently overstates what the visible axes alone
 // explain.
 //
@@ -465,20 +442,9 @@ function updateHUDForDimension(viewD) {
     const m = currentPayload.metrics;
     const vm = currentPayload.view_metrics;
     const dKey = String(viewD);
-    const viewMi = (vm && vm.mi_by_d && vm.mi_by_d[dKey] !== undefined) ? vm.mi_by_d[dKey] : m.mi;
-    const viewUAdj = (vm && vm.u_adj_by_d && vm.u_adj_by_d[dKey] !== undefined) ? vm.u_adj_by_d[dKey] : m.u_adj;
 
     const dEl = document.getElementById('val-branch-d');
     if (dEl) dEl.innerText = (viewD === m.d) ? `${m.d}D` : `${viewD}D (of ${m.d}D branch)`;
-
-    const miEl = document.getElementById('val-mi');
-    if (miEl) miEl.innerText = viewMi.toFixed(3);
-
-    const floorEl = document.getElementById('val-mi-null');
-    if (floorEl) floorEl.innerText = `noise floor E₀ = ${m.mi_null.toFixed(3)} bits`;
-
-    const uEl = document.getElementById('val-u-adj');
-    if (uEl) uEl.innerText = `${(viewUAdj * 100).toFixed(1)}%`;
 
     // v2.2 headline: coverage / K / pooled purity for the CURRENTLY VIEWED
     // dimensionality, read from the displayed partition itself.
@@ -521,14 +487,13 @@ function updateHUDForDimension(viewD) {
 
     const pEl = document.getElementById('val-pvalue');
     if (pEl) {
-        const p = (m.p_value_familywise !== null && m.p_value_familywise !== undefined)
-            ? m.p_value_familywise : m.p_value;
+        const p = (sc && sc.coverage_p_value_familywise !== null && sc.coverage_p_value_familywise !== undefined)
+            ? sc.coverage_p_value_familywise
+            : (cBlock && cBlock.coverage_p_value);
         pEl.innerText = (p === null || p === undefined) ? 'not tested' : p.toFixed(3);
         pEl.style.color = (p !== null && p !== undefined && p <= 0.01)
             ? 'var(--green)' : 'var(--text-dim)';
     }
-    const chip = document.getElementById('chip-significance');
-    if (chip) chip.title = formatSignificance(m);
 }
 
 function setDimensionality(d) {

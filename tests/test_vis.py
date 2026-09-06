@@ -1,7 +1,7 @@
 """
 Regression tests for vsf.vis.
 
-Covers two bugs from the code review:
+Covers two long-standing bugs from the original code review:
   1. Axis fallback selection (`prepare_visualization_payload`): when the
      branch selects fewer than 3 features (d < 3), the Y/Z scatter axes
      used to fall back to the raw literal column indices 1 and 2 regardless
@@ -19,36 +19,61 @@ dataset vocabulary of its own -- `humanize_val`/`humanize_col` and
 (see `vsf.vis.Translations`) and fall back to raw column/value strings with
 none supplied.
 
-v2.0 note: `prepare_visualization_payload`'s first parameter is now a
-`vsf.avr.BranchResult` (Project_Master_Document.md Section 4.2), not the
-removed v1.0 `AVRResult`/`Scenario` -- no more scenario/vir/l_target/l_feat/
-xai_message/history.
-
-v2.1 note: `metrics` no longer carries `nmi`. It carries the raw plug-in `mi`
-together with the noise floor `mi_null` it has to clear, the bias-corrected
-`mi_adj`/`u_adj`, and the permutation p-values. A payload that offered a
-consumer `nmi` would be offering a number that reads ~66 % on data provably
-independent of a rare target. `vsf.vis` no longer exposes a `generate_interactive_html` function
-(deleted, confirmed dead/no callers) -- there is nothing left to test for it.
+v2.3 note ("Coverage Only"): `BranchResult.centers` is now a REQUIRED
+`vsf.centers.CenterReport`, not `Optional` -- there is no longer a
+"branch with no centres" case to construct, because `discover_branches`
+cannot produce a `BranchResult` without a positive class and a certificate.
+`BranchResult` no longer carries `mi`/`mi_null`/`mi_adj`/`u_adj`/`h_target`/
+`p_value`/`p_value_familywise`/`per_class`, and the payload's `metrics` dict
+is now just `{"d": branch.d}` -- see `vsf.avr`'s and `vsf.vis`'s module
+docstrings. `view_metrics`'s per-collapsed-view breakdown
+(`coverage_by_d`/`n_centers_by_d`/`purity_by_d`/`max_purity_lower_by_d`) is
+computed directly from the DISPLAYED partition (`cell_stats`), never from
+`BranchResult`'s own prefix series -- so it is fully populated even for a
+hand-built branch that carries no prefix series at all. The payload no
+longer carries a `class_breakdown` key (it read `BranchResult.per_class`,
+which is gone).
 """
 
 import numpy as np
 import pytest
 
 from vsf.avr import BranchResult, discover_branches
+from vsf.centers import CenterSpec, center_report
+from vsf.metrics import cell_codes as _cell_codes
 from vsf.vis import _axis_fallback_indices, humanize_col, humanize_val, prepare_visualization_payload
 
 
-def _make_branch(selected_features, d=None):
+def _make_branch(X, Z, selected_features, d=None, spec=None, z_binary=None,
+                  cv_repeats=0, n_permutations=0):
+    """
+    Hand-builds a `BranchResult` the way a test needs to (not via
+    `discover_branches`), but with a REAL `vsf.centers.CenterReport` for
+    `centers` -- required since v2.3, and cheap to compute directly on the
+    raw (undiscretized) `X` columns the payload itself will use.
+
+    `z_binary` defaults to an indicator of `Z`'s highest `np.unique` code,
+    matching `prepare_visualization_payload`'s own default `positive_value`
+    resolution, so the two stay consistent unless a test overrides it.
+    Prefix-series fields (`coverage_by_prefix_d`, ...) are left at their
+    empty-list default: this helper is for tests that want a branch NOT
+    produced by `discover_branches`, where no per-view breakdown exists.
+    """
+    combo = list(selected_features)
+    codes, n_cells = _cell_codes(np.asarray(X)[:, combo])
+    if z_binary is None:
+        z_arr = np.asarray(Z).ravel()
+        z_binary = (z_arr == np.unique(z_arr)[-1]).astype(np.int8)
+    centers = center_report(
+        np.asarray(z_binary).astype(np.int8), codes, n_cells,
+        spec if spec is not None else CenterSpec(),
+        n_repeats=cv_repeats, n_permutations=n_permutations,
+    )
     return BranchResult(
-        d=d if d is not None else len(selected_features),
-        selected_features=list(selected_features),
-        selected_feature_names=[f"f{j}" for j in selected_features],
-        mi=0.5,
-        mi_null=0.05,
-        mi_adj=0.45,
-        u_adj=0.5,
-        h_target=1.0,
+        d=d if d is not None else len(combo),
+        selected_features=combo,
+        selected_feature_names=[f"f{j}" for j in combo],
+        centers=centers,
     )
 
 
@@ -90,7 +115,7 @@ def test_prepare_visualization_payload_no_duplicate_axes_when_d_is_1():
 
     # Selected feature is literally column 1 -- the exact case that used to
     # duplicate the Y axis onto X.
-    branch = _make_branch(selected_features=[1])
+    branch = _make_branch(X, Z, [1])
     payload = prepare_visualization_payload(
         branch, X, Z, feature_names=feature_names, target_name="class", sort_Z=Z
     )
@@ -106,7 +131,7 @@ def test_build_grid_purity_is_share_of_positive_class_for_binary_target():
     n = 300
     X = rng.integers(0, 3, size=(n, 3))
     Z = rng.integers(0, 2, size=n)
-    branch = _make_branch(selected_features=[0, 1, 2])
+    branch = _make_branch(X, Z, [0, 1, 2])
     payload = prepare_visualization_payload(
         branch, X, Z, feature_names=["a", "b", "c"], target_name="class", sort_Z=Z
     )
@@ -130,7 +155,11 @@ def test_build_grid_purity_correct_for_multiclass_middle_class_cell():
     Z = rng.integers(0, 3, size=n)
     Z[mask] = 1
 
-    branch = _make_branch(selected_features=[0, 1, 2])
+    # `_make_branch`'s CenterReport is unrelated to this test's assertions
+    # (grid purity is computed on the raw Z/positive_value the payload call
+    # is given, not on `branch.centers`), so a plain default z_binary
+    # (indicator of the highest class code) is fine here.
+    branch = _make_branch(X, Z, [0, 1, 2])
     payload = prepare_visualization_payload(
         branch, X, Z, feature_names=["a", "b", "c"], target_name="class", sort_Z=Z
     )
@@ -164,7 +193,7 @@ def test_humanize_functions_raw_passthrough_with_no_translations():
     n = 200
     X = rng.integers(0, 4, size=(n, 3))
     Z = rng.integers(0, 2, size=n)
-    branch = _make_branch(selected_features=[0, 1, 2])
+    branch = _make_branch(X, Z, [0, 1, 2])
     payload = prepare_visualization_payload(
         branch, X, Z, feature_names=["cap-shape", "odor", "habitat"],
         target_name="class", sort_Z=Z,
@@ -205,7 +234,7 @@ def test_humanize_functions_translations_override_end_to_end():
         rng.integers(0, 4, size=n),
     ])
     Z = rng.choice(["f", "n"], size=n)
-    branch = _make_branch(selected_features=[0, 1, 2])
+    branch = _make_branch(X, Z, [0, 1, 2])
     payload = prepare_visualization_payload(
         branch, X, Z, feature_names=["odor", "cap-shape", "habitat"],
         target_name="odor", sort_Z=Z, translations=translations,
@@ -219,108 +248,101 @@ def test_humanize_functions_translations_override_end_to_end():
 
 
 # ---------------------------------------------------------------------------
-# v2.1 metrics shape -- no scenario/vir/history, and no `nmi`
+# v2.3 "Coverage Only" `metrics` shape -- no scenario/vir/history, no MI
 # ---------------------------------------------------------------------------
 
-def test_metrics_shape_is_the_v21_corrected_set():
+def test_metrics_shape_is_the_v23_coverage_only_set():
     rng = np.random.default_rng(5)
     n = 200
     X = rng.integers(0, 3, size=(n, 3))
     Z = rng.integers(0, 2, size=n)
-    branch = BranchResult(
-        d=2,
-        selected_features=[0, 1],
-        selected_feature_names=["a", "b"],
-        mi=0.734,
-        mi_null=0.034,
-        mi_adj=0.700,
-        u_adj=0.612,
-        h_target=1.178,
-        p_value=0.001,
-    )
+    branch = _make_branch(X, Z, [0, 1], d=2)
     payload = prepare_visualization_payload(
         branch, X, Z, feature_names=["a", "b", "c"], target_name="class", sort_Z=Z
     )
-    assert set(payload["metrics"].keys()) == {
-        "d", "mi", "mi_null", "mi_adj", "u_adj", "h_target",
-        "p_value", "p_value_familywise", "significant",
-    }
-    assert payload["metrics"]["mi"] == pytest.approx(0.734)
-    assert payload["metrics"]["mi_null"] == pytest.approx(0.034)
-    assert payload["metrics"]["u_adj"] == pytest.approx(0.612)
-    assert payload["metrics"]["p_value"] == pytest.approx(0.001)
-    assert payload["metrics"]["p_value_familywise"] is None
-    # No leftover v1.0 fields anywhere in the payload, and no NMI: a
-    # consumer must not be able to reach the metric v2.1 removed.
-    for banned in ("scenario", "vir", "l_target", "l_feat", "xai_message", "history", "d_star"):
-        assert banned not in payload
-        assert banned not in payload["metrics"]
-    assert "nmi" not in payload["metrics"]
-    assert "nmi_by_d" not in payload["view_metrics"]
+    assert payload["metrics"] == {"d": 2}
+    # No leftover v1.0 fields, and no MI-era fields (mi/mi_adj/u_adj/p_value/
+    # per_class): a consumer must not be able to reach anything v2.1-v2.3
+    # removed by reading the payload.
+    banned = (
+        "scenario", "vir", "l_target", "l_feat", "xai_message", "history",
+        "d_star", "nmi", "mi", "mi_null", "mi_adj", "u_adj", "h_target",
+        "p_value", "p_value_familywise", "significant", "per_class",
+    )
+    for name in banned:
+        assert name not in payload
+        assert name not in payload["metrics"]
+    assert "class_breakdown" not in payload
+    for key in ("mi_by_d", "mi_adj_by_d", "u_adj_by_d", "nmi_by_d"):
+        assert key not in payload["view_metrics"]
 
 
 # ---------------------------------------------------------------------------
-# `view_metrics` -- regression coverage for the within-branch
-# dimensionality-collapse HUD bug (the frontend was reading the branch's
-# fixed full-d `metrics` scalars for every collapsed view, instead of the
-# marginals of the axes actually on screen).
+# `view_metrics` -- per-collapsed-view centre statistics, computed from the
+# DISPLAYED partition (never from `BranchResult`'s own prefix series).
 # ---------------------------------------------------------------------------
 
-def test_view_metrics_falls_back_to_single_entry_for_hand_built_branch():
-    # `_make_branch`-style BranchResult objects (constructed directly, not
-    # via `discover_branches`) carry no per-prefix series --
-    # `prepare_visualization_payload` must degrade gracefully to a
-    # single-entry breakdown at the branch's own `d`, matching `metrics`,
-    # rather than raising or emitting an empty/misleading dict.
+def test_view_metrics_is_fully_populated_for_a_hand_built_branch_with_no_prefix_series():
+    # A `_make_branch`-style BranchResult (constructed directly, not via
+    # `discover_branches`) carries no per-prefix series
+    # (`coverage_by_prefix_d` etc. are empty). Unlike the v2.1/v2.2 MI-era
+    # payload, v2.3's `view_metrics` does not read those series at all --
+    # it is computed fresh from `cell_stats` (the actual displayed
+    # partition) every time, so it must be fully populated regardless.
     rng = np.random.default_rng(5)
     n = 200
     X = rng.integers(0, 3, size=(n, 3))
     Z = rng.integers(0, 2, size=n)
-    branch = BranchResult(
-        d=2, selected_features=[0, 1], selected_feature_names=["a", "b"],
-        mi=0.734, mi_null=0.034, mi_adj=0.700, u_adj=0.612, h_target=1.178,
-    )
+    branch = _make_branch(X, Z, [0, 1], d=2)
+    assert branch.coverage_by_prefix_d == []  # the precondition this test is about
     payload = prepare_visualization_payload(
         branch, X, Z, feature_names=["a", "b", "c"], target_name="class", sort_Z=Z
     )
-    assert payload["view_metrics"]["mi_by_d"] == {"2": pytest.approx(0.734)}
-    assert payload["view_metrics"]["mi_adj_by_d"] == {"2": pytest.approx(0.700)}
-    assert payload["view_metrics"]["u_adj_by_d"] == {"2": pytest.approx(0.612)}
-    # v2.2: the centre series does NOT degrade with the branch. It is computed
-    # from the displayed partition itself, not from `BranchResult`, so it is
-    # populated for all three view dimensionalities even for a hand-built
-    # branch that carries no prefix series and no CenterReport.
-    for key in ("coverage_by_d", "n_centers_by_d", "purity_by_d"):
+    for key in ("coverage_by_d", "n_centers_by_d", "purity_by_d", "max_purity_lower_by_d"):
         assert set(payload["view_metrics"][key]) == {"1", "2", "3"}
-    assert payload["search_centers"] is None
+    # `centers` is required since v2.3 -- a hand-built branch's own
+    # CenterReport must still surface as `search_centers`, never None.
+    assert payload["search_centers"] is not None
+    assert payload["search_centers"]["coverage"] == pytest.approx(branch.centers.coverage)
 
 
 def test_view_metrics_carries_the_full_per_view_breakdown_from_discover_branches():
     # For a branch actually produced by `discover_branches`, `view_metrics`
-    # must expose an entry for EVERY view dimensionality 1..branch.d (not
-    # just the branch's own full d), and the full-d entry must match
-    # `metrics` exactly.
-    rng = np.random.default_rng(13)
-    n = 500
+    # must expose an entry for every view dimensionality 1..3 (the payload
+    # always builds 1D/2D/3D grids), and the full-d entry must match the
+    # headline `centers` block exactly (both come from the same displayed
+    # partition). A collapsed (1D) view's coverage must be a genuinely
+    # different, LOWER number than the full 3D branch's whenever the extra
+    # axes carry real information -- otherwise this test would not catch a
+    # regression back to always showing the full-branch value.
+    rng = np.random.default_rng(19)
+    n = 3000
     X = rng.integers(0, 3, size=(n, 4))
-    Z = rng.integers(0, 2, size=n)
-    branches = discover_branches(X, Z, max_d=3)
+    # Deterministic AND of three conditions: only the full 3-axis join
+    # isolates a pure cell: 1D/2D marginals cannot certify anything at the
+    # default tau=0.90.
+    Z = ((X[:, 0] == 0) & (X[:, 1] == 1) & (X[:, 2] == 2)).astype(int)
+    branches = discover_branches(
+        X, Z, feature_names=["a", "b", "c", "d"], max_d=3,
+        n_permutations_centers=0, cv_repeats=0, positive_class=1,
+    )
     branch = branches[3]
     payload = prepare_visualization_payload(
-        branch, X, Z, feature_names=["a", "b", "c", "d"], target_name="class", sort_Z=Z
+        branch, X, Z, feature_names=["a", "b", "c", "d"],
+        target_name="t", target_is_indicator=True, positive_value=1,
     )
     vm = payload["view_metrics"]
-    assert set(vm["mi_by_d"].keys()) == {"1", "2", "3"}
-    assert set(vm["mi_adj_by_d"].keys()) == {"1", "2", "3"}
-    assert set(vm["u_adj_by_d"].keys()) == {"1", "2", "3"}
-    assert vm["mi_by_d"]["3"] == pytest.approx(payload["metrics"]["mi"])
-    assert vm["mi_adj_by_d"]["3"] == pytest.approx(payload["metrics"]["mi_adj"])
-    assert vm["u_adj_by_d"]["3"] == pytest.approx(payload["metrics"]["u_adj"])
-    # A collapsed (1D/2D) view's mi must be a genuinely different number
-    # from the fixed full-branch mi whenever the branch's own 3rd axis adds
-    # information -- otherwise this test would not actually catch a
-    # regression back to always showing `metrics.mi`.
-    assert vm["mi_by_d"]["1"] != pytest.approx(payload["metrics"]["mi"])
+    assert set(vm["coverage_by_d"].keys()) == {"1", "2", "3"}
+    assert set(vm["n_centers_by_d"].keys()) == {"1", "2", "3"}
+    assert set(vm["purity_by_d"].keys()) == {"1", "2", "3"}
+    assert vm["coverage_by_d"]["3"] == pytest.approx(payload["centers"]["coverage"])
+    assert vm["n_centers_by_d"]["3"] == payload["centers"]["n_centers"]
+    assert vm["purity_by_d"]["3"] == pytest.approx(payload["centers"]["purity_pooled"])
+    # The full join certifies (coverage 1.0); the 1D marginal on its own
+    # axis certifies nothing at all -- a real, large difference.
+    assert vm["coverage_by_d"]["3"] == pytest.approx(1.0)
+    assert vm["coverage_by_d"]["1"] == 0.0
+    assert vm["coverage_by_d"]["1"] != pytest.approx(vm["coverage_by_d"]["3"])
 
 
 def test_prepare_visualization_payload_handles_4d_branch_slice_axis():
@@ -328,24 +350,13 @@ def test_prepare_visualization_payload_handles_4d_branch_slice_axis():
     n = 400
     X = rng.integers(0, 3, size=(n, 4))
     Z = rng.integers(0, 2, size=n)
-    branch = BranchResult(
-        d=4,
-        selected_features=[0, 1, 2, 3],
-        selected_feature_names=["a", "b", "c", "w"],
-        mi=0.4,
-        mi_null=0.05,
-        mi_adj=0.35,
-        u_adj=0.3,
-        h_target=1.0,
-    )
+    branch = _make_branch(X, Z, [0, 1, 2, 3], d=4)
     payload = prepare_visualization_payload(
         branch, X, Z, feature_names=["a", "b", "c", "w"], target_name="class", sort_Z=Z
     )
     assert payload["slice_axis"] is not None
     assert payload["slice_axis"]["name"] == "w"
-    assert payload["metrics"]["d"] == 4
-    assert payload["metrics"]["mi"] == pytest.approx(0.4)
-    assert payload["metrics"]["u_adj"] == pytest.approx(0.3)
+    assert payload["metrics"] == {"d": 4}
     # Per-slice grids plus the "all" marginal must be present.
     for sv_idx in range(len(payload["slice_axis"]["ticks"])):
         assert f"4_{sv_idx}" in payload["grids"]
@@ -364,19 +375,17 @@ def test_generate_interactive_html_no_longer_exists():
 # v2.2: cell statistics are computed on ALL rows, not the render subsample
 # ---------------------------------------------------------------------------
 def test_cell_statistics_use_every_row_while_only_the_scatter_is_subsampled():
-    # REGRESSION WITNESS for Section 0-ter, defect 2. Before v2.2,
-    # `total_samples` held the RENDERED count while `vsf.avr` computed every
-    # metric on all rows, and the per-cell purities drawn on screen were
-    # computed on the subsample. The two Ns must now be reported separately
-    # and the cell counts must sum to the full N.
-    from vsf.avr import discover_branches
-
+    # REGRESSION WITNESS. Before v2.2, `total_samples` held the RENDERED
+    # count while `vsf.avr` computed every metric on all rows, and the
+    # per-cell purities drawn on screen were computed on the subsample. The
+    # two Ns must be reported separately and the cell counts must sum to N.
     rng = np.random.default_rng(19)
     n = 3000
     X = rng.integers(0, 3, size=(n, 3))
     Z = (X[:, 0] == 0).astype(int)
     branches = discover_branches(
-        X, Z, feature_names=["a", "b", "c"], n_permutations=0, positive_class=1
+        X, Z, feature_names=["a", "b", "c"],
+        n_permutations_centers=0, cv_repeats=0, positive_class=1,
     )
     payload = prepare_visualization_payload(
         branches[2], X, Z, feature_names=["a", "b", "c"],
@@ -394,14 +403,13 @@ def test_cell_statistics_use_every_row_while_only_the_scatter_is_subsampled():
 
 
 def test_certificate_block_and_center_summary_are_present_and_consistent():
-    from vsf.avr import discover_branches
-
     rng = np.random.default_rng(21)
     n = 4000
     X = rng.integers(0, 4, size=(n, 3))
     Z = (X[:, 0] == 0).astype(int)
     branches = discover_branches(
-        X, Z, feature_names=["a", "b", "c"], n_permutations=0, positive_class=1
+        X, Z, feature_names=["a", "b", "c"],
+        n_permutations_centers=0, cv_repeats=0, positive_class=1,
     )
     payload = prepare_visualization_payload(
         branches[1], X, Z, feature_names=["a", "b", "c"],
@@ -429,17 +437,11 @@ def test_a_singleton_pure_cell_follows_the_active_rule_in_the_payload():
     # min_samples = 2 it is not either. All three must be visible in the
     # payload, because the renderer colours from `certified` and the panel
     # counts from `centers`, and those two must never disagree.
-    from vsf.avr import BranchResult
-    from vsf.centers import CenterSpec
-
     X = np.array([[0]] * 400 + [[1]], dtype=int)
     Z = np.array([0] * 400 + [1], dtype=int)
-    branch = BranchResult(
-        d=1, selected_features=[0], selected_feature_names=["a"],
-        mi=0.0, mi_null=0.0, mi_adj=0.0, u_adj=0.0, h_target=0.0,
-    )
 
     def build(spec):
+        branch = _make_branch(X, Z, [0], d=1, spec=spec)
         return prepare_visualization_payload(
             branch, X, Z, feature_names=["a"], target_name="t",
             target_is_indicator=True, positive_value=1, center_spec=spec,
@@ -470,22 +472,20 @@ def test_a_singleton_pure_cell_follows_the_active_rule_in_the_payload():
 def test_every_payload_key_the_renderers_read_is_actually_produced():
     """
     Static contract check between `prepare_visualization_payload` and both
-    front-ends. The v2.2 payload grew six grid arrays and two top-level
-    blocks; a renderer reading a key that the payload stopped producing
+    front-ends. A renderer reading a key that the payload stopped producing
     fails silently in the browser (JavaScript yields `undefined`, the cell
     draws grey, nobody sees an error), so the coupling is pinned here rather
     than discovered visually.
     """
     from pathlib import Path
 
-    from vsf.avr import discover_branches
-
     rng = np.random.default_rng(29)
     n = 2000
     X = rng.integers(0, 4, size=(n, 4))
     Z = ((X[:, 0] == 0) & (X[:, 1] == 1)).astype(int)
     branches = discover_branches(
-        X, Z, feature_names=list("abcd"), n_permutations=0, positive_class=1
+        X, Z, feature_names=list("abcd"),
+        n_permutations_centers=0, cv_repeats=0, positive_class=1,
     )
     payload = prepare_visualization_payload(
         branches[4], X, Z, feature_names=list("abcd"),
@@ -496,9 +496,10 @@ def test_every_payload_key_the_renderers_read_is_actually_produced():
         "grids", "metrics", "view_metrics", "certificate", "centers",
         "search_centers", "total_samples", "rendered_samples", "slice_axis",
         "global_max_n", "axis_names", "axis_ticks", "selected_features",
-        "class_breakdown", "target_name",
+        "target_name",
     }
     assert required_top <= set(payload)
+    assert "class_breakdown" not in payload  # read BranchResult.per_class, now gone
 
     required_grid = {
         "x", "y", "z", "opacity", "purity", "purity_lower", "purity_upper",
@@ -511,7 +512,6 @@ def test_every_payload_key_the_renderers_read_is_actually_produced():
         assert len(lengths) == 1, f"grid {key!r} has ragged arrays: {lengths}"
 
     required_view = {
-        "mi_by_d", "mi_adj_by_d", "u_adj_by_d",
         "coverage_by_d", "n_centers_by_d", "purity_by_d", "max_purity_lower_by_d",
     }
     assert required_view <= set(payload["view_metrics"])
@@ -526,7 +526,7 @@ def test_every_payload_key_the_renderers_read_is_actually_produced():
     assert payload["slice_axis"] is not None
     assert any(k.startswith("4_") for k in payload["grids"])
 
-    # The keys must also be the ones the shipped front-ends actually read.
+    # The keys must also be the ones the shipped front-end actually reads.
     app_js = (Path(__file__).resolve().parent.parent
               / "vsf" / "webapp" / "static" / "js" / "app.js").read_text(encoding="utf-8")
     for key in ("certified", "rendered_samples", "coverage_by_d",

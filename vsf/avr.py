@@ -1,130 +1,75 @@
 """
-VSF Independent Branch Discovery (IBD) - v2.1 "Corrected Core"
+VSF Independent Branch Discovery (IBD).
 
-Replaces the v1.0 Adaptive Visual Routing (AVR) engine (greedy forward
-selection + permutation-test stopping + Benjamini-Hochberg FDR control +
-four rendering scenarios A/B/C/D). See Project_Master_Document.md Section 0
-for the full revision history and Sections 4-4.6 for the formal spec this
-module implements.
+For a chosen target column and a resolved positive value, independently
+find, for every dimensionality d in {1, 2, 3, 4}, the single feature subset
+of exactly that size whose discrete-centre partition concentrates the MOST
+of that value inside certified (green) centres - by honest, exhaustive
+enumeration of every C(M, d) combination. See
+Project_Master_Document.md Sections 4.1-4.6 for the formal specification
+this module implements.
 
-Core idea: for a chosen target Z, independently find, for every
-dimensionality d in {1, 2, 3, 4}, the single best-scoring feature subset of
-exactly that size - by HONEST, EXHAUSTIVE enumeration of every
-C(M, d) combination. The four resulting "branches" are NOT required to be
-nested: the winning pair for d=2 need not contain either feature from the
-winning singleton at d=1. This is intentional, not a bug - mutual information
-is not submodular in general (Krause & Guestrin, 2005), so a greedy nested
-chain (the v1.0 approach) can provably miss a synergistic combination that an
-independent per-d search finds. See `discover_branches`'s docstring for the
-formal statement.
+The four resulting "branches" are NOT required to be nested: the winning
+pair for d=2 need not contain the winning singleton at d=1. That is
+intentional. Coverage is not submodular in the feature set (Krause &
+Guestrin, 2005), so a greedy nested chain can provably miss a synergistic
+combination that an independent per-d search finds - `tests/test_avr.py`'s
+XOR fixture is a running instance.
 
-WHAT CHANGED IN v2.1 (and why v2.0's ranking was wrong)
--------------------------------------------------------
-v2.0 ranked candidates by RAW plug-in mutual information and documented the
-absence of a degrees-of-freedom correction as an accepted product trade-off
-(v2.0 module docstring; Project_Master_Document.md Section 4.5). That
-trade-off was not survivable. The plug-in estimator's bias under exact
-independence is ~(R-1)(C-1) / (2 N ln 2), which grows with the candidate's
-cell count C, so `argmax` over raw MI is pulled toward whichever combination
-has the most cells - independently of any signal.
+Ranking
+-------
+There is exactly one ranking key: `vsf.centers.coverage_score`, the
+lexicographic tuple (coverage, -n_centers, -mass, best per-cell lower
+bound). `discover_branches` REQUIRES a resolvable positive class -
+explicitly via `positive_class`, or automatically for a two-valued raw
+target - and raises otherwise rather than substituting a different
+statistic for a different question.
 
-Measured on a fully synthetic control in which EVERY feature is generated
-independently of the target (N = 32 561; feature cardinalities 2, 3, 5, 10,
-50, 200), v2.0's search returned:
-
-    d=1  ['k=200']                       MI = 0.0047   NMI_min =  0.6 %
-    d=2  ['k=50', 'k=200']               MI = 0.0677   NMI_min =  8.6 %
-    d=3  ['k=3', 'k=5', 'k=200']         MI = 0.0778   NMI_min =  9.8 %
-
-i.e. it selected the highest-cardinality feature at d=1 and reported a
-"moderate association" where the true mutual information is exactly zero.
-The same control under v2.1 returns MI_adj <= 0.004 bits and U_adj <= 0.5 %
-at every d, with no branch significant at alpha = 0.01.
-
-v2.1 therefore ranks by
-
-    MI_adj(S) = I_hat(Z; X_S) - E_0[I_hat(Z; X_S)]
-
-where E_0 is the EXACT expectation of the plug-in estimator over all
-permutations of Z that preserve both margins (Vinh, Epps & Bailey, JMLR 11
-(2010), 2837-2854), computed by `vsf.metrics.expected_mutual_information_bits`.
-E_0 depends only on the two margins, so it is a per-candidate constant that
-makes candidates of unequal cardinality directly comparable - which raw MI is
-not.
-
-WHAT CHANGED IN v2.2 (the reporting objective)
-----------------------------------------------
-v2.1 fixed the RANKING statistic and left the REPORTED one wrong for the
-product's actual question. MI_adj / U_adj measure whether an association
-exists between the target and the cell partition. The display's deliverable
-is narrower: a small number of cells that are almost purely the target
-value. On a rare target the two answers diverge completely - see
-`vsf.centers`' module docstring for the fully reproducible Armed-Forces case
-where U_adj reads 41.3 % while the highest cell purity in the entire branch
-is 2.42 % and the Bayes rule under 0-1 loss never predicts the class.
-
-v2.2 therefore adds, to every branch, a `CenterReport` (`vsf.centers`):
-certified centre count K, coverage (the share of target-value samples inside
-certified centres), pooled purity, and their out-of-sample and permutation
-counterparts. Nothing about MI_adj ranking changed by default; U_adj is
-demoted from headline to diagnostic, and `objective="coverage"` makes the
-search optimise the quantity the product reports instead of a correlate of
-it. That option is not the default because switching it silently would
-invalidate every measured claim in Sections 4.3-4.6 of
-Project_Master_Document.md; it is the setting a paper reporting coverage
-must use, and the mismatch is stated rather than hidden.
-
-WHAT IS STILL NOT CLAIMED
+What is still not claimed
 -------------------------
-* Every estimate here is IN-SAMPLE. A significant MI_adj establishes that an
-  association exists in the observed table. It does not establish
-  out-of-sample predictability; that needs a held-out split, which this module
-  deliberately does not perform.
-* `p_value` is the uncorrected permutation p-value of one pre-specified
-  subset. It is NOT valid for the branch this module returns, because that
-  branch was chosen as the maximum of a scan over
-  C(M,1) + ... + C(M,d_max) candidates. The look-elsewhere-corrected number is
-  `p_value_familywise`, which requires `n_permutations_familywise > 0` and
-  costs B times a full search; it is off by default because it is not
-  affordable on an interactive path, and any published claim must set it.
+* Every estimate here is IN-SAMPLE except `centers.coverage_cv`
+  (`select_branch_dimensionality`'s basis), which is the one genuinely
+  out-of-sample number this module reports.
+* `coverage_p_value_familywise` is the look-elsewhere-corrected number for a
+  DISCOVERED branch (`centers.coverage_p_value` alone is not, for exactly
+  the reason a branch selected as an argmax over the whole candidate family
+  needs a family-aware null). It requires
+  `n_permutations_familywise_coverage > 0` and costs B times a full search,
+  so it is off by default and any published claim must set it.
 * No FDR control is applied WITHIN a single search. It is applied across
   targets by the Global Pattern Scan (`vsf.server`), which is the family in
   which multiplicity actually accumulates for that feature.
+* Features are CATEGORIES. Every column is encoded by its distinct values
+  (`vsf.pmd`); nothing here bins a continuous variable, and no
+  information-theoretic quantity is computed anywhere on this path.
 """
 
 from __future__ import annotations
 
 import itertools
 from dataclasses import dataclass, field
-from typing import Callable, Dict, Iterator, List, Literal, Optional, Sequence, Tuple
+from typing import Callable, Dict, Iterator, List, Optional, Sequence, Tuple
 
 import numpy as np
 
 from .centers import (
     CenterReport,
     CenterSpec,
-    CenterRule,
     CVCoverage,
-    binarize_target,
     center_report,
-    coverage_score,
+    center_summary,
     familywise_max_coverage_null,
+    min_successes_to_select,
+    wilson_lower,
 )
 from .centers import select_dimensionality as _select_dimensionality
-from .metrics import (
-    ClassInfo,
-    NullMethod,
-    cell_codes,
-    contingency_from_codes,
-    entropy_bits_from_counts,
-    expected_mutual_information_bits,
-    familywise_max_null,
-    information_report,
-    miller_madow_bias_bits,
-    mutual_information_bits,
-    permutation_pvalue,
+from .metrics import cell_codes, dense_codes_from_flat
+from .pmd import (
+    check_grid_capacity,
+    coarsen_column,
+    discretize_dataset,
+    max_bins_per_dimension,
 )
-from .pmd import adaptively_coarsen_bins, check_grid_capacity, discretize_dataset
 
 # Hard ceiling on branch dimensionality. Matches the display's actual spatial
 # encoding (3 coordinate axes + 1 time/frame axis, see vsf.vis's module
@@ -133,29 +78,11 @@ from .pmd import adaptively_coarsen_bins, check_grid_capacity, discretize_datase
 # the display could ever show).
 MAX_BRANCH_D = 4
 
-#: Ranking objective for the exhaustive search.
-#:
-#: `"auto"` (the default) is `"coverage"` whenever a positive target value is
-#: resolvable, and `"mi_adj"` otherwise. It is the default because the
-#: product's stated goal is a small set of cells that capture as much of one
-#: target value as possible, and that is what `"coverage"` maximises;
-#: `"mi_adj"` is a correlate of it, and on a rare value not even a good one.
-#: A K-valued target with no declared positive value has no purity and hence
-#: no coverage, so the fallback is not a preference but the only defined
-#: option.
-#:
-#: `"mi_adj"` maximises I_hat - E_0[I_hat] (v2.1 behaviour). `"coverage"`
-#: maximises the centre coverage the display reports; see
-#: `vsf.centers.coverage_score` for the tie-break order, which encodes the
-#: secondary product rule "fewer, larger centres at equal coverage". The two
-#: are NOT interchangeable: MI_adj rewards association anywhere in the table,
-#: including a cell that is purely the NEGATIVE class, which contributes
-#: nothing to a target-value centre.
-Objective = Literal["auto", "mi_adj", "coverage"]
-
-#: Default number of permutation replicates for a single branch's p-value.
-#: 999 gives a resolution of 1e-3, the coarsest that can still express
-#: alpha = 0.01 with a margin.
+#: Default number of permutation replicates for a branch's familywise
+#: coverage p-value (`coverage_p_value_familywise`). 999 gives a resolution
+#: of 1e-3, the coarsest that can still express alpha = 0.01 with a margin.
+#: Off by default (`n_permutations_familywise_coverage=0` in
+#: `discover_branches`) because it costs B times the whole candidate family.
 DEFAULT_N_PERMUTATIONS = 999
 
 
@@ -163,141 +90,67 @@ DEFAULT_N_PERMUTATIONS = 999
 class BranchResult:
     """
     One independently-discovered feature subset for a single dimensionality
-    `d`.
+    `d`, ranked by how much of the resolved positive class it concentrates
+    inside certified discrete centres.
 
     Field semantics
     ---------------
-    `mi`
-        Raw plug-in I_hat(Z; X_S) in bits. Retained as a diagnostic and for
-        reproducibility of the v2.0 -> v2.1 comparison; it is NOT comparable
-        across branches of different `d`, because its bias grows with cell
-        count.
-    `mi_null`
-        E_0[I_hat] in bits for THIS branch's margins - the value the raw `mi`
-        would take if Z and X_S were independent. Read `mi` against it: a
-        branch with mi = 0.078 and mi_null = 0.074 carries no association at
-        all, however impressive 0.078 looks on an absolute scale.
-    `mi_adj`
-        `mi - mi_null`. The ranking statistic. Comparable across
-        cardinalities and across `d`.
-    `u_adj`
-        `mi_adj / (H(Z) - mi_null)`, clipped to [0, 1]. The reportable
-        percentage: the bias-corrected share of the TARGET's uncertainty that
-        this branch's axes resolve. Directional by construction (normalized by
-        H(Z), not by a symmetric average of H(Z) and H(X_S)), because the
-        question a percentage is asked to answer here is "how much of the
-        target did we explain", not "how similar are these two partitions".
-    `h_target`
-        H(Z) in bits. Carried so that a consumer can recover every other
-        quantity without re-reading the dataset.
-    `p_value`
-        Uncorrected permutation p-value for this subset alone, or None when
-        `n_permutations <= 0`. See this module's docstring for why it must not
-        be quoted as the significance of a DISCOVERED branch.
-    `p_value_familywise`
-        Permutation p-value against the distribution of the maximum MI_adj
-        over the entire C(M,1..d_max) candidate family. This is the valid
-        number for a discovered branch. None unless
-        `n_permutations_familywise > 0`.
-    `per_class`
-        Exact additive decomposition of `mi` over the target's classes,
-        I(Z; X) = sum_z p(z) D_KL(p(x|z) || p(x)). Answers the question no
-        scalar can: whether a headline number is carried by the class the user
-        cares about or entirely by the majority class. For a 0.1 %-prevalence
-        class, `contribution_share` is typically < 1 % however large the
-        headline is.
     `centers`
         The v2.2 reporting layer (`vsf.centers.CenterReport`) for THIS
         branch's full cell partition: how many cells are certified to be at
         least `tau` pure in the target value, what share of all target-value
         samples they contain (`coverage`), how clean they are, and what
-        survives cross-validation and the permutation null. `None` when the
-        target is not binary and the caller named no `positive_class` - a
-        purity has no meaning without a designated positive value, and
-        guessing one (as v2.1's renderer did, by taking the highest class
-        index) silently reports a different quantity than the panel claims.
+        survives cross-validation and the permutation null. This is the
+        statistic the search itself optimises (v2.3: never `None` - a
+        positive class is required to call `discover_branches` at all).
     `coverage_by_prefix_d` / `n_centers_by_prefix_d` / `purity_by_prefix_d`
-        The centre statistics under this branch's own first-k axes, indexed
-        as the `*_by_prefix_d` MI series above and subject to the same
-        warning: the frontend's within-branch collapse must read the entry
-        for the VIEWED dimensionality, not the full-branch scalar. In-sample
+        The centre statistics under this branch's own first-k axes -
+        `coverage_by_prefix_d[k-1]` is what THIS branch's own coverage would
+        read if only its first k selected axes were displayed. In-sample
         only (no cross-validation per prefix - that is 25 refits per prefix
         per branch and does not belong on an interactive path); use
-        `select_branch_dimensionality` for the out-of-sample answer.
+        `select_branch_dimensionality` for the out-of-sample answer. NOT a
+        second independent search: `discover_branches` finds, for every d,
+        the BEST-scoring subset of that size, independently (branches need
+        not nest - see the module docstring); these lists instead fix THIS
+        branch's own `selected_features` ordering and report what a
+        within-branch dimensionality collapse to k < d axes would show
+        (Project_Master_Document.md Section 5.6, case 2) - showing the
+        full-branch value instead while collapsed silently overstates the
+        concentration carried by those k axes alone. The final entry always
+        equals `centers.coverage` / `centers.n_centers` / `centers.purity_pooled`
+        exactly. Empty for a `BranchResult` built by hand rather than through
+        `discover_branches` (e.g. in tests); callers must treat that as "no
+        per-view breakdown available" and fall back to the scalars.
     `coverage_p_value_familywise`
         Look-elsewhere-corrected p-value of `centers.coverage` against
         `vsf.centers.familywise_max_coverage_null`. This, not
         `centers.coverage_p_value`, is the number a paper quotes for a
-        DISCOVERED branch, for exactly the reason `p_value_familywise`
-        exists for MI_adj.
-    `mi_by_prefix_d` / `mi_adj_by_prefix_d` / `u_adj_by_prefix_d`
-        NOT a second independent search - they answer a different question
-        from `discover_branches`'s own per-d optimization.
-        `discover_branches` finds, for every d, the BEST-scoring subset of
-        that size, independently (branches need not nest - see the module
-        docstring). These lists instead fix THIS branch's own
-        `selected_features` ordering and report the metric for
-        I(Z; X_{S[:k]}) - i.e. what this SAME branch would read if only its
-        first k axes were displayed. This is the quantity the frontend's
-        within-branch dimensionality collapse/split
-        (Project_Master_Document.md Section 5.6, case 2) must show; showing
-        the fixed full-branch value instead while the view is collapsed to
-        k < d axes silently overstates the association carried by those k axes
-        alone. The final entry always equals (`mi`, `mi_adj`, `u_adj`)
-        exactly, since all are computed by the same `_prefix_metric_series`
-        call. Empty for a `BranchResult` built by hand rather than through
-        `discover_branches` (e.g. in tests); callers must treat that as "no
-        per-view breakdown available" and fall back to the scalars.
+        DISCOVERED branch. `None` unless
+        `n_permutations_familywise_coverage > 0` was passed to
+        `discover_branches`.
     """
 
     d: int
     selected_features: List[int]
     selected_feature_names: List[str]
-    mi: float
-    mi_null: float
-    mi_adj: float
-    u_adj: float
-    h_target: float
-    mi_by_prefix_d: List[float] = field(default_factory=list)
-    mi_adj_by_prefix_d: List[float] = field(default_factory=list)
-    u_adj_by_prefix_d: List[float] = field(default_factory=list)
-    p_value: Optional[float] = None
-    p_value_familywise: Optional[float] = None
-    per_class: Tuple[ClassInfo, ...] = ()
-    centers: Optional[CenterReport] = None
+    centers: CenterReport
     coverage_by_prefix_d: List[float] = field(default_factory=list)
     n_centers_by_prefix_d: List[int] = field(default_factory=list)
     purity_by_prefix_d: List[float] = field(default_factory=list)
     coverage_p_value_familywise: Optional[float] = None
 
-    def is_significant(self, alpha: float = 0.01, min_u_adj: float = 0.02) -> bool:
-        """
-        Conservative gate for "this branch is worth showing as a finding".
-
-        Prefers `p_value_familywise` when it was computed, because that is the
-        only p-value valid for a branch that was SELECTED as an argmax. Falls
-        back to the uncorrected `p_value`, which is anti-conservative here; a
-        branch with no p-value at all is judged on effect size alone and can
-        only ever be a weak claim.
-        """
-        p = self.p_value_familywise if self.p_value_familywise is not None else self.p_value
-        if p is not None and p > alpha:
-            return False
-        return self.u_adj >= min_u_adj
-
     def has_certified_centers(self, alpha: float = 0.01) -> bool:
         """
         Gate for "this branch produces the deliverable the display promises".
 
-        Deliberately NOT the same test as `is_significant`: a branch can be
-        overwhelmingly significant as an association and still certify no
-        centre at all (`data/adult_census.csv`, target income = ">50K",
-        3-D branch `education + occupation + relationship`: U_adj = 34.0 %
-        at p = 0.001, zero certified centres, highest per-cell lower bound
-        0.804 against tau = 0.90). Reporting
-        such a branch as a finding is the failure mode v2.2 exists to stop.
+        A branch can win the coverage search and still certify no centre at
+        all when nothing in it clears `tau` - `centers.n_centers == 0`, so
+        `centers.coverage == 0.0` by construction. Reporting such a branch as
+        a finding is the failure mode v2.2's certificate layer exists to
+        stop.
         """
-        if self.centers is None or self.centers.n_centers == 0:
+        if self.centers.n_centers == 0:
             return False
         p = (
             self.coverage_p_value_familywise
@@ -309,19 +162,172 @@ class BranchResult:
 
 def _discretize_target(Z_arr: np.ndarray) -> np.ndarray:
     """
-    Discretizes the target vector to integer codes, identical in behavior to
-    v1.0's inline target-discretization block: string/object/bool targets
-    and low-cardinality numeric targets are integer-coded directly via
-    `np.unique`; high-cardinality continuous targets are PMD-binned first.
+    Encodes the target vector as integer category codes, one per distinct
+    value, in sorted distinct-value order - the same rule
+    `vsf.pmd.discretize_feature` applies to a feature column, and for the
+    same reason: the target of a categorical framework is a set of
+    categories, whatever dtype it arrives in.
+
+    A numeric target used to take a separate branch here that binned it
+    when it had more than 20 distinct values. That branch is gone with the
+    rest of the continuous-feature machinery (see `vsf.pmd`), so a numeric
+    target now contributes exactly the values it holds. Note that this
+    function only produces the CODES; which of them counts as positive is
+    `_resolve_positive_indicator`'s job, and a target with more than two
+    distinct values still requires an explicit `positive_class`.
     """
-    if Z_arr.dtype.kind in ("U", "S", "O", "b"):
-        _, Z_discrete = np.unique(Z_arr, return_inverse=True)
-    elif Z_arr.dtype.kind in ("f", "c") and len(np.unique(Z_arr)) > 20:
-        Z_discrete, _, _ = discretize_dataset(Z_arr.reshape(-1, 1))
-        Z_discrete = Z_discrete.ravel()
-    else:
-        _, Z_discrete = np.unique(Z_arr, return_inverse=True)
-    return Z_discrete.astype(int)
+    _, Z_discrete = np.unique(Z_arr, return_inverse=True)
+    return np.asarray(Z_discrete).ravel().astype(int)
+
+
+class _CandidateFactory:
+    """
+    Single source of truth for how a feature subset becomes a cell partition,
+    shared by the exhaustive search, the per-branch prefix breakdown and the
+    familywise null - all three must score the IDENTICAL partition or their
+    numbers are not comparable.
+
+    The partition of a subset S is `vsf.metrics.cell_codes(X_S)`, after the
+    Grid Capacity Limit (`vsf.pmd.check_grid_capacity`) and, when it is
+    exceeded, the adaptive coarsening of `vsf.pmd.adaptively_coarsen_bins`.
+    What this class adds is bookkeeping that makes producing that partition
+    cheap enough to do C(M, 1) + ... + C(M, 4) times:
+
+    * Coarsening is per column and depends only on (column, |S|, N) -
+      `vsf.pmd.max_bins_per_dimension` - so each coarsened column is built
+      once per dimensionality, lazily, instead of once per subset.
+    * The mixed-radix joint code of S is `code(S \\ {j}) * r_j + x_j`, so an
+      enumeration that fixes a prefix and varies the last column reuses the
+      prefix's code (`iter_candidates`).
+    * Dense relabelling of the joint code goes through
+      `vsf.metrics.dense_codes_from_flat` (an occupancy count, not a sort).
+
+    None of this changes the partition: `codes(combo)` returns exactly what
+    `cell_codes(adaptively_coarsen_bins(X[:, combo]))` returned before.
+    """
+
+    def __init__(
+        self, X_discrete: np.ndarray, bin_counts: Sequence[int], n_samples: int
+    ) -> None:
+        X = np.asarray(X_discrete)
+        if X.ndim != 2:
+            raise ValueError(f"X_discrete must be 2-D, got ndim={X.ndim}")
+        self.n_samples = int(n_samples)
+        self.n_features = int(X.shape[1])
+        self.bin_counts = [int(b) for b in bin_counts]
+        self.target_max_cells = max(1, self.n_samples // 10)
+        self._raw = X
+        # Shifted int64 columns and their radices, exactly as
+        # `vsf.metrics._as_cell_codes` forms the mixed-radix code.
+        self._raw_shifted: List[np.ndarray] = []
+        self._raw_radix: List[int] = []
+        self._raw_levels: List[int] = []
+        for j in range(self.n_features):
+            col = X[:, j].astype(np.int64, copy=False)
+            lo = int(col.min()) if col.size else 0
+            hi = int(col.max()) if col.size else 0
+            self._raw_shifted.append(col - lo)
+            self._raw_radix.append(hi - lo + 1)
+            self._raw_levels.append(int(np.unique(col).shape[0]))
+        self._coarse: Dict[Tuple[int, int], Tuple[np.ndarray, int]] = {}
+
+    # -- coarsening ---------------------------------------------------------
+    def _needs_coarsening(self, combo: Tuple[int, ...]) -> bool:
+        """
+        Mirrors `_subset_codes`'s two-stage decision exactly: the capacity
+        check on the discretiser's bin counts, then
+        `adaptively_coarsen_bins`'s own early return when the ACTUAL joint
+        level product already fits.
+        """
+        if check_grid_capacity([self.bin_counts[j] for j in combo], self.n_samples):
+            return False
+        prod_levels = 1
+        for j in combo:
+            prod_levels *= self._raw_levels[j]
+        return prod_levels > self.target_max_cells
+
+    def _coarse_column(self, j: int, d: int) -> Tuple[np.ndarray, int]:
+        key = (j, d)
+        hit = self._coarse.get(key)
+        if hit is None:
+            k_max = max_bins_per_dimension(d, self.n_samples, self.target_max_cells)
+            col = coarsen_column(self._raw[:, j], k_max).astype(np.int64, copy=False)
+            lo = int(col.min()) if col.size else 0
+            hi = int(col.max()) if col.size else 0
+            hit = (col - lo, hi - lo + 1)
+            self._coarse[key] = hit
+        return hit
+
+    def _columns(self, combo: Tuple[int, ...]) -> List[Tuple[np.ndarray, int]]:
+        d = len(combo)
+        if self._needs_coarsening(combo):
+            return [self._coarse_column(j, d) for j in combo]
+        return [(self._raw_shifted[j], self._raw_radix[j]) for j in combo]
+
+    # -- partitions ---------------------------------------------------------
+    @staticmethod
+    def _flatten(columns: Sequence[Tuple[np.ndarray, int]]) -> Tuple[np.ndarray, int]:
+        flat, total = None, 1
+        for col, radix in columns:
+            flat = col if flat is None else flat * radix + col
+            total *= radix
+        assert flat is not None
+        return flat, total
+
+    def codes(self, combo: Tuple[int, ...]) -> Tuple[np.ndarray, int]:
+        """Dense joint cell codes and cell count for one feature subset."""
+        if self.n_samples == 0:
+            return np.zeros(0, dtype=np.int64), 0
+        flat, total = self._flatten(self._columns(combo))
+        if total >= (1 << 62):  # pragma: no cover - >2^62 nominal cells
+            return cell_codes(np.column_stack([c for c, _ in self._columns(combo)]))
+        dense = dense_codes_from_flat(flat, total)
+        return dense, int(dense.max()) + 1
+
+    def iter_candidates(
+        self, max_d: int
+    ) -> Iterator[Tuple[Tuple[int, ...], np.ndarray, int]]:
+        """
+        Every (combo, cell codes, n_cells) of the exhaustive family, in
+        `itertools.combinations` order for d = 1, ..., max_d - the order the
+        search's first-wins tie rule is defined against.
+        """
+        m = self.n_features
+        if self.n_samples == 0:
+            for d in range(1, max_d + 1):
+                for combo in itertools.combinations(range(m), d):
+                    yield combo, np.zeros(0, dtype=np.int64), 0
+            return
+        for d in range(1, max_d + 1):
+            for prefix in itertools.combinations(range(m), d - 1):
+                raw_prefix: Optional[Tuple[np.ndarray, int]] = None
+                coarse_prefix: Optional[Tuple[np.ndarray, int]] = None
+                start = prefix[-1] + 1 if prefix else 0
+                for j in range(start, m):
+                    combo = prefix + (j,)
+                    if self._needs_coarsening(combo):
+                        if coarse_prefix is None and prefix:
+                            coarse_prefix = self._flatten(
+                                [self._coarse_column(q, d) for q in prefix]
+                            )
+                        col, radix = self._coarse_column(j, d)
+                        base = coarse_prefix
+                    else:
+                        if raw_prefix is None and prefix:
+                            raw_prefix = self._flatten(
+                                [(self._raw_shifted[q], self._raw_radix[q]) for q in prefix]
+                            )
+                        col, radix = self._raw_shifted[j], self._raw_radix[j]
+                        base = raw_prefix
+                    if base is None:
+                        flat, total = col, radix
+                    else:
+                        flat, total = base[0] * radix + col, base[1] * radix
+                    if total >= (1 << 62):  # pragma: no cover
+                        yield (combo,) + self.codes(combo)
+                        continue
+                    dense = dense_codes_from_flat(flat, total)
+                    yield combo, dense, int(dense.max()) + 1
 
 
 def _subset_codes(
@@ -332,17 +338,10 @@ def _subset_codes(
 ) -> Tuple[np.ndarray, int]:
     """
     Dense joint cell codes for one feature subset, applying the Grid Capacity
-    Limit (`vsf.pmd.check_grid_capacity`) and, when it is exceeded, the same
-    adaptive coarsening (`vsf.pmd.adaptively_coarsen_bins`) as the search.
-
-    Single source of truth for how a combination becomes a cell partition:
-    the exhaustive search, the prefix breakdown and the familywise null must
-    all score the IDENTICAL partition or their numbers are not comparable.
+    Limit and adaptive coarsening exactly as the search does. Thin wrapper
+    over `_CandidateFactory.codes` for callers holding no factory.
     """
-    X_S = X_discrete[:, combo]
-    if not check_grid_capacity([bin_counts[j] for j in combo], n_samples):
-        X_S = adaptively_coarsen_bins(X_S, n_samples)
-    return cell_codes(X_S)
+    return _CandidateFactory(X_discrete, bin_counts, n_samples).codes(tuple(combo))
 
 
 def _iter_candidates(
@@ -352,78 +351,115 @@ def _iter_candidates(
     max_d: int,
 ) -> Iterator[Tuple[Tuple[int, ...], np.ndarray, int]]:
     """Every (combo, cell codes, n_cells) the exhaustive search will score."""
-    n_features = X_discrete.shape[1]
-    for d in range(1, max_d + 1):
-        for combo in itertools.combinations(range(n_features), d):
-            codes, n_cells = _subset_codes(X_discrete, bin_counts, n_samples, combo)
-            yield combo, codes, n_cells
+    return _CandidateFactory(X_discrete, bin_counts, n_samples).iter_candidates(max_d)
 
 
-def _null_floor(table: np.ndarray, n_samples: int, null: NullMethod) -> float:
-    """E_0[I_hat] for one candidate under the requested null model."""
-    if null == "none":
-        return 0.0
-    if null == "miller_madow":
-        return miller_madow_bias_bits(table.shape[0], table.shape[1], n_samples)
-    if null == "exact":
-        return expected_mutual_information_bits(table)
-    raise ValueError(f"unknown null method: {null!r}")
+#: The lexicographic ranking key of `vsf.centers.coverage_score`, paired
+#: with the combination it belongs to.
+_Ranked = Tuple[Tuple[float, float, float, float], Tuple[int, ...]]
 
 
-def _score_candidate(
+def _exhaustive_search(
+    factory: _CandidateFactory,
     z_codes: np.ndarray,
-    n_rows: int,
-    x_codes: np.ndarray,
-    n_cells: int,
-    h_target: float,
-    null: NullMethod,
-) -> Tuple[float, float, float, float]:
-    """Returns (mi, mi_null, mi_adj, u_adj) for one candidate partition."""
-    n_samples = int(z_codes.shape[0])
-    table = contingency_from_codes(z_codes, x_codes, n_rows, n_cells)
-    mi = mutual_information_bits(table)
-    floor = _null_floor(table, n_samples, null)
-    mi_adj = mi - floor
-    denom = h_target - floor
-    u_adj = float(np.clip(mi_adj / denom, 0.0, 1.0)) if denom > 1e-12 else 0.0
-    return mi, floor, mi_adj, u_adj
-
-
-def _prefix_metric_series(
-    z_codes: np.ndarray,
-    n_rows: int,
-    X_discrete: np.ndarray,
-    bin_counts: Sequence[int],
-    ordered_features: Sequence[int],
-    h_target: float,
-    null: NullMethod,
-) -> Tuple[List[float], List[float], List[float]]:
+    n_values: int,
+    value_indices: Sequence[int],
+    spec: CenterSpec,
+    max_d: int,
+) -> List[Dict[int, _Ranked]]:
     """
-    For a FIXED feature ordering (one branch's own `selected_features`, in the
-    order they are displayed as axes: X, Y, Z, slice), computes
-    (mi, mi_adj, u_adj) for every prefix length k = 1..len(ordered_features).
+    argmax_{|S| = d} coverage_score(Z_v; X_S) for every d <= max_d and every
+    target value v in `value_indices`, in ONE pass over the candidate family.
 
-    This is a marginal/projection of ONE already-chosen joint distribution
-    onto a subset of its own axes - not `discover_branches`'s per-d
-    independent re-optimization (that would generally pick a DIFFERENT subset
-    for size k). Each prefix goes through `_subset_codes`, so the
-    k = len(ordered_features) entry reproduces the search's own score for the
-    winning combination exactly.
+    `z_codes` are dense codes 0..n_values-1 of the target; value v's 0/1
+    indicator is `z_codes == v`. One `bincount` of `codes * n_values +
+    z_codes` yields the whole (cells x values) contingency table of a
+    candidate, from which every value's (k_cell, n_cell) - and hence its
+    `coverage_score` - is read off. The Global Pattern Scan uses this to
+    score all values of a target column in a single enumeration; a binary
+    search passes `n_values = 2, value_indices = [1]`.
+
+    Equivalence with `coverage_score`, component by component: coverage =
+    k_sel / n_positive and mass = n_sel / n_samples are the same integer
+    ratios; the centre count is the same mask (`min_successes_to_select` on
+    the same cell sizes at the same Bonferroni level over the same occupied
+    count, which for dense codes is the cell count); the Wilson tie-break is
+    evaluated only when the first three components tie the incumbent, and is
+    the same `wilson_lower(k, n, alpha_eff).max()`. Ties resolve to the first
+    candidate in enumeration order, as `key > incumbent` did.
     """
-    n_samples = int(z_codes.shape[0])
-    mi_by_k: List[float] = []
-    mi_adj_by_k: List[float] = []
-    u_adj_by_k: List[float] = []
-    for k in range(1, len(ordered_features) + 1):
-        prefix = tuple(ordered_features[:k])
-        codes, n_cells = _subset_codes(X_discrete, bin_counts, n_samples, prefix)
-        mi, _, mi_adj, u_adj = _score_candidate(
-            z_codes, n_rows, codes, n_cells, h_target, null
-        )
-        mi_by_k.append(mi)
-        mi_adj_by_k.append(mi_adj)
-        u_adj_by_k.append(u_adj)
-    return mi_by_k, mi_adj_by_k, u_adj_by_k
+    z = np.asarray(z_codes, dtype=np.int64).ravel()
+    n_samples = int(z.shape[0])
+    values = [int(v) for v in value_indices]
+    n_positive = np.bincount(z, minlength=n_values).astype(np.int64)
+    best: List[Dict[int, _Ranked]] = [{} for _ in values]
+    # Incumbent state per (value, d): first three key components, Wilson
+    # tie-break (None until needed), the cell counts to compute it from.
+    inc3: List[Dict[int, Tuple[float, float, float]]] = [{} for _ in values]
+    inc_w: List[Dict[int, Optional[float]]] = [{} for _ in values]
+    inc_kn: List[Dict[int, Tuple[np.ndarray, np.ndarray, float]]] = [{} for _ in values]
+    inc_combo: List[Dict[int, Tuple[int, ...]]] = [{} for _ in values]
+
+    for combo, codes, n_cells in factory.iter_candidates(max_d):
+        d = len(combo)
+        if n_cells == 0:
+            table = np.zeros((0, n_values), dtype=np.int64)
+        else:
+            table = np.bincount(
+                codes * n_values + z, minlength=n_cells * n_values
+            ).reshape(n_cells, n_values)
+        n_cell = table.sum(axis=1)
+        occupied = int(np.count_nonzero(n_cell > 0))
+        alpha_eff = spec.effective_alpha(occupied)
+        if occupied == 0:
+            k_min = np.ones(n_cell.shape, dtype=np.int64)
+            eligible = np.zeros(n_cell.shape, dtype=bool)
+        else:
+            k_min = min_successes_to_select(n_cell, spec, alpha_eff)
+            eligible = n_cell > 0
+        for vi, v in enumerate(values):
+            k_cell = table[:, v]
+            n_pos = int(n_positive[v])
+            mask = (k_cell >= k_min) & eligible
+            if n_pos > 0 and n_samples > 0:
+                k_sel = int(k_cell[mask].sum())
+                n_sel = int(n_cell[mask].sum())
+                key3 = (k_sel / n_pos, -float(mask.sum()), -(n_sel / n_samples))
+            else:
+                # `_coverage_from_counts` reports (0, 0, 0) here; the centre
+                # count still comes from the real mask, as in `coverage_score`.
+                key3 = (0.0, -float(mask.sum()), -0.0)
+            current = inc3[vi].get(d)
+            if current is None or key3 > current:
+                inc3[vi][d] = key3
+                inc_w[vi][d] = None
+                inc_kn[vi][d] = (k_cell, n_cell, alpha_eff)
+                inc_combo[vi][d] = combo
+            elif key3 == current:
+                w_inc = inc_w[vi][d]
+                if w_inc is None:
+                    kk, nn, aa = inc_kn[vi][d]
+                    w_inc = _best_wilson_lower(kk, nn, aa)
+                    inc_w[vi][d] = w_inc
+                w_new = _best_wilson_lower(k_cell, n_cell, alpha_eff)
+                if w_new > w_inc:
+                    inc_w[vi][d] = w_new
+                    inc_kn[vi][d] = (k_cell, n_cell, alpha_eff)
+                    inc_combo[vi][d] = combo
+
+    for vi in range(len(values)):
+        for d, key3 in inc3[vi].items():
+            w = inc_w[vi][d]
+            if w is None:
+                kk, nn, aa = inc_kn[vi][d]
+                w = _best_wilson_lower(kk, nn, aa)
+            best[vi][d] = (key3 + (w,), inc_combo[vi][d])
+    return best
+
+
+def _best_wilson_lower(k_cell: np.ndarray, n_cell: np.ndarray, alpha_eff: float) -> float:
+    """Fourth component of `coverage_score`: the best per-cell Wilson lower bound."""
+    return float(wilson_lower(k_cell, n_cell, alpha_eff).max()) if n_cell.size else 0.0
 
 
 def _resolve_positive_indicator(
@@ -433,8 +469,8 @@ def _resolve_positive_indicator(
     positive_class: Optional[object],
 ) -> Optional[np.ndarray]:
     """
-    The 0/1 indicator the centre layer is defined against, or None when the
-    target admits no unambiguous positive value.
+    The 0/1 indicator the centre layer - and hence the search - is defined
+    against, or None when the target admits no unambiguous positive value.
 
     Resolution order, deliberately explicit:
 
@@ -447,7 +483,9 @@ def _resolve_positive_indicator(
         positive class and the literal 1 of `/api/analyze`'s One-vs-Rest
         `criterion` path, so the three agree by construction.
     3.  Otherwise -> None. A K-class target has no single purity; the caller
-        must say which value it means.
+        must say which value it means. `discover_branches` turns this into a
+        `ValueError` - v2.3 no longer has a ranking objective defined for
+        this case (see module docstring).
     """
     if positive_class is not None:
         uniq = np.unique(Z_arr)
@@ -475,28 +513,26 @@ def _center_prefix_series(
     bin_counts: Sequence[int],
     ordered_features: Sequence[int],
     spec: CenterSpec,
+    factory: Optional[_CandidateFactory] = None,
 ) -> Tuple[List[float], List[int], List[float]]:
     """
     In-sample (coverage, K, pooled purity) for every prefix of one branch's
-    own axis ordering - the centre-layer analogue of `_prefix_metric_series`,
-    and subject to the identical caveat: these are projections of THIS
-    branch's partition onto its own first k axes, not `discover_branches`'s
-    independently optimal k-dimensional branch.
+    own axis ordering - projections of THIS branch's partition onto its own
+    first k axes, not `discover_branches`'s independently optimal
+    k-dimensional branch (see `BranchResult.coverage_by_prefix_d`).
     """
     n_samples = int(z_binary.shape[0])
+    if factory is None:
+        factory = _CandidateFactory(X_discrete, bin_counts, n_samples)
     coverage: List[float] = []
     n_centers: List[int] = []
     purity: List[float] = []
     for k in range(1, len(ordered_features) + 1):
-        codes, n_cells = _subset_codes(
-            X_discrete, bin_counts, n_samples, tuple(ordered_features[:k])
-        )
-        report = center_report(
-            z_binary, codes, n_cells, spec, n_repeats=0, n_permutations=0
-        )
-        coverage.append(report.coverage)
-        n_centers.append(report.n_centers)
-        purity.append(report.purity_pooled)
+        codes, n_cells = factory.codes(tuple(ordered_features[:k]))
+        cov, k_centers, pur = center_summary(z_binary, codes, n_cells, spec)
+        coverage.append(cov)
+        n_centers.append(k_centers)
+        purity.append(pur)
     return coverage, n_centers, purity
 
 
@@ -512,8 +548,7 @@ def select_branch_dimensionality(
     Returns None when no dimensionality achieves positive cross-validated
     coverage, which is the correct answer for a target that has no certifiable
     centres at all, and must be surfaced as "none" rather than collapsed to
-    d = 1. Also None when the branches carry no `CenterReport` (non-binary
-    target with no declared positive class) or no cross-validated estimate
+    d = 1. Also None when the branches carry no cross-validated estimate
     (fewer than `vsf.centers.MIN_POSITIVES_FOR_CV` positives).
 
     The comparison is valid only because every branch's `CenterReport` was
@@ -525,7 +560,7 @@ def select_branch_dimensionality(
     cv_by_d: Dict[int, CVCoverage] = {
         d: br.centers.coverage_cv
         for d, br in branches.items()
-        if br.centers is not None and br.centers.coverage_cv is not None
+        if br.centers.coverage_cv is not None
     }
     return _select_dimensionality(cv_by_d, t_threshold=t_threshold)
 
@@ -534,14 +569,9 @@ def discover_branches(
     X: np.ndarray,
     Z: np.ndarray,
     feature_names: Optional[List[str]] = None,
-    feature_channels: Optional[List[str]] = None,
     max_d: int = MAX_BRANCH_D,
-    null: NullMethod = "exact",
-    n_permutations: int = DEFAULT_N_PERMUTATIONS,
-    n_permutations_familywise: int = 0,
     random_state: Optional[int] = 0,
     progress: Optional[Callable[[int, int], None]] = None,
-    objective: Objective = "auto",
     positive_class: Optional[object] = None,
     center_spec: Optional[CenterSpec] = None,
     n_permutations_centers: int = DEFAULT_N_PERMUTATIONS,
@@ -554,66 +584,36 @@ def discover_branches(
 
     For every d in {1, ..., min(max_d, M)}, independently computes
 
-        S*_d = argmax_{S subset of {1,...,M}, |S| = d}  MI_adj(Z; X_S)
+        S*_d = argmax_{S subset of {1,...,M}, |S| = d}  coverage_score(Z_pos; X_S)
 
-    with MI_adj = I_hat - E_0[I_hat], by exhaustively enumerating every
-    C(M, d) combination - never a greedy approximation, never a prefiltered
-    candidate pool. Returns up to `max_d` branches, keyed by dimensionality; a
-    key is missing only when `M < d`.
+    by exhaustively enumerating every C(M, d) combination - never a greedy
+    approximation, never a prefiltered candidate pool. `coverage_score`
+    (`vsf.centers.coverage_score`) ranks lexicographically by (coverage,
+    -n_centres, -mass, best per-cell lower bound); see its docstring for the
+    tie-break rationale. Returns up to `max_d` branches, keyed by
+    dimensionality; a key is missing only when `M < d`.
 
-    Why exhaustive, not greedy: I(Z; X_S) is not submodular in general
-    (Krause & Guestrin, 2005). A greedy chain that commits to the single best
-    feature at d=1 and only ever ADDS to it can never discover a pair {a, b}
-    that is jointly informative while neither a nor b is individually strong -
-    exactly the synergy case Project_Master_Document.md Section 4.4 requires
-    each branch to be capable of finding.
+    Why exhaustive, not greedy: coverage is not submodular in the feature
+    set (Krause & Guestrin, 2005). A greedy chain that
+    commits to the single best feature at d=1 and only ever ADDS to it can
+    never discover a pair {a, b} that is jointly informative while neither a
+    nor b is individually strong - exactly the synergy case
+    Project_Master_Document.md Section 4.4 requires each branch to be capable
+    of finding.
 
-    Why MI_adj, not raw I_hat: see this module's docstring. Ranking by raw
-    I_hat selects on cell count rather than on association and, on a control
-    dataset with no signal at all, returns branches reporting up to 9.8 %
-    NMI_min.
+    A positive class is REQUIRED: there is no other ranking to fall back to
+    when one cannot be resolved.
+    See `_resolve_positive_indicator`'s docstring for exactly how it is
+    resolved and `positive_class` below for the parameter itself.
 
     Parameters
     ----------
-    null
-        Bias model subtracted from every candidate. `"exact"` (default) uses
-        the exact permutation expectation - O(R * C) per candidate, ~2.1 ms
-        median for a 2 x 1379 table and linear in R (16 ms at R = 20), i.e.
-        ~0.2 s for the whole M = 7 reference search. `"miller_madow"` uses the closed form and is ~1000x cheaper
-        but counts nominal rather than occupied cells, so it over-corrects on
-        sparse grids; use it only when profiling shows the exact null
-        dominates. `"none"` reproduces v2.0's (incorrect) raw-MI ranking and
-        exists solely so the regression can be demonstrated.
-    n_permutations
-        Replicates for each winning branch's UNCORRECTED `p_value`. Set to 0
-        to skip (4 x B table builds; ~0.5 s at B = 999 on the reference
-        dataset).
-    n_permutations_familywise
-        Replicates for the look-elsewhere-corrected `p_value_familywise`.
-        Costs B x (the whole candidate family), so it is 0 by default. This is
-        the only p-value that is valid for a branch that was selected as an
-        argmax, and any published claim must set it.
-    random_state
-        Seeds both permutation nulls. Fixed by default, so the function stays
-        reproducible; with `n_permutations = n_permutations_familywise = 0` it
-        is fully deterministic and consumes no randomness.
-    progress
-        Optional `(done, total)` callback, invoked during the familywise null
-        only - the phase whose runtime is worth reporting to a user.
-    objective
-        What the exhaustive search maximises. `"auto"` (default) resolves to
-        `"coverage"` when a positive target value is available and to
-        `"mi_adj"` otherwise. `"coverage"` ranks by
-        `vsf.centers.coverage_score` -- the statistic the display reports --
-        and requires a resolvable positive class; `"mi_adj"` keeps v2.1's
-        ranking. This changes WHICH subset wins, not just how it is
-        described: a branch can be the MI_adj argmax and contain no centres,
-        and vice versa.
     positive_class
-        The raw target value that centres are certified against. Optional for
-        a two-valued target (the higher `np.unique` code is used, matching
-        the renderer and the One-vs-Rest `criterion` path); required for a
-        K-class target, without which `BranchResult.centers` is None.
+        The raw target value that centres are certified against, and hence
+        that the search maximises coverage of. Optional for a two-valued
+        target (the higher `np.unique` code is used, matching the renderer
+        and the One-vs-Rest `criterion` path); REQUIRED for a K-class target
+        - `ValueError` otherwise, since no ranking is defined without it.
     center_spec
         `vsf.centers.CenterSpec` - the purity floor `tau`, the simultaneous
         error rate `alpha`, and the multiplicity policy. Defaults to
@@ -625,8 +625,16 @@ def discover_branches(
         the cell counts, O(C) per replicate rather than O(N).
     n_permutations_familywise_coverage
         Replicates for `coverage_p_value_familywise`. Costs B x the whole
-        candidate family, like its MI_adj counterpart, and is 0 by default
-        for the same reason; a published coverage claim must set it.
+        candidate family, so it is 0 by default; a published coverage claim
+        must set it.
+    random_state
+        Seeds the coverage permutation nulls (per-branch and familywise), so
+        the function stays reproducible; with both permutation counts at 0
+        it is fully deterministic and consumes no randomness.
+    progress
+        Optional `(done, total)` callback, invoked during the familywise
+        coverage null only - the phase whose runtime is worth reporting to a
+        user.
     cv_splits / cv_repeats
         Stratified repeated K-fold parameters behind
         `CenterReport.coverage_cv`. Set `cv_repeats = 0` to skip the
@@ -637,16 +645,18 @@ def discover_branches(
     attempt to bound the number of combinations evaluated - by explicit
     product decision, "always honest full enumeration", regardless of M.
     Callers with very wide datasets (M >~ 50-100) should expect this to take
-    minutes; that is the accepted cost of never approximating.
+    minutes; that is the accepted cost of never approximating. The
+    enumeration itself is `_CandidateFactory.iter_candidates` and the
+    scoring `_exhaustive_search` (2026-09): per-column coarsening cache,
+    prefix-shared joint codes, sort-free dense relabelling, one fused
+    `bincount` per candidate and a lazily evaluated tie-break - each pinned
+    against its straightforward form in `tests/test_fastpaths.py`, none of
+    them changing which subset wins or any number reported for it.
     """
     if max_d < 1 or max_d > MAX_BRANCH_D:
         raise ValueError(f"max_d must be in [1, {MAX_BRANCH_D}], got {max_d}")
-    if n_permutations < 0 or n_permutations_familywise < 0:
-        raise ValueError("permutation counts must be non-negative")
     if n_permutations_centers < 0 or n_permutations_familywise_coverage < 0:
         raise ValueError("permutation counts must be non-negative")
-    if objective not in ("auto", "mi_adj", "coverage"):
-        raise ValueError(f"unknown objective: {objective!r}")
     spec = center_spec if center_spec is not None else CenterSpec()
 
     X_arr = np.asarray(X)
@@ -660,68 +670,77 @@ def discover_branches(
     if n_features == 0:
         return branches
 
-    X_discrete, bin_counts, _ = discretize_dataset(X_arr, feature_channels=feature_channels)
+    X_discrete, bin_counts = discretize_dataset(X_arr)
     Z_discrete = _discretize_target(Z_arr)
     z_codes, n_rows = cell_codes(Z_discrete)
-    h_target = entropy_bits_from_counts(np.bincount(z_codes, minlength=max(1, n_rows)))
 
     effective_max_d = min(max_d, n_features)
     z_binary = _resolve_positive_indicator(Z_arr, z_codes, n_rows, positive_class)
-    if objective == "coverage" and z_binary is None:
+    if z_binary is None:
         raise ValueError(
-            'objective="coverage" needs a positive class: the target has '
-            f"{n_rows} distinct values and no positive_class was given"
+            "discover_branches needs a resolvable positive class: the target "
+            f"has {n_rows} distinct values and no positive_class was given. "
+            "A branch search always ranks by coverage of one named value "
+            "(v2.3); pass positive_class explicitly for a target with more "
+            "than two values."
         )
-    if objective == "auto":
-        objective = "coverage" if z_binary is not None else "mi_adj"
 
-    # ---- exhaustive search ----------------------------------------------
-    # The ranking key is a float for "mi_adj" and a lexicographic tuple for
-    # "coverage"; both are compared with `>` against the incumbent, and the
-    # objective is fixed for the whole call, so the two key types never meet.
-    best_by_d: Dict[int, Tuple[object, Tuple[int, ...]]] = {}
-    for combo, codes, n_cells in _iter_candidates(
-        X_discrete, bin_counts, n_samples, effective_max_d
-    ):
-        if objective == "mi_adj":
-            _, _, mi_adj, _ = _score_candidate(
-                z_codes, n_rows, codes, n_cells, h_target, null
-            )
-            key: object = mi_adj
-        else:
-            assert z_binary is not None  # guaranteed by the check above
-            key = coverage_score(z_binary, codes, n_cells, spec)
-        d = len(combo)
-        current = best_by_d.get(d)
-        if current is None or key > current[0]:  # type: ignore[operator]
-            best_by_d[d] = (key, combo)
-
+    factory = _CandidateFactory(X_discrete, bin_counts, n_samples)
+    # ---- exhaustive search ------------------------------------------------
+    # The 0/1 indicator is its own two-valued code vector; value 1 is the
+    # positive class. Ranking key is the lexicographic tuple of
+    # `coverage_score`, first candidate in enumeration order wins ties.
+    best_by_d = _exhaustive_search(
+        factory, z_binary.astype(np.int64), 2, [1], spec, effective_max_d
+    )[0]
     if not best_by_d:
         return branches
 
-    # ---- familywise null, computed once for the whole scan ---------------
-    fw_p: Optional[Callable[[float], float]] = None
-    if n_permutations_familywise > 0:
-        fw_null = familywise_max_null(
-            z_codes,
-            lambda: _iter_candidates(X_discrete, bin_counts, n_samples, effective_max_d),
-            n_permutations=n_permutations_familywise,
-            random_state=random_state,
-            null=null,
-            progress=progress,
-        )
-        fw_p = fw_null.p_value
+    return _report_branches(
+        factory,
+        z_binary,
+        best_by_d,
+        feature_names,
+        spec,
+        effective_max_d,
+        random_state=random_state,
+        progress=progress,
+        n_permutations_centers=n_permutations_centers,
+        n_permutations_familywise_coverage=n_permutations_familywise_coverage,
+        cv_splits=cv_splits,
+        cv_repeats=cv_repeats,
+    )
 
+
+def _report_branches(
+    factory: _CandidateFactory,
+    z_binary: np.ndarray,
+    best_by_d: Dict[int, _Ranked],
+    feature_names: Sequence[str],
+    spec: CenterSpec,
+    effective_max_d: int,
+    random_state: Optional[int],
+    progress: Optional[Callable[[int, int], None]],
+    n_permutations_centers: int,
+    n_permutations_familywise_coverage: int,
+    cv_splits: int,
+    cv_repeats: int,
+    cell_bounds: bool = True,
+) -> Dict[int, BranchResult]:
+    """
+    The reporting stage of `discover_branches` for one positive indicator:
+    the familywise coverage null (optional), then a full `CenterReport`, the
+    prefix series and the familywise p-value for every winning subset.
+    """
+    branches: Dict[int, BranchResult] = {}
+    X_discrete, bin_counts, n_samples = factory._raw, factory.bin_counts, factory.n_samples
+
+    # ---- familywise coverage null, computed once for the whole scan ------
     fw_cov_p: Optional[Callable[[float], float]] = None
-    if n_permutations_familywise_coverage > 0 and z_binary is not None:
+    if n_permutations_familywise_coverage > 0:
         fw_cov_null = familywise_max_coverage_null(
             z_binary,
-            lambda: (
-                (combo, codes, n_cells)
-                for combo, codes, n_cells in _iter_candidates(
-                    X_discrete, bin_counts, n_samples, effective_max_d
-                )
-            ),
+            lambda: factory.iter_candidates(effective_max_d),
             spec=spec,
             n_permutations=n_permutations_familywise_coverage,
             random_state=random_state,
@@ -729,71 +748,183 @@ def discover_branches(
         )
         fw_cov_p = fw_cov_null.p_value
 
-    # ---- per-branch reporting -------------------------------------------
+    # ---- per-branch reporting ---------------------------------------------
     for d, (_, best_combo) in sorted(best_by_d.items()):
         ordered_features = list(best_combo)
-        mi_by_k, mi_adj_by_k, u_adj_by_k = _prefix_metric_series(
-            z_codes, n_rows, X_discrete, bin_counts, ordered_features, h_target, null
+        codes, n_cells = factory.codes(tuple(best_combo))
+
+        centers = center_report(
+            z_binary,
+            codes,
+            n_cells,
+            spec,
+            n_splits=cv_splits,
+            n_repeats=cv_repeats,
+            n_permutations=n_permutations_centers,
+            random_state=random_state,
+            cell_bounds=cell_bounds,
         )
-        codes, n_cells = _subset_codes(X_discrete, bin_counts, n_samples, best_combo)
-        mi, floor, mi_adj, u_adj = _score_candidate(
-            z_codes, n_rows, codes, n_cells, h_target, null
+        cov_by_k, k_by_k, pur_by_k = _center_prefix_series(
+            z_binary, X_discrete, bin_counts, ordered_features, spec, factory=factory
         )
-
-        p_value: Optional[float] = None
-        if n_permutations > 0:
-            p_value, _, _ = permutation_pvalue(
-                z_codes, codes, n_rows, n_cells, n_permutations, random_state
-            )
-
-        report = information_report(z_codes, codes, null=null)
-
-        centers: Optional[CenterReport] = None
-        cov_by_k: List[float] = []
-        k_by_k: List[int] = []
-        pur_by_k: List[float] = []
-        if z_binary is not None:
-            centers = center_report(
-                z_binary,
-                codes,
-                n_cells,
-                spec,
-                n_splits=cv_splits,
-                n_repeats=cv_repeats,
-                n_permutations=n_permutations_centers,
-                random_state=random_state,
-            )
-            cov_by_k, k_by_k, pur_by_k = _center_prefix_series(
-                z_binary, X_discrete, bin_counts, ordered_features, spec
-            )
 
         branches[d] = BranchResult(
             d=d,
             selected_features=ordered_features,
             selected_feature_names=[feature_names[j] for j in ordered_features],
-            mi=mi,
-            mi_null=floor,
-            mi_adj=mi_adj,
-            u_adj=u_adj,
-            h_target=h_target,
-            mi_by_prefix_d=mi_by_k,
-            mi_adj_by_prefix_d=mi_adj_by_k,
-            u_adj_by_prefix_d=u_adj_by_k,
-            p_value=p_value,
-            p_value_familywise=fw_p(mi_adj) if fw_p is not None else None,
-            per_class=report.per_class,
             centers=centers,
             coverage_by_prefix_d=cov_by_k,
             n_centers_by_prefix_d=k_by_k,
             purity_by_prefix_d=pur_by_k,
             coverage_p_value_familywise=(
-                fw_cov_p(centers.coverage)
-                if (fw_cov_p is not None and centers is not None)
-                else None
+                fw_cov_p(centers.coverage) if fw_cov_p is not None else None
             ),
         )
 
     return branches
+
+
+def iter_branches_by_value(
+    X: np.ndarray,
+    Z: np.ndarray,
+    values: Sequence[object],
+    feature_names: Optional[List[str]] = None,
+    max_d: int = MAX_BRANCH_D,
+    random_state: Optional[int] = 0,
+    center_spec: Optional[CenterSpec] = None,
+    n_permutations_centers: int = DEFAULT_N_PERMUTATIONS,
+    n_permutations_familywise_coverage: int = 0,
+    cv_splits: int = 5,
+    cv_repeats: int = 5,
+    cell_bounds: bool = True,
+) -> Iterator[Tuple[str, Dict[int, BranchResult]]]:
+    """
+    Lazy form of `discover_branches_by_value`: the shared exhaustive search
+    runs once, up front, and then `(str(v), branches)` is yielded one value
+    at a time as each value's reporting stage completes, in the order of
+    `values`. A consumer that may want to stop early (the live server's
+    background prefetch, which is superseded whenever the user clicks a
+    different column) pays for the reporting of only the values it actually
+    consumed. Semantics per value are exactly those of
+    `discover_branches_by_value`.
+    """
+    if max_d < 1 or max_d > MAX_BRANCH_D:
+        raise ValueError(f"max_d must be in [1, {MAX_BRANCH_D}], got {max_d}")
+    if n_permutations_centers < 0 or n_permutations_familywise_coverage < 0:
+        raise ValueError("permutation counts must be non-negative")
+    spec = center_spec if center_spec is not None else CenterSpec()
+
+    X_arr = np.asarray(X)
+    Z_str = np.asarray(Z).ravel().astype(str)
+    n_samples, n_features = X_arr.shape
+    if Z_str.shape[0] != n_samples:
+        raise ValueError(f"sample count mismatch: {Z_str.shape[0]} vs {n_samples}")
+    if feature_names is None:
+        feature_names = [f"X_{j + 1}" for j in range(n_features)]
+    value_keys = [str(v) for v in values]
+    if n_features == 0 or not value_keys:
+        for key in value_keys:
+            yield key, {}
+        return
+
+    X_discrete, bin_counts = discretize_dataset(X_arr)
+    effective_max_d = min(max_d, n_features)
+    factory = _CandidateFactory(X_discrete, bin_counts, n_samples)
+
+    uniq, z_codes = np.unique(Z_str, return_inverse=True)
+    z_codes = z_codes.astype(np.int64).ravel()
+    n_values = int(uniq.shape[0])
+    code_of = {str(u): i for i, u in enumerate(uniq.tolist())}
+    # Values absent from Z get a code past the observed range, so their
+    # column of the contingency table is identically zero.
+    absent_code = n_values
+    value_codes = [code_of.get(key, absent_code) for key in value_keys]
+    n_values_eff = n_values + (1 if absent_code in value_codes else 0)
+
+    best_per_value = _exhaustive_search(
+        factory, z_codes, n_values_eff, value_codes, spec, effective_max_d
+    )
+    for key, code, best_by_d in zip(value_keys, value_codes, best_per_value):
+        if not best_by_d:
+            yield key, {}
+            continue
+        z_binary = (z_codes == code).astype(np.int8)
+        yield key, _report_branches(
+            factory,
+            z_binary,
+            best_by_d,
+            feature_names,
+            spec,
+            effective_max_d,
+            random_state=random_state,
+            progress=None,
+            n_permutations_centers=n_permutations_centers,
+            n_permutations_familywise_coverage=n_permutations_familywise_coverage,
+            cv_splits=cv_splits,
+            cv_repeats=cv_repeats,
+            cell_bounds=cell_bounds,
+        )
+
+
+def discover_branches_by_value(
+    X: np.ndarray,
+    Z: np.ndarray,
+    values: Sequence[object],
+    feature_names: Optional[List[str]] = None,
+    max_d: int = MAX_BRANCH_D,
+    random_state: Optional[int] = 0,
+    center_spec: Optional[CenterSpec] = None,
+    n_permutations_centers: int = DEFAULT_N_PERMUTATIONS,
+    n_permutations_familywise_coverage: int = 0,
+    cv_splits: int = 5,
+    cv_repeats: int = 5,
+    cell_bounds: bool = True,
+) -> Dict[str, Dict[int, BranchResult]]:
+    """
+    `discover_branches` for SEVERAL one-vs-rest positive classes of the same
+    raw target column, sharing one enumeration of the candidate family.
+
+    For each `v` in `values` the result is exactly what
+    `discover_branches(X, (Z.astype(str) == str(v)).astype(int),
+    positive_class=1, ...)` returns - the same discretisation of `X`, the
+    same candidate partitions (they do not depend on the target), the same
+    ranking key evaluated on the same cell counts, the same reporting stage
+    with the same seed - keyed by `str(v)`. Values are matched on their
+    string form, which is how the Global Pattern Scan (`vsf.server`) builds
+    its one-vs-rest indicators; a value absent from `Z` is a target with no
+    positives and is reported as such (no centres, coverage 0), not an error.
+
+    The saving is in the search: one `bincount` per candidate produces the
+    (cells x values) table from which every value's `coverage_score` is read
+    (`_exhaustive_search`), so a column with V observed values costs one
+    enumeration instead of V. The reporting stage (cross-validation, the
+    per-branch permutation null, the prefix series) stays per value, as does
+    the familywise null when `n_permutations_familywise_coverage > 0`.
+
+    `cell_bounds=False` forwards to `vsf.centers.center_report` and skips the
+    per-cell confidence intervals of every report (see there for exactly
+    which fields it affects; the branch choice, coverage, K, purity,
+    cross-validation and p-values are not among them).
+
+    See `iter_branches_by_value` for the same computation delivered one
+    value at a time.
+    """
+    return dict(
+        iter_branches_by_value(
+            X,
+            Z,
+            values,
+            feature_names=feature_names,
+            max_d=max_d,
+            random_state=random_state,
+            center_spec=center_spec,
+            n_permutations_centers=n_permutations_centers,
+            n_permutations_familywise_coverage=n_permutations_familywise_coverage,
+            cv_splits=cv_splits,
+            cv_repeats=cv_repeats,
+            cell_bounds=cell_bounds,
+        )
+    )
 
 
 class BranchEngine:
@@ -801,23 +932,12 @@ class BranchEngine:
     Thin, stateless wrapper around `discover_branches` matching v1.0's
     `AVREngine(...).fit(...)` call shape, so callers (server handlers,
     `vsf.dashboard`, tests) construct-then-fit as before.
-
-    Unlike v2.0's wrapper this DOES carry statistical parameters. That is not a
-    regression toward v1.0's removed significance infrastructure: v1.0 used
-    permutation tests to GATE greedy feature selection, whereas these
-    parameters only attach a significance statement to an already-selected,
-    exhaustively-searched branch. Selection itself remains deterministic given
-    `null`.
     """
 
     def __init__(
         self,
         max_d: int = MAX_BRANCH_D,
-        null: NullMethod = "exact",
-        n_permutations: int = DEFAULT_N_PERMUTATIONS,
-        n_permutations_familywise: int = 0,
         random_state: Optional[int] = 0,
-        objective: Objective = "auto",
         positive_class: Optional[object] = None,
         center_spec: Optional[CenterSpec] = None,
         n_permutations_centers: int = DEFAULT_N_PERMUTATIONS,
@@ -828,11 +948,7 @@ class BranchEngine:
         if max_d < 1 or max_d > MAX_BRANCH_D:
             raise ValueError(f"max_d must be in [1, {MAX_BRANCH_D}], got {max_d}")
         self.max_d = max_d
-        self.null: NullMethod = null
-        self.n_permutations = n_permutations
-        self.n_permutations_familywise = n_permutations_familywise
         self.random_state = random_state
-        self.objective: Objective = objective
         self.positive_class = positive_class
         self.center_spec = center_spec
         self.n_permutations_centers = n_permutations_centers
@@ -845,21 +961,15 @@ class BranchEngine:
         X: np.ndarray,
         Z: np.ndarray,
         feature_names: Optional[List[str]] = None,
-        feature_channels: Optional[List[str]] = None,
         progress: Optional[Callable[[int, int], None]] = None,
     ) -> Dict[int, BranchResult]:
         return discover_branches(
             X,
             Z,
             feature_names=feature_names,
-            feature_channels=feature_channels,
             max_d=self.max_d,
-            null=self.null,
-            n_permutations=self.n_permutations,
-            n_permutations_familywise=self.n_permutations_familywise,
             random_state=self.random_state,
             progress=progress,
-            objective=self.objective,
             positive_class=self.positive_class,
             center_spec=self.center_spec,
             n_permutations_centers=self.n_permutations_centers,

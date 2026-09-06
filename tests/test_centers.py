@@ -508,23 +508,26 @@ _ADULT = Path(__file__).resolve().parent.parent / "data" / "adult_census.csv"
 
 
 @pytest.mark.skipif(not _ADULT.exists(), reason="reference dataset not present")
-def test_armed_forces_branch_has_a_high_u_adj_and_no_certifiable_centre():
-    # THE claim v2.2 exists for. `occupation = Armed-Forces` is 9 of 32 561
-    # rows. The 3-D branch the search returns reads U_adj = 41.3%, which is
+def test_armed_forces_branch_has_no_certifiable_centre_despite_a_high_historical_association():
+    # THE claim this module exists for (see `vsf.centers`'s module
+    # docstring). `occupation = Armed-Forces` is 9 of 32 561 rows. Under the
+    # v2.1/v2.2 bias-corrected association statistic -- since deleted along
+    # with the rest of the MI-ranking machinery (v2.3, see `vsf.avr`'s
+    # module docstring) -- this same 3-D branch read U_adj = 41.3%,
     # arithmetically correct and operationally empty: the highest purity of
-    # any of its 32 cells is 2.42% (8 of 330), so no colour threshold can
-    # make the display green and no decision rule can use it.
+    # any of its 32 cells is 2.42% (8 of 330), so no colour threshold could
+    # make the display green and no decision rule could use it. This test
+    # pins the half of that claim vsf.centers still can: the coverage layer
+    # correctly reports nothing certifiable, regardless of what an
+    # association statistic would have said.
     import pandas as pd
 
-    from vsf.metrics import adjusted_uncertainty_coefficient, cell_codes, contingency_table
+    from vsf.metrics import cell_codes
 
     df = pd.read_csv(_ADULT)
     z = binarize_target(df["occupation"].values, "Armed-Forces")
     features = df[["workclass", "sex", "income"]].astype(str).values
     assert int(z.sum()) == 9
-
-    u_adj = adjusted_uncertainty_coefficient(contingency_table(z, features))
-    assert u_adj == pytest.approx(0.413, abs=0.001)
 
     codes, n_cells = cell_codes(features)
     report = center_report(z, codes, n_cells, CenterSpec(tau=0.9, alpha=0.05), n_permutations=99)
