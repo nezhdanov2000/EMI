@@ -892,3 +892,86 @@ select:focus {
         min-height: 420px;
     }
 }
+
+
+/* ---- Search direction (presence / absence) -------------------------- */
+.direction-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin: 6px 0 2px 0;
+}
+.direction-btn {
+    background: transparent;
+    border: none;
+    color: var(--text-dim);
+    font-size: 0.78rem;
+    padding: 3px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+}
+.direction-btn.active[data-direction="presence"] { background: rgba(34, 197, 94, 0.18); color: #22c55e; }
+.direction-btn.active[data-direction="absence"]  { background: rgba(239, 68, 68, 0.18); color: #ef4444; }
+/* Under absence the certified zone is red and the low zone (rows rich in
+   the value, uncertified either way) is slate grey -- never green, which
+   would read as a presence certificate that was not made. */
+body.absence-mode .color-scale-track {
+    background: linear-gradient(90deg,
+        #64748b 0%, #64748b var(--red-pct, 40%),
+        #92572e var(--red-pct, 40%), #92572e var(--tau-pct, 90%),
+        #ef4444 var(--tau-pct, 90%), #ef4444 100%);
+}
+body.absence-mode .color-scale-handle--green { --handle-color: #ef4444; }
+body.absence-mode .color-scale-handle--red { --handle-color: #64748b; }
+
+
+/* ---- Solution landscape ---------------------------------------------- */
+.view-mode-btn {
+    background: transparent; border: none; color: var(--text-dim);
+    font-size: 0.78rem; padding: 3px 10px; border-radius: 6px; cursor: pointer;
+}
+.view-mode-btn.active { background: rgba(99, 102, 241, 0.22); color: #c7d2fe; }
+#landscapeArea { flex: 1; display: flex; flex-direction: column; min-height: 560px; }
+#landscape-plot { flex: 1; min-height: 420px; }
+.landscape-header {
+    display: flex; justify-content: space-between; align-items: center; gap: 12px;
+    flex-wrap: wrap; padding: 6px 12px; font-size: 0.78rem; color: var(--text-dim);
+}
+.landscape-summary strong { color: #f8fafc; }
+.landscape-controls { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.landscape-controls select, .density-scale input {
+    background: rgba(15, 23, 42, 0.8); color: white; border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 4px; padding: 2px 6px; font-size: 0.78rem;
+}
+.density-scale { display: flex; align-items: center; gap: 6px; }
+.density-scale input { width: 58px; }
+.density-bar {
+    position: relative; width: 150px; height: 10px; border-radius: 6px;
+    border: 1px solid rgba(255,255,255,0.12);
+    background: linear-gradient(90deg,
+        #334155 0%, #334155 var(--low-pct, 25%),
+        #6366f1 var(--low-pct, 25%), #6366f1 var(--high-pct, 60%),
+        #e0e7ff var(--high-pct, 60%), #e0e7ff 100%);
+}
+.density-max { position: absolute; right: -4px; top: 12px; font-size: 0.68rem; color: var(--text-dim); white-space: nowrap; }
+.landscape-cell-panel {
+    border-top: 1px solid var(--border-color); padding: 8px 12px; max-height: 260px;
+    overflow: auto; font-size: 0.78rem;
+}
+.landscape-cell-head { display: flex; justify-content: space-between; align-items: center; color: #f8fafc; margin-bottom: 6px; }
+.landscape-close { background: transparent; border: none; color: var(--text-dim); cursor: pointer; font-size: 0.9rem; }
+.landscape-cell-list { display: flex; flex-direction: column; gap: 4px; }
+.landscape-row {
+    display: grid; grid-template-columns: 1fr auto auto auto auto; gap: 10px; align-items: center;
+    padding: 4px 8px; border-radius: 6px; background: rgba(255,255,255,0.03);
+}
+.landscape-row.current { outline: 1px solid #6366f1; }
+.landscape-row .axes { color: #e2e8f0; }
+.landscape-row .num { color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.landscape-open {
+    background: rgba(99, 102, 241, 0.22); color: #c7d2fe; border: none; border-radius: 6px;
+    padding: 2px 10px; cursor: pointer; font-size: 0.75rem;
+}
+.landscape-cell-more { margin-top: 6px; color: var(--text-dim); }
+.landscape-cell-more button { margin-left: 8px; }

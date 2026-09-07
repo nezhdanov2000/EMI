@@ -277,9 +277,10 @@ def test_export_full_dashboard_signature_has_no_v1_parameters():
     # v2.2 adds `center_spec`: a static export cannot be re-certified after
     # the fact, so the certificate it was built under is an explicit
     # parameter and is stated in the exported page's own legend.
+    # 2026-09 adds `direction` (presence / absence search, `vsf.avr.Direction`).
     assert params == {
         "df", "target", "criterion", "translations", "title", "max_d",
-        "center_spec",
+        "center_spec", "direction",
     }
 
 

@@ -96,9 +96,14 @@
                         style="font-weight: 600; font-size: 0.9rem; color: #f8fafc; border-right: 1px solid var(--border-color); padding-right: 1.25rem;">
                         📊 Branch Metrics</div>
                     <div style="display: flex; gap: 1.25rem; flex: 1; flex-wrap: wrap;">
-                        <div style="display: flex; align-items: baseline; gap: 6px;"
+                        <div id="hud-free" style="display: none; align-items: baseline; gap: 6px;"
+                            title="Absence search: the share of ALL rows that fall inside cells certified to be at least tau free of the chosen value. This is the headline of an absence search: how much of the data can be excluded from the search for the value.">
+                            <span style="font-size: 0.75rem; color: var(--text-dim);">Certified free:</span>
+                            <strong id="val-free" style="color: #ef4444; font-size: 1.05rem;">-</strong>
+                        </div>
+                        <div id="hud-coverage" style="display: flex; align-items: baseline; gap: 6px;"
                             title="Coverage: the share of ALL target-value samples that fall inside certified discrete centres. This is what the display delivers. It is 0% whenever no cell can be certified, however strong the underlying association is.">
-                            <span style="font-size: 0.75rem; color: var(--text-dim);">Coverage:</span>
+                            <span id="label-coverage" style="font-size: 0.75rem; color: var(--text-dim);">Coverage:</span>
                             <strong id="val-coverage" style="color: var(--green); font-size: 1.05rem;">-</strong>
                         </div>
                         <div style="display: flex; align-items: baseline; gap: 6px;"
@@ -112,6 +117,18 @@
                             title="Collapse/split the CURRENT branch's own axes (animated) — this never switches to a different branch">Dimensionality:</span>
                         <div id="dimButtonsGroup" class="view-toggle-group" style="padding: 2px;"></div>
                     </div>
+                    <!-- Lattice / Landscape (Project_Master_Document.md Section 4.9):
+                         the lattice is the winning schema's cells; the landscape
+                         is every schema the search scored, as a 10 x 10 lattice
+                         of (coverage, centres) categories coloured by how many
+                         schemas fall in each. -->
+                    <div style="display: flex; align-items: center; gap: 8px; border-left: 1px solid var(--border-color); padding-left: 1rem;"
+                        title="Lattice: the cells of the selected branch. Landscape: every schema the search scored, as a lattice of (coverage, centres) categories coloured by how many schemas reach each — the winner is one point of it.">
+                        <div class="view-toggle-group" style="padding: 2px;">
+                            <button type="button" class="view-mode-btn active" data-mode="lattice" onclick="setViewMode('lattice')">Lattice</button>
+                            <button type="button" class="view-mode-btn" data-mode="landscape" onclick="setViewMode('landscape')">Landscape</button>
+                        </div>
+                    </div>
                     <div style="font-size: 0.85rem; color: var(--text-dim);"
                         title="Rows every statistic and every cell colour is computed on. When the plot subsamples for rendering, the number actually drawn is shown in brackets.">
                         Samples (statistics): <strong id="totalSamplesVal" style="color: #fff;">-</strong>
@@ -122,6 +139,37 @@
             <div id="axesListContainer" class="axes-list-bar"></div>
 
             <div id="plot-container"></div>
+
+            <!-- Solution landscape (hidden unless the Landscape view mode is on). -->
+            <div id="landscapeArea" style="display: none;">
+                <div class="landscape-header">
+                    <div id="landscapeSummary" class="landscape-summary">—</div>
+                    <div class="landscape-controls">
+                        <label title="Which schemas to show: those of one dimensionality, or all of them together (the y axis top, K max, is the largest centre count among the schemas shown).">Schemas:
+                            <select id="landscapeDim" onchange="onLandscapeDimChange()">
+                                <option value="branch">of the selected branch's d</option>
+                                <option value="all">all d together</option>
+                            </select>
+                        </label>
+                        <div class="density-scale" title="How many schemas fall in a cell. Cells up to the first number are drawn faint, cells above the second dark; between them, mid-tone. Both are yours to move. The right end of the bar is the fullest cell.">
+                            <span>faint ≤</span>
+                            <input type="number" id="densityLow" min="0" step="1" value="10" onchange="renderLandscape()">
+                            <span>· dark ></span>
+                            <input type="number" id="densityHigh" min="0" step="1" value="40" onchange="renderLandscape()">
+                            <div class="density-bar" id="densityBar"><span id="densityMax" class="density-max">max —</span></div>
+                        </div>
+                    </div>
+                </div>
+                <div id="landscape-plot"></div>
+                <div id="landscapeCellPanel" class="landscape-cell-panel" style="display: none;">
+                    <div class="landscape-cell-head">
+                        <span id="landscapeCellTitle">—</span>
+                        <button type="button" class="landscape-close" onclick="closeLandscapeCell()" title="Close">✕</button>
+                    </div>
+                    <div id="landscapeCellList" class="landscape-cell-list"></div>
+                    <div id="landscapeCellMore" class="landscape-cell-more"></div>
+                </div>
+            </div>
 
             <!-- 4D Slice Controller -->
             <div id="slice-controller" class="slice-controller" style="display: none;">
@@ -213,8 +261,29 @@
                          and remain the precise, reproducible way to set an
                          exact value; they and the slider are kept in sync in
                          both directions. -->
+                    <!-- Direction of the search (vsf.avr.Direction). Presence:
+                         certify cells that are at least tau pure in the chosen
+                         value and report how much of the value they capture.
+                         Absence: certify cells at least tau pure in ITS
+                         COMPLEMENT -- where the value is almost missing -- and
+                         report how much of the data is certified free of it.
+                         Same search and certificate on the inverted indicator;
+                         a different question, so a different headline, base
+                         rate and legend (certified cells are drawn RED under
+                         absence, never green). -->
+                    <div class="direction-toggle" id="directionToggle"
+                        title="Presence: find cells where the chosen value is concentrated (green = certified centre). Absence: find cells where the chosen value is almost missing (red = certified free of it). Use Absence when the value is so common that a presence threshold would have to exceed its base rate.">
+                        <span style="font-size: 0.8rem; color: var(--text-dim);">Search for:</span>
+                        <div class="view-toggle-group" style="padding: 2px;">
+                            <button type="button" class="direction-btn active" data-direction="presence"
+                                onclick="setDirection('presence')">Presence</button>
+                            <button type="button" class="direction-btn" data-direction="absence"
+                                onclick="setDirection('absence')">Absence</button>
+                        </div>
+                    </div>
+                    <div id="baseRateNote" style="font-size: 0.72rem; color: var(--text-dim); min-height: 1em; margin: 2px 0 4px 0;"></div>
                     <div class="color-scale"
-                        title="Drag to set the colour boundaries. Green (tau) defines a discrete centre and re-runs the analysis on release. Red is cosmetic and re-colours instantly.">
+                        title="Drag to set the colour boundaries. The upper boundary (tau) defines a certified cell and re-runs the analysis on release. The lower boundary is cosmetic and re-colours instantly.">
                         <div class="color-scale-track" id="colorScaleTrack">
                             <div class="color-scale-handle color-scale-handle--red" id="handleRed" role="slider"
                                 aria-label="Red boundary (cosmetic)" aria-valuemin="0" aria-valuemax="99"
@@ -231,7 +300,7 @@
                     </div>
 
                     <div style="display: flex; justify-content: space-between; align-items: center;">
-                        <label style="color: var(--green);"
+                        <label id="labelTau" style="color: var(--green);"
                             title="A cell is a discrete centre — and is drawn green — when its share of the target value reaches this. Coverage is computed from exactly these cells, so moving this re-runs the analysis. 100% is allowed and means 'only cells that are entirely the target value'.">🟢 Green from:</label>
                         <div style="display: flex; align-items: center; gap: 4px;">
                             <input type="number" id="certTau" min="1" max="100" step="1" value="90"
@@ -241,7 +310,7 @@
                         </div>
                     </div>
                     <div style="display: flex; justify-content: space-between; align-items: center;">
-                        <label style="color: #ef4444;"
+                        <label id="labelRedTo" style="color: #ef4444;"
                             title="Purely a colour boundary: cells below it are drawn red; between it and the green boundary, brown. Changing it re-colours immediately and does not affect any reported number.">🔴 Red up to:</label>
                         <div style="display: flex; align-items: center; gap: 4px;">
                             <input type="number" id="colorRedTo" min="0" max="99" step="1" value="40"

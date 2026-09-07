@@ -14,7 +14,7 @@ the collapse/split animation built on top of this payload.
 """
 
 import numpy as np
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence, Tuple
 from .avr import BranchResult
 from .centers import CenterSpec, purity_bounds, select_centers
 
@@ -337,6 +337,7 @@ def prepare_visualization_payload(
     translations: Optional[Translations] = None,
     positive_value: Optional[object] = None,
     center_spec: Optional[CenterSpec] = None,
+    indicator_labels: Optional[Tuple[str, str]] = None,
 ) -> Dict:
     """
     Prepares a structured visualization payload with axis titles, category
@@ -439,9 +440,17 @@ def prepare_visualization_payload(
     _all_target_values = np.unique(np.asarray(Z_target).ravel())
     _target_label_map = dict(zip(
         [_v.item() if hasattr(_v, "item") else _v for _v in _all_target_values],
-        target_class_labels(
-            _all_target_values, target_name, _target_display, translations,
-            indicator=target_is_indicator,
+        (
+            # Explicit (label for 0, label for 1) - used by the absence
+            # search, whose indicator is the COMPLEMENT of the criterion:
+            # 1 must read "not Column = value" and 0 "Column = value".
+            [indicator_labels[int(v)] for v in _all_target_values.tolist()]
+            if (indicator_labels is not None and target_is_indicator
+                and set(int(v) for v in _all_target_values.tolist()) <= {0, 1})
+            else target_class_labels(
+                _all_target_values, target_name, _target_display, translations,
+                indicator=target_is_indicator,
+            )
         ),
     ))
 
@@ -797,6 +806,11 @@ def prepare_visualization_payload(
         "all_feature_names": [humanize_col(fn, translations) for fn in feature_names],
         "raw_feature_names": feature_names,
         "selected_features": [humanize_col(sfn, translations) for sfn in branch.selected_feature_names],
+        # Column indices of the branch's axes into the feature matrix (the
+        # dataset minus the target, in order): what `/api/analyze`'s
+        # `features` takes, so a schema can be re-opened or matched in the
+        # landscape's cell listings.
+        "selected_feature_indices": [int(j) for j in branch.selected_features],
         # No scenario/vir/l_target/l_feat/xai_message/history. `d` is this
         # branch's dimensionality, not a globally "optimal" d* chosen by the
         # algorithm — the caller (or user) picked which branch to render.
@@ -920,6 +934,13 @@ def prepare_visualization_payload(
             },
             "max_purity_lower_by_d": {
                 k: float(v.summary()["max_purity_lower"])
+                for k, v in cell_stats.items() if k in ("1", "2", "3", "4")
+            },
+            # Share of ALL rows inside the view's certified cells. The
+            # headline of an absence search ("how much of the data is
+            # certified free of the value"); secondary under presence.
+            "mass_by_d": {
+                k: float(v.summary()["mass"])
                 for k, v in cell_stats.items() if k in ("1", "2", "3", "4")
             },
         },

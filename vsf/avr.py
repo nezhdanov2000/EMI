@@ -48,7 +48,7 @@ from __future__ import annotations
 
 import itertools
 from dataclasses import dataclass, field
-from typing import Callable, Dict, Iterator, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, Iterator, List, Literal, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -58,6 +58,7 @@ from .centers import (
     CVCoverage,
     center_report,
     center_summary,
+    coverage_score,
     familywise_max_coverage_null,
     min_successes_to_select,
     wilson_lower,
@@ -84,6 +85,57 @@ MAX_BRANCH_D = 4
 #: Off by default (`n_permutations_familywise_coverage=0` in
 #: `discover_branches`) because it costs B times the whole candidate family.
 DEFAULT_N_PERMUTATIONS = 999
+
+#: Which side of the target a search localises. `"presence"` (the default,
+#: and everything the framework did before 2026-09) certifies cells that are
+#: at least `tau` pure in the positive class and reports how much of that
+#: class they capture. `"absence"` certifies cells that are at least `tau`
+#: pure in ITS COMPLEMENT - cells where the positive class is almost absent
+#: - and reports how much of the complement they capture, i.e. which part of
+#: the data can be certified free of the value. Same search, same
+#: certificate, same cross-validation and nulls, applied to the inverted
+#: indicator `1 - z`: absence(X) is presence(not X) by construction (pinned
+#: in `tests/test_absence.py`). It is a separate QUESTION with its own
+#: headline (the mass of certified X-free cells), its own base rate
+#: (1 - p_0) and its own legend, not a separate algorithm.
+Direction = Literal["presence", "absence"]
+
+
+def base_rate_reason(spec: CenterSpec, prevalence: float, direction: Direction) -> Optional[str]:
+    """
+    Why a search at `spec.tau` is void for an indicator with this
+    `prevalence`, or None if it is well-posed.
+
+    A purity threshold is only meaningful above the indicator's base rate:
+    at tau <= p_0 the trivial partition (one cell) is already a certified
+    centre with coverage 1, every refinement inherits that, and the display
+    turns uniformly green without saying anything. For a value that occupies
+    90 % of the rows a presence search therefore needs tau > 0.90, while an
+    absence search of the same value works against a base rate of 0.10 and
+    is well-posed at the usual tau. The check is the same inequality in both
+    directions, on the base rate of the indicator actually searched.
+    """
+    if not (0.0 <= prevalence <= 1.0):
+        raise ValueError(f"prevalence must be in [0, 1], got {prevalence}")
+    if spec.tau > prevalence:
+        return None
+    what = "the positive class" if direction == "presence" else "the complement of the positive class"
+    return (
+        f"tau = {spec.tau:.4g} is not above the base rate of {what} "
+        f"({prevalence:.4g}): every cell of the trivial partition already "
+        "reaches the purity floor, so certification cannot distinguish "
+        "signal from the base rate. Raise tau above the base rate"
+        + (" or search for the value's absence instead." if direction == "presence" else ".")
+    )
+
+
+def _oriented_indicator(z_binary: np.ndarray, direction: Direction) -> np.ndarray:
+    """The 0/1 indicator the search runs on: `z` for presence, `1 - z` for absence."""
+    if direction == "presence":
+        return z_binary.astype(np.int8)
+    if direction == "absence":
+        return (1 - z_binary).astype(np.int8)
+    raise ValueError(f"direction must be 'presence' or 'absence', got {direction!r}")
 
 
 @dataclass
@@ -359,6 +411,168 @@ def _iter_candidates(
 _Ranked = Tuple[Tuple[float, float, float, float], Tuple[int, ...]]
 
 
+class Landscape:
+    """
+    Every candidate the exhaustive search scored, with the three numbers
+    its ranking key is made of: the "solution landscape" of one search
+    (Project_Master_Document.md Section 4.9). The winner is one point of
+    it; the rest is what the display never showed before - how many other
+    schemas reach a given coverage, at how many centres, and how many
+    certify nothing at all.
+
+    Records `(d, features, k_sel, n_centers, n_sel)` per candidate, appended
+    by `_exhaustive_search` through `record`. `bins` aggregates them into
+    the 10 x 10 lattice the frontend draws; `cell` lists the schemas of one
+    lattice cell. Both are pure functions of the recorded arrays, so they
+    can be evaluated lazily and repeatedly on a cached instance.
+    """
+
+    N_BINS: int = 10
+
+    def __init__(
+        self, n_samples: int, n_positive: int, direction: Direction,
+        feature_names: Sequence[str],
+    ) -> None:
+        self.n_samples = int(n_samples)
+        self.n_positive = int(n_positive)
+        self.direction: Direction = direction
+        self.feature_names = [str(f) for f in feature_names]
+        self._d: List[int] = []
+        self._features: List[Tuple[int, ...]] = []
+        self._k_sel: List[int] = []
+        self._n_centers: List[int] = []
+        self._n_sel: List[int] = []
+        self._frozen = False
+
+    # -- recording ------------------------------------------------------------
+    def record(self, combo: Tuple[int, ...], k_sel: int, n_centers: int, n_sel: int) -> None:
+        if self._frozen:
+            raise RuntimeError("landscape is frozen")
+        self._d.append(len(combo))
+        self._features.append(tuple(int(j) for j in combo))
+        self._k_sel.append(int(k_sel))
+        self._n_centers.append(int(n_centers))
+        self._n_sel.append(int(n_sel))
+
+    def freeze(self) -> "Landscape":
+        self.d = np.asarray(self._d, dtype=np.int64)
+        self.k_sel = np.asarray(self._k_sel, dtype=np.int64)
+        self.n_centers = np.asarray(self._n_centers, dtype=np.int64)
+        self.n_sel = np.asarray(self._n_sel, dtype=np.int64)
+        self.features = self._features
+        self._frozen = True
+        return self
+
+    def __len__(self) -> int:
+        return len(self._features)
+
+    # -- derived quantities ---------------------------------------------------
+    def x_values(self) -> np.ndarray:
+        """
+        The horizontal coordinate of every candidate: coverage of the class
+        searched (presence), or the mass of certified cells (absence - the
+        headline of that search), both as fractions in [0, 1].
+        """
+        if self.direction == "absence":
+            return self.n_sel / float(self.n_samples) if self.n_samples else np.zeros_like(self.n_sel, dtype=float)
+        return self.k_sel / float(self.n_positive) if self.n_positive else np.zeros_like(self.k_sel, dtype=float)
+
+    @staticmethod
+    def bin_index(fraction: np.ndarray, n_bins: int) -> np.ndarray:
+        """
+        Category index of a fraction in (0, 1] under the left-open,
+        right-closed intervals (0, 1/n], (1/n, 2/n], ..., ((n-1)/n, 1]:
+        `ceil(f * n) - 1`, evaluated on the exact rational so that f = 0.1
+        lands in the first interval and f = 1 in the last. Callers exclude
+        f = 0 (no certified centre) before binning.
+        """
+        f = np.asarray(fraction, dtype=np.float64)
+        # ceil on a value that is exactly k/n must not be pushed over the
+        # edge by floating-point representation: k/n * n is evaluated with
+        # a relative tolerance below any gap between distinct fractions
+        # with the denominators this package sees (n_positive, K_max <= N).
+        idx = np.ceil(f * n_bins - 1e-9).astype(np.int64) - 1
+        return np.clip(idx, 0, n_bins - 1)
+
+    def _selection(self, d: Optional[int]) -> np.ndarray:
+        mask = self.n_centers > 0
+        if d is not None:
+            mask &= self.d == int(d)
+        return mask
+
+    def k_max(self, d: Optional[int] = None) -> int:
+        sel = self.d == int(d) if d is not None else np.ones(self.d.shape, dtype=bool)
+        return int(self.n_centers[sel].max()) if np.any(sel) else 0
+
+    def bins(self, d: Optional[int] = None) -> Dict[str, object]:
+        """
+        The 10 x 10 count lattice for one dimensionality (`d`) or for the
+        whole family (`None`): `counts[iy][ix]` is the number of candidates
+        whose x-fraction falls in column ix and whose n_centers / k_max
+        falls in row iy, both under `bin_index`. Candidates with no
+        certified centre are excluded from the lattice and counted in
+        `n_zero`; `k_max` is the largest centre count among the family's
+        candidates (per d when `d` is given), the fixed top of the y axis.
+        """
+        n = self.N_BINS
+        family = self.d == int(d) if d is not None else np.ones(self.d.shape, dtype=bool)
+        n_total = int(family.sum())
+        sel = family & (self.n_centers > 0)
+        k_max = self.k_max(d)
+        counts = np.zeros((n, n), dtype=np.int64)
+        if np.any(sel) and k_max > 0:
+            ix = self.bin_index(self.x_values()[sel], n)
+            iy = self.bin_index(self.n_centers[sel] / float(k_max), n)
+            np.add.at(counts, (iy, ix), 1)
+        return {
+            "d": d,
+            "n_bins": n,
+            "k_max": k_max,
+            "n_total": n_total,
+            "n_zero": int(n_total - int(sel.sum())),
+            "counts": counts.tolist(),
+            "max_count": int(counts.max()) if counts.size else 0,
+            "x": "mass" if self.direction == "absence" else "coverage",
+        }
+
+    def cell(
+        self, d: Optional[int], ix: int, iy: int, limit: int = 100, offset: int = 0
+    ) -> Dict[str, object]:
+        """
+        The candidates of one lattice cell, most concentrated first (lowest
+        mass, then fewest centres, then highest x), as dicts with the
+        feature indices and names and the exact coverage / n_centers / mass.
+        """
+        n = self.N_BINS
+        family = self.d == int(d) if d is not None else np.ones(self.d.shape, dtype=bool)
+        sel = family & (self.n_centers > 0)
+        k_max = self.k_max(d)
+        idx = np.nonzero(sel)[0]
+        if idx.size == 0 or k_max == 0:
+            return {"total": 0, "offset": offset, "limit": limit, "schemas": []}
+        x = self.x_values()[idx]
+        ixs = self.bin_index(x, n)
+        iys = self.bin_index(self.n_centers[idx] / float(k_max), n)
+        hit = idx[(ixs == int(ix)) & (iys == int(iy))]
+        mass = self.n_sel[hit] / float(self.n_samples) if self.n_samples else np.zeros(hit.shape)
+        order = np.lexsort((-self.x_values()[hit], self.n_centers[hit], mass))
+        hit = hit[order]
+        total = int(hit.shape[0])
+        page = hit[int(offset): int(offset) + int(limit)]
+        schemas = []
+        for i in page.tolist():
+            feats = self.features[i]
+            schemas.append({
+                "d": int(self.d[i]),
+                "features": [int(j) for j in feats],
+                "feature_names": [self.feature_names[j] for j in feats],
+                "coverage": (self.k_sel[i] / self.n_positive) if self.n_positive else 0.0,
+                "n_centers": int(self.n_centers[i]),
+                "mass": (self.n_sel[i] / self.n_samples) if self.n_samples else 0.0,
+            })
+        return {"total": total, "offset": int(offset), "limit": int(limit), "schemas": schemas}
+
+
 def _exhaustive_search(
     factory: _CandidateFactory,
     z_codes: np.ndarray,
@@ -366,10 +580,22 @@ def _exhaustive_search(
     value_indices: Sequence[int],
     spec: CenterSpec,
     max_d: int,
+    complement: bool = False,
+    landscape: Optional[Landscape] = None,
 ) -> List[Dict[int, _Ranked]]:
     """
     argmax_{|S| = d} coverage_score(Z_v; X_S) for every d <= max_d and every
     target value v in `value_indices`, in ONE pass over the candidate family.
+
+    `landscape`, when given, receives every candidate's (features, k_sel,
+    n_centers, n_sel) for the FIRST value of `value_indices` (a single-
+    indicator search); see `Landscape`.
+
+    `complement=True` scores the indicator `z_codes != v` instead of
+    `z_codes == v` for every v - the absence search (`Direction`). The same
+    (cells x values) table serves: the complement's per-cell count is
+    `n_cell - table[:, v]` and its total is `N - n_positive[v]`, so one
+    enumeration still covers every value of the column.
 
     `z_codes` are dense codes 0..n_values-1 of the target; value v's 0/1
     indicator is `z_codes == v`. One `bincount` of `codes * n_values +
@@ -392,6 +618,8 @@ def _exhaustive_search(
     n_samples = int(z.shape[0])
     values = [int(v) for v in value_indices]
     n_positive = np.bincount(z, minlength=n_values).astype(np.int64)
+    if complement:
+        n_positive = n_samples - n_positive
     best: List[Dict[int, _Ranked]] = [{} for _ in values]
     # Incumbent state per (value, d): first three key components, Wilson
     # tie-break (None until needed), the cell counts to compute it from.
@@ -418,7 +646,7 @@ def _exhaustive_search(
             k_min = min_successes_to_select(n_cell, spec, alpha_eff)
             eligible = n_cell > 0
         for vi, v in enumerate(values):
-            k_cell = table[:, v]
+            k_cell = (n_cell - table[:, v]) if complement else table[:, v]
             n_pos = int(n_positive[v])
             mask = (k_cell >= k_min) & eligible
             if n_pos > 0 and n_samples > 0:
@@ -428,7 +656,10 @@ def _exhaustive_search(
             else:
                 # `_coverage_from_counts` reports (0, 0, 0) here; the centre
                 # count still comes from the real mask, as in `coverage_score`.
+                k_sel, n_sel = 0, 0
                 key3 = (0.0, -float(mask.sum()), -0.0)
+            if landscape is not None and vi == 0:
+                landscape.record(combo, k_sel, int(mask.sum()), n_sel)
             current = inc3[vi].get(d)
             if current is None or key3 > current:
                 inc3[vi][d] = key3
@@ -578,6 +809,8 @@ def discover_branches(
     n_permutations_familywise_coverage: int = 0,
     cv_splits: int = 5,
     cv_repeats: int = 5,
+    direction: Direction = "presence",
+    landscape: Optional[Landscape] = None,
 ) -> Dict[int, BranchResult]:
     """
     Independent Branch Discovery (Project_Master_Document.md Section 4.3).
@@ -640,6 +873,24 @@ def discover_branches(
         `CenterReport.coverage_cv`. Set `cv_repeats = 0` to skip the
         out-of-sample estimate entirely (and with it
         `select_branch_dimensionality`).
+    direction
+        `"presence"` (default) or `"absence"` - see `Direction`. Under
+        `"absence"` every reported number refers to the complement of the
+        positive class: `centers.coverage` is the share of NON-positive rows
+        inside cells certified at least `tau` pure in non-positives,
+        `centers.mass` the share of ALL rows in those cells (the headline of
+        an absence search: how much of the data is certified free of the
+        value), `centers.prevalence` is `1 - p_0`.
+
+    landscape
+        An unfrozen `Landscape` to record every scored candidate into (its
+        `n_samples` / `n_positive` / `direction` must describe this search;
+        `compute_landscape` builds one correctly). Frozen on return.
+
+    Raises `ValueError` when `tau` is not above the base rate of the
+    indicator searched (`base_rate_reason`): such a search is void, not
+    merely weak, and the caller must be told rather than shown a uniformly
+    green display.
 
     Cost: see Project_Master_Document.md Section 4.6. This function makes no
     attempt to bound the number of combinations evaluated - by explicit
@@ -659,40 +910,23 @@ def discover_branches(
         raise ValueError("permutation counts must be non-negative")
     spec = center_spec if center_spec is not None else CenterSpec()
 
-    X_arr = np.asarray(X)
-    Z_arr = np.asarray(Z).ravel()
-    n_samples, n_features = X_arr.shape
-
-    if feature_names is None:
-        feature_names = [f"X_{j + 1}" for j in range(n_features)]
-
+    prepared = _prepare_search(X, Z, feature_names, positive_class, spec, direction)
     branches: Dict[int, BranchResult] = {}
-    if n_features == 0:
+    if prepared is None:
         return branches
-
-    X_discrete, bin_counts = discretize_dataset(X_arr)
-    Z_discrete = _discretize_target(Z_arr)
-    z_codes, n_rows = cell_codes(Z_discrete)
-
-    effective_max_d = min(max_d, n_features)
-    z_binary = _resolve_positive_indicator(Z_arr, z_codes, n_rows, positive_class)
-    if z_binary is None:
-        raise ValueError(
-            "discover_branches needs a resolvable positive class: the target "
-            f"has {n_rows} distinct values and no positive_class was given. "
-            "A branch search always ranks by coverage of one named value "
-            "(v2.3); pass positive_class explicitly for a target with more "
-            "than two values."
-        )
-
-    factory = _CandidateFactory(X_discrete, bin_counts, n_samples)
+    factory, z_binary, feature_names = prepared
+    effective_max_d = min(max_d, factory.n_features)
     # ---- exhaustive search ------------------------------------------------
     # The 0/1 indicator is its own two-valued code vector; value 1 is the
-    # positive class. Ranking key is the lexicographic tuple of
+    # class searched for (the positive class, or under `direction="absence"`
+    # its complement). Ranking key is the lexicographic tuple of
     # `coverage_score`, first candidate in enumeration order wins ties.
     best_by_d = _exhaustive_search(
-        factory, z_binary.astype(np.int64), 2, [1], spec, effective_max_d
+        factory, z_binary.astype(np.int64), 2, [1], spec, effective_max_d,
+        landscape=landscape,
     )[0]
+    if landscape is not None:
+        landscape.freeze()
     if not best_by_d:
         return branches
 
@@ -705,6 +939,143 @@ def discover_branches(
         effective_max_d,
         random_state=random_state,
         progress=progress,
+        n_permutations_centers=n_permutations_centers,
+        n_permutations_familywise_coverage=n_permutations_familywise_coverage,
+        cv_splits=cv_splits,
+        cv_repeats=cv_repeats,
+    )
+
+
+def _prepare_search(
+    X: np.ndarray,
+    Z: np.ndarray,
+    feature_names: Optional[Sequence[str]],
+    positive_class: Optional[object],
+    spec: CenterSpec,
+    direction: Direction,
+) -> Optional[Tuple[_CandidateFactory, np.ndarray, List[str]]]:
+    """
+    Everything a search needs before enumerating: the discretised feature
+    matrix wrapped in a `_CandidateFactory`, the oriented 0/1 indicator
+    (`_resolve_positive_indicator` then `_oriented_indicator`), and the
+    feature names. None when there are no feature columns. Raises the same
+    `ValueError`s as `discover_branches` for an unresolvable positive class
+    or a threshold not above the base rate.
+    """
+    X_arr = np.asarray(X)
+    Z_arr = np.asarray(Z).ravel()
+    n_samples, n_features = X_arr.shape
+    names = (
+        [f"X_{j + 1}" for j in range(n_features)] if feature_names is None
+        else [str(f) for f in feature_names]
+    )
+    if n_features == 0:
+        return None
+
+    X_discrete, bin_counts = discretize_dataset(X_arr)
+    Z_discrete = _discretize_target(Z_arr)
+    z_codes, n_rows = cell_codes(Z_discrete)
+    z_binary = _resolve_positive_indicator(Z_arr, z_codes, n_rows, positive_class)
+    if z_binary is None:
+        raise ValueError(
+            "discover_branches needs a resolvable positive class: the target "
+            f"has {n_rows} distinct values and no positive_class was given. "
+            "A branch search always ranks by coverage of one named value "
+            "(v2.3); pass positive_class explicitly for a target with more "
+            "than two values."
+        )
+    z_binary = _oriented_indicator(z_binary, direction)
+    prevalence = float(z_binary.mean()) if n_samples > 0 else 0.0
+    reason = base_rate_reason(spec, prevalence, direction)
+    if reason is not None:
+        raise ValueError(reason)
+    return _CandidateFactory(X_discrete, bin_counts, n_samples), z_binary, names
+
+
+def compute_landscape(
+    X: np.ndarray,
+    Z: np.ndarray,
+    feature_names: Optional[List[str]] = None,
+    max_d: int = MAX_BRANCH_D,
+    positive_class: Optional[object] = None,
+    center_spec: Optional[CenterSpec] = None,
+    direction: Direction = "presence",
+) -> Landscape:
+    """
+    The `Landscape` of the search `discover_branches` would run with these
+    arguments - every candidate's (features, k_sel, n_centers, n_sel) - with
+    no reporting stage. Costs the ranking pass alone.
+    """
+    if max_d < 1 or max_d > MAX_BRANCH_D:
+        raise ValueError(f"max_d must be in [1, {MAX_BRANCH_D}], got {max_d}")
+    spec = center_spec if center_spec is not None else CenterSpec()
+    prepared = _prepare_search(X, Z, feature_names, positive_class, spec, direction)
+    if prepared is None:
+        return Landscape(int(np.asarray(X).shape[0]), 0, direction, []).freeze()
+    factory, z_binary, names = prepared
+    landscape = Landscape(factory.n_samples, int(z_binary.sum()), direction, names)
+    _exhaustive_search(
+        factory, z_binary.astype(np.int64), 2, [1], spec, min(max_d, factory.n_features),
+        landscape=landscape,
+    )
+    return landscape.freeze()
+
+
+def report_schema(
+    X: np.ndarray,
+    Z: np.ndarray,
+    features: Sequence[int],
+    feature_names: Optional[List[str]] = None,
+    random_state: Optional[int] = 0,
+    positive_class: Optional[object] = None,
+    center_spec: Optional[CenterSpec] = None,
+    n_permutations_centers: int = 0,
+    n_permutations_familywise_coverage: int = 0,
+    cv_splits: int = 5,
+    cv_repeats: int = 5,
+    direction: Direction = "presence",
+) -> Dict[int, BranchResult]:
+    """
+    The full report (`_report_branches`) for ONE explicitly chosen feature
+    subset, without a search: `{len(features): BranchResult}`. This is how
+    a schema picked from the `Landscape` is opened.
+
+    Statistical caveat, and the reason `n_permutations_centers` defaults to
+    0 here unlike `discover_branches`: a schema chosen by looking at the
+    landscape is selected on the data, so its uncorrected coverage p-value
+    (`CenterReport.coverage_p_value`) is not valid - it would be the
+    p-value of a hypothesis picked because it looked good. The
+    cross-validated coverage stays honest (the folds are held out
+    regardless of how the schema was chosen), and the familywise p-value,
+    when requested, stays valid and conservative: the null of the maximum
+    over the whole family bounds any member's coverage.
+    """
+    if n_permutations_centers < 0 or n_permutations_familywise_coverage < 0:
+        raise ValueError("permutation counts must be non-negative")
+    spec = center_spec if center_spec is not None else CenterSpec()
+    combo = tuple(int(j) for j in features)
+    if not combo or len(set(combo)) != len(combo) or len(combo) > MAX_BRANCH_D:
+        raise ValueError(
+            f"features must be 1 to {MAX_BRANCH_D} distinct column indices, got {list(features)}"
+        )
+    prepared = _prepare_search(X, Z, feature_names, positive_class, spec, direction)
+    if prepared is None:
+        return {}
+    factory, z_binary, names = prepared
+    if any(j < 0 or j >= factory.n_features for j in combo):
+        raise ValueError(f"feature index out of range in {list(combo)}")
+    d = len(combo)
+    codes, n_cells = factory.codes(combo)
+    key = coverage_score(z_binary, codes, n_cells, spec)
+    return _report_branches(
+        factory,
+        z_binary,
+        {d: (key, combo)},
+        names,
+        spec,
+        max(d, 1),
+        random_state=random_state,
+        progress=None,
         n_permutations_centers=n_permutations_centers,
         n_permutations_familywise_coverage=n_permutations_familywise_coverage,
         cv_splits=cv_splits,
@@ -797,6 +1168,8 @@ def iter_branches_by_value(
     cv_splits: int = 5,
     cv_repeats: int = 5,
     cell_bounds: bool = True,
+    direction: Direction = "presence",
+    skipped: Optional[Dict[str, str]] = None,
 ) -> Iterator[Tuple[str, Dict[int, BranchResult]]]:
     """
     Lazy form of `discover_branches_by_value`: the shared exhaustive search
@@ -807,6 +1180,13 @@ def iter_branches_by_value(
     different column) pays for the reporting of only the values it actually
     consumed. Semantics per value are exactly those of
     `discover_branches_by_value`.
+
+    `direction` applies to every value (see `Direction`). A value whose
+    indicator fails the base-rate check (`base_rate_reason`) is not
+    searched: it is yielded with an empty branch dict and, when `skipped` is
+    given, its reason is recorded there under the value's key - a bulk
+    caller (the Global Pattern Scan) reports it rather than aborting the
+    column.
     """
     if max_d < 1 or max_d > MAX_BRANCH_D:
         raise ValueError(f"max_d must be in [1, {MAX_BRANCH_D}], got {max_d}")
@@ -841,14 +1221,32 @@ def iter_branches_by_value(
     value_codes = [code_of.get(key, absent_code) for key in value_keys]
     n_values_eff = n_values + (1 if absent_code in value_codes else 0)
 
-    best_per_value = _exhaustive_search(
-        factory, z_codes, n_values_eff, value_codes, spec, effective_max_d
-    )
-    for key, code, best_by_d in zip(value_keys, value_codes, best_per_value):
+    # Base-rate check per value, on the indicator actually searched.
+    counts = np.bincount(z_codes, minlength=n_values_eff).astype(np.float64)
+    searchable: List[bool] = []
+    for key, code in zip(value_keys, value_codes):
+        p_value_class = counts[code] / n_samples if n_samples > 0 else 0.0
+        prevalence = p_value_class if direction == "presence" else 1.0 - p_value_class
+        reason = base_rate_reason(spec, prevalence, direction)
+        if reason is not None and skipped is not None:
+            skipped[key] = reason
+        searchable.append(reason is None)
+
+    search_value_codes = [c for c, ok in zip(value_codes, searchable) if ok]
+    best_by_searched: Dict[int, Dict[int, _Ranked]] = {}
+    if search_value_codes:
+        results = _exhaustive_search(
+            factory, z_codes, n_values_eff, search_value_codes, spec, effective_max_d,
+            complement=(direction == "absence"),
+        )
+        best_by_searched = dict(zip(search_value_codes, results))
+
+    for key, code, ok in zip(value_keys, value_codes, searchable):
+        best_by_d = best_by_searched.get(code, {}) if ok else {}
         if not best_by_d:
             yield key, {}
             continue
-        z_binary = (z_codes == code).astype(np.int8)
+        z_binary = _oriented_indicator((z_codes == code).astype(np.int8), direction)
         yield key, _report_branches(
             factory,
             z_binary,
@@ -879,6 +1277,8 @@ def discover_branches_by_value(
     cv_splits: int = 5,
     cv_repeats: int = 5,
     cell_bounds: bool = True,
+    direction: Direction = "presence",
+    skipped: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Dict[int, BranchResult]]:
     """
     `discover_branches` for SEVERAL one-vs-rest positive classes of the same
@@ -923,6 +1323,8 @@ def discover_branches_by_value(
             cv_splits=cv_splits,
             cv_repeats=cv_repeats,
             cell_bounds=cell_bounds,
+            direction=direction,
+            skipped=skipped,
         )
     )
 
@@ -944,6 +1346,7 @@ class BranchEngine:
         n_permutations_familywise_coverage: int = 0,
         cv_splits: int = 5,
         cv_repeats: int = 5,
+        direction: Direction = "presence",
     ):
         if max_d < 1 or max_d > MAX_BRANCH_D:
             raise ValueError(f"max_d must be in [1, {MAX_BRANCH_D}], got {max_d}")
@@ -955,6 +1358,7 @@ class BranchEngine:
         self.n_permutations_familywise_coverage = n_permutations_familywise_coverage
         self.cv_splits = cv_splits
         self.cv_repeats = cv_repeats
+        self.direction = direction
 
     def fit(
         self,
@@ -976,4 +1380,5 @@ class BranchEngine:
             n_permutations_familywise_coverage=self.n_permutations_familywise_coverage,
             cv_splits=self.cv_splits,
             cv_repeats=self.cv_repeats,
+            direction=self.direction,
         )

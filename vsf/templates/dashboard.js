@@ -55,6 +55,12 @@ const PROB_COLORS = [
     '#8a5a34', // Brown — between the boundaries
     '#22c55e'  // Green — at or above tau: a discrete centre
 ];
+// Absence export (DASHBOARD_DATA.direction === 'absence', see
+// vsf.avr.Direction): the certified zone is drawn red -- "certified free of
+// the value" -- and the low zone slate grey, never green.
+const PROB_COLORS_ABSENCE = ['#64748b', '#8a5a34', '#ef4444'];
+const ACTIVE_COLORS = (typeof DASHBOARD_DATA !== 'undefined' && DASHBOARD_DATA.direction === 'absence')
+    ? PROB_COLORS_ABSENCE : PROB_COLORS;
 const PALETTE_COUNT = PROB_COLORS.length;
 
 function buildDiscreteColorscale() {
@@ -62,8 +68,8 @@ function buildDiscreteColorscale() {
     for (let i = 0; i < PALETTE_COUNT; i++) {
         const lo = i / PALETTE_COUNT;
         const hi = (i + 1) / PALETTE_COUNT;
-        scale.push([lo, PROB_COLORS[i]]);
-        scale.push([hi, PROB_COLORS[i]]);
+        scale.push([lo, ACTIVE_COLORS[i]]);
+        scale.push([hi, ACTIVE_COLORS[i]]);
     }
     return scale;
 }
@@ -743,7 +749,7 @@ function buildPlotData(payload, dim, sliceIndex) {
         fy.push(yCoords[i]);
         fz.push(zCoords[i]);
 
-        const hex = PROB_COLORS[colorIndex];
+        const hex = ACTIVE_COLORS[colorIndex];
         const rr = parseInt(hex.slice(1, 3), 16);
         const gg = parseInt(hex.slice(3, 5), 16);
         const bb = parseInt(hex.slice(5, 7), 16);

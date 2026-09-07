@@ -124,8 +124,10 @@ from .avr import (
     DEFAULT_N_PERMUTATIONS,
     MAX_BRANCH_D,
     discover_branches,
+    compute_landscape,
     discover_branches_by_value,
     iter_branches_by_value,
+    report_schema,
     select_branch_dimensionality,
 )
 from .centers import CenterSpec
@@ -160,6 +162,9 @@ _MAX_D = MAX_BRANCH_D
 #: between the values of one column pays the computation once per value.
 _ANALYZE_CACHE_MAX_ENTRIES = 16
 _ANALYZE_CACHE_MAX_BYTES = 512 * 1024 * 1024
+#: Solution landscapes kept per server (each holds every scored candidate
+#: of one search: a few MB at M ~ 50).
+_LANDSCAPE_CACHE_MAX_ENTRIES = 8
 
 # Static asset content-types served from the packaged `vsf.webapp` resources.
 _STATIC_ROUTES: Dict[str, tuple] = {
@@ -226,6 +231,10 @@ class _VSFServer(http.server.ThreadingHTTPServer):
         # it (tests, `vsf.dashboard`-style consumers).
         self.analyze_cache: "OrderedDict[Tuple[Any, ...], bytes]" = OrderedDict()
         self.analyze_cache_bytes = 0
+        # Solution landscapes (`vsf.avr.Landscape`) keyed like the analyze
+        # cache minus `features`; computed on first request (the ranking
+        # pass alone), kept for the lattice and its cell listings.
+        self.landscape_cache: "OrderedDict[Tuple[Any, ...], Any]" = OrderedDict()
         # Requests being computed right now, so two clicks on the same key
         # (or a click racing the background prefetch of that key) compute it
         # once: the second waits on the first's Event and reads the cache.
@@ -296,8 +305,36 @@ class _VSFServer(http.server.ThreadingHTTPServer):
                 del self.inflight[key]
         event.set()
 
+    def get_landscape(self, params: Dict[str, Any], center_spec: CenterSpec):
+        """The `Landscape` for an analyze parameter set, computed once."""
+        key = _analyze_key(params)
+        with self.cache_lock:
+            hit = self.landscape_cache.get(key)
+            if hit is not None:
+                self.landscape_cache.move_to_end(key)
+                return hit
+        target_col, criterion = params["target_col"], params["criterion"]
+        X_df = self.df.drop(columns=[target_col])
+        Z = (
+            (self.df[target_col].astype(str) == str(criterion)).astype(int).values
+            if criterion is not None else self.df[target_col].values
+        )
+        landscape = compute_landscape(
+            X_df.values, Z, feature_names=list(X_df.columns), max_d=_MAX_D,
+            positive_class=(1 if criterion is not None else None),
+            center_spec=center_spec, direction=params["direction"],
+        )
+        with self.cache_lock:
+            self.landscape_cache[key] = landscape
+            while len(self.landscape_cache) > _LANDSCAPE_CACHE_MAX_ENTRIES:
+                self.landscape_cache.popitem(last=False)
+        return landscape
+
     # -- background prefetch ------------------------------------------------
-    def start_prefetch(self, target_col: str, criterion: str, center_spec: CenterSpec) -> None:
+    def start_prefetch(
+        self, target_col: str, criterion: str, center_spec: CenterSpec,
+        direction: str = "presence",
+    ) -> None:
         """
         After a criterion-mode analysis of (`target_col`, `criterion`),
         compute and cache the responses for the column's other values in a
@@ -320,7 +357,7 @@ class _VSFServer(http.server.ThreadingHTTPServer):
             self.prefetch_cancel = cancel
             thread = threading.Thread(
                 target=_prefetch_sibling_values,
-                args=(self, target_col, criterion, center_spec, cancel),
+                args=(self, target_col, criterion, center_spec, direction, cancel),
                 daemon=True,
                 name="vsf-prefetch",
             )
@@ -370,6 +407,10 @@ class VSFRequestHandler(http.server.BaseHTTPRequestHandler):
             self._handle_scan_start_api()
         elif path == "/api/scan/cancel":
             self._handle_scan_cancel_api()
+        elif path == "/api/landscape":
+            self._handle_landscape_api(cell=False)
+        elif path == "/api/landscape/cell":
+            self._handle_landscape_api(cell=True)
         else:
             self._read_json_body()
             self.send_error(404, "Endpoint not found")
@@ -516,6 +557,19 @@ class VSFRequestHandler(http.server.BaseHTTPRequestHandler):
                     {"error": f"rule must be 'purity' or 'certified', got {rule!r}"},
                 )
                 return
+            direction = req.get("direction", "presence")
+            if direction not in ("presence", "absence"):
+                self._send_json_response(
+                    400,
+                    {"error": f"direction must be 'presence' or 'absence', got {direction!r}"},
+                )
+                return
+            if direction == "absence" and criterion is None:
+                self._send_json_response(
+                    400,
+                    {"error": "an absence search needs an explicit target value (criterion) whose absence to certify"},
+                )
+                return
             try:
                 center_spec = CenterSpec(
                     tau=tau, alpha=alpha, rule=rule, min_samples=min_samples
@@ -524,6 +578,24 @@ class VSFRequestHandler(http.server.BaseHTTPRequestHandler):
                 self._send_json_response(400, {"error": str(exc)})
                 return
 
+            # Explicit schema (`features`: indices into the feature columns,
+            # i.e. `df` minus the target, in order) - opened from the
+            # landscape rather than found by the search.
+            features = req.get("features", None)
+            if features is not None:
+                try:
+                    features = [int(j) for j in features]
+                except (TypeError, ValueError):
+                    self._send_json_response(400, {"error": "features must be a list of column indices"})
+                    return
+                if (not features or len(set(features)) != len(features)
+                        or len(features) > _MAX_D
+                        or any(j < 0 or j >= len(feature_names) for j in features)):
+                    self._send_json_response(400, {
+                        "error": f"features must be 1 to {_MAX_D} distinct indices in [0, {len(feature_names)})",
+                    })
+                    return
+
             cache_key = {
                 "target_col": target_col,
                 "criterion": criterion,
@@ -531,7 +603,10 @@ class VSFRequestHandler(http.server.BaseHTTPRequestHandler):
                 "alpha": alpha,
                 "rule": rule,
                 "min_samples": min_samples,
+                "direction": direction,
             }
+            if features is not None:
+                cache_key["features"] = tuple(features)
             key = _analyze_key(cache_key)
 
             # A request for a different column supersedes any prefetch of
@@ -567,31 +642,131 @@ class VSFRequestHandler(http.server.BaseHTTPRequestHandler):
                     # ValueError, caught below and reported as 400 rather
                     # than crashing the request.
                     positive_class = 1 if criterion is not None else None
-                    branches = discover_branches(
-                        X,
-                        Z,
-                        feature_names=feature_names,
-                        max_d=_MAX_D,
-                        random_state=_SCAN_RANDOM_STATE,
-                        positive_class=positive_class,
-                        center_spec=center_spec,
-                        n_permutations_centers=DEFAULT_N_PERMUTATIONS,
-                    )
+                    if features is not None:
+                        # No uncorrected permutation p-value for a schema
+                        # picked from the landscape (see `report_schema`).
+                        branches = report_schema(
+                            X,
+                            Z,
+                            features,
+                            feature_names=feature_names,
+                            random_state=_SCAN_RANDOM_STATE,
+                            positive_class=positive_class,
+                            center_spec=center_spec,
+                            n_permutations_centers=0,
+                            direction=direction,
+                        )
+                    else:
+                        branches = discover_branches(
+                            X,
+                            Z,
+                            feature_names=feature_names,
+                            max_d=_MAX_D,
+                            random_state=_SCAN_RANDOM_STATE,
+                            positive_class=positive_class,
+                            center_spec=center_spec,
+                            n_permutations_centers=DEFAULT_N_PERMUTATIONS,
+                            direction=direction,
+                        )
                     response_payload = _build_analyze_response(
-                        self.server, target_col, criterion, center_spec, branches
+                        self.server, target_col, criterion, center_spec, branches,
+                        direction=direction, features=features,
                     )
                     body = json.dumps(response_payload).encode("utf-8")
                     self.server.cache_put(key, cache_key, response_payload, body)
                 finally:
                     self.server.release(key, event)
-                if criterion is not None:
-                    self.server.start_prefetch(target_col, str(criterion), center_spec)
+                if criterion is not None and features is None:
+                    self.server.start_prefetch(
+                        target_col, str(criterion), center_spec, direction
+                    )
 
             self._send_json_bytes(200, body)
         except ValueError as exc:
             # A resolvable-positive-class failure (see the discover_branches
             # call above) or a bad certificate value -- both are client
             # input problems, not server faults.
+            self._send_json_response(400, {"error": str(exc)})
+        except Exception as e:
+            self._send_json_response(500, {"error": str(e)})
+
+    def _handle_landscape_api(self, cell: bool) -> None:
+        """
+        `/api/landscape`: the 10 x 10 count lattice of every candidate the
+        search scored for the given target/criterion/certificate/direction
+        (`vsf.avr.Landscape.bins`), for one dimensionality (`d`) or the whole
+        family (`d` absent/null). `/api/landscape/cell`: the schemas of one
+        lattice cell (`ix`, `iy`, `limit`, `offset`; `Landscape.cell`).
+        Both compute the landscape on first use and cache it.
+        """
+        try:
+            req = self._read_json_body()
+            df = self.server.df
+            target_col = req.get("target", self.server.default_target)
+            criterion = req.get("criterion", None)
+            if target_col not in df.columns:
+                self._send_json_response(400, {"error": f"target {target_col!r} is not a column of this dataset"})
+                return
+            try:
+                tau = float(req.get("tau", 0.90))
+                alpha = float(req.get("alpha", 0.05))
+                min_samples = int(req.get("min_samples", 1))
+            except (TypeError, ValueError):
+                self._send_json_response(400, {"error": "tau, alpha and min_samples must be numbers"})
+                return
+            rule = req.get("rule", "purity")
+            direction = req.get("direction", "presence")
+            if rule not in ("purity", "certified") or direction not in ("presence", "absence"):
+                self._send_json_response(400, {"error": "invalid rule or direction"})
+                return
+            if direction == "absence" and criterion is None:
+                self._send_json_response(400, {"error": "an absence landscape needs an explicit criterion"})
+                return
+            try:
+                center_spec = CenterSpec(tau=tau, alpha=alpha, rule=rule, min_samples=min_samples)
+            except ValueError as exc:
+                self._send_json_response(400, {"error": str(exc)})
+                return
+            d = req.get("d", None)
+            if d is not None:
+                try:
+                    d = int(d)
+                except (TypeError, ValueError):
+                    self._send_json_response(400, {"error": "d must be an integer or null"})
+                    return
+                if d < 1 or d > _MAX_D:
+                    self._send_json_response(400, {"error": f"d must be in [1, {_MAX_D}]"})
+                    return
+            params = {
+                "target_col": target_col, "criterion": criterion, "tau": tau,
+                "alpha": alpha, "rule": rule, "min_samples": min_samples,
+                "direction": direction,
+            }
+            landscape = self.server.get_landscape(params, center_spec)
+            if not cell:
+                out = landscape.bins(d)
+                out.update({
+                    "target": target_col, "criterion": criterion, "direction": direction,
+                    "n_candidates": len(landscape),
+                    "feature_names": landscape.feature_names,
+                })
+                self._send_json_response(200, out)
+                return
+            try:
+                ix, iy = int(req["ix"]), int(req["iy"])
+                limit = int(req.get("limit", 100))
+                offset = int(req.get("offset", 0))
+            except (KeyError, TypeError, ValueError):
+                self._send_json_response(400, {"error": "ix and iy are required integers; limit/offset optional integers"})
+                return
+            n = landscape.N_BINS
+            if not (0 <= ix < n and 0 <= iy < n) or limit < 1 or offset < 0:
+                self._send_json_response(400, {"error": f"ix, iy must be in [0, {n}); limit >= 1; offset >= 0"})
+                return
+            out = landscape.cell(d, ix, iy, limit=min(limit, 1000), offset=offset)
+            out.update({"d": d, "ix": ix, "iy": iy, "target": target_col, "criterion": criterion, "direction": direction})
+            self._send_json_response(200, out)
+        except ValueError as exc:
             self._send_json_response(400, {"error": str(exc)})
         except Exception as e:
             self._send_json_response(500, {"error": str(e)})
@@ -666,6 +841,13 @@ class VSFRequestHandler(http.server.BaseHTTPRequestHandler):
                     {"error": f"rule must be 'purity' or 'certified', got {scan_rule!r}"},
                 )
                 return
+            scan_direction = req.get("direction", "presence")
+            if scan_direction not in ("presence", "absence"):
+                self._send_json_response(
+                    400,
+                    {"error": f"direction must be 'presence' or 'absence', got {scan_direction!r}"},
+                )
+                return
             try:
                 scan_spec = CenterSpec(
                     tau=scan_tau, alpha=scan_alpha, rule=scan_rule,
@@ -715,6 +897,7 @@ class VSFRequestHandler(http.server.BaseHTTPRequestHandler):
                     "alpha": scan_spec.alpha,
                     "rule": scan_spec.rule,
                     "min_samples": scan_spec.min_samples,
+                    "direction": scan_direction,
                     "fdr_q": fdr_q,
                     "n_permutations": n_perm,
                     "n_permutations_familywise": n_perm_fw,
@@ -728,7 +911,7 @@ class VSFRequestHandler(http.server.BaseHTTPRequestHandler):
                 target=_run_dataset_scan,
                 args=(
                     self.server, threshold_pct, fdr_q, n_perm, n_perm_fw,
-                    cancel_event, scan_spec,
+                    cancel_event, scan_spec, scan_direction,
                 ),
                 daemon=True,
             )
@@ -782,6 +965,8 @@ def _build_analyze_response(
     criterion: Optional[object],
     center_spec: CenterSpec,
     branches: Dict[int, Any],
+    direction: str = "presence",
+    features: Optional[List[int]] = None,
 ) -> Dict[str, Any]:
     """
     The `/api/analyze` response body for discovered `branches`: one
@@ -792,11 +977,21 @@ def _build_analyze_response(
     df = server.df
     translations = server.translations
     sort_Z = df[target_col].values
+    indicator_labels = None
     if criterion is not None:
         Z = (df[target_col].astype(str) == str(criterion)).astype(int).values
         human_criterion = _vis.humanize_val(target_col, str(criterion), translations)
         human_col = _vis.humanize_col(target_col, translations)
         display_target_name = f"{human_col} = {human_criterion}"
+        if direction == "absence":
+            # The renderer's "positive" indicator is the complement: every
+            # cell purity, bound and certificate it computes must refer to
+            # rows WITHOUT the value, exactly as the search did. The class
+            # labels keep naming the value, so a point's hover still reads
+            # "Column = value" / "not Column = value".
+            Z = 1 - Z
+            indicator_labels = (display_target_name, f"not {display_target_name}")
+            display_target_name = f"{human_col} \u2260 {human_criterion}"
     else:
         Z = df[target_col].values
         display_target_name = target_col
@@ -823,11 +1018,28 @@ def _build_analyze_response(
                 else (_np.unique(Z)[-1] if len(_np.unique(Z)) else None)
             ),
             center_spec=center_spec,
+            indicator_labels=indicator_labels,
         )
     selected_d = select_branch_dimensionality(branches)
     return {
         "target": target_col,
         "criterion": criterion,
+        # "presence" or "absence" (see `vsf.avr.Direction`). Under
+        # "absence" every coverage/purity/centre figure in `branches`
+        # refers to the complement of the criterion, and the frontend
+        # draws certified cells red ("certified free of the value") with
+        # the mass of those cells as the headline.
+        "direction": direction,
+        # Set when the response is for an explicitly chosen schema (opened
+        # from the landscape) rather than the search's winners: the branch
+        # carries no uncorrected p-value, by design (`vsf.avr.report_schema`).
+        "schema": (
+            None if features is None else {
+                "features": [int(j) for j in features],
+                "feature_names": [feature_names[j] for j in features],
+                "selected_from_landscape": True,
+            }
+        ),
         "branches": branches_data,
         "branch_dims": sorted(branches.keys()),
         # v2.2: the branch opened first is the SMALLEST SUFFICIENT one, not
@@ -864,6 +1076,7 @@ def _prefetch_sibling_values(
     target_col: str,
     criterion: str,
     center_spec: CenterSpec,
+    direction: str,
     cancel: threading.Event,
 ) -> None:
     """
@@ -896,6 +1109,7 @@ def _prefetch_sibling_values(
                 "target_col": target_col, "criterion": v,
                 "tau": center_spec.tau, "alpha": center_spec.alpha,
                 "rule": center_spec.rule, "min_samples": center_spec.min_samples,
+                "direction": direction,
             }
             key = _analyze_key(params)
             if server.cache_get(key) is not None:
@@ -917,6 +1131,7 @@ def _prefetch_sibling_values(
             random_state=_SCAN_RANDOM_STATE,
             center_spec=center_spec,
             n_permutations_centers=DEFAULT_N_PERMUTATIONS,
+            direction=direction,
         ):
             if cancel.is_set():
                 return
@@ -927,7 +1142,9 @@ def _prefetch_sibling_values(
             assert event is not None
             try:
                 if branches:
-                    payload = _build_analyze_response(server, target_col, v, center_spec, branches)
+                    payload = _build_analyze_response(
+                        server, target_col, v, center_spec, branches, direction=direction
+                    )
                     server.cache_put(key, params_of[v], payload, json.dumps(payload).encode("utf-8"))
             finally:
                 server.release(key, event)
@@ -936,9 +1153,14 @@ def _prefetch_sibling_values(
 
 
 def _append_scan_record(
-    scanned: List[Dict[str, Any]], col: str, val: object, branches: Dict[int, Any]
+    scanned: List[Dict[str, Any]], col: str, val: object, branches: Dict[int, Any],
+    direction: str = "presence",
 ) -> None:
-    """One scan row for a (column, value) pair from its discovered branches."""
+    """
+    One scan row for a (column, value) pair from its discovered branches.
+    Under `direction="absence"` the coverage/purity/mass fields refer to the
+    complement of the value (see `vsf.avr.Direction`); the row says so.
+    """
     # Winner within the pair: highest coverage, ties broken toward
     # FEWER certified centres and then toward the LOWER
     # dimensionality — the same order as
@@ -962,6 +1184,7 @@ def _append_scan_record(
     scanned.append({
         "column": col,
         "value": str(val),
+        "direction": direction,
         "coverage": float(centers.coverage) if centers else 0.0,
         "n_centers": int(centers.n_centers) if centers else 0,
         "purity_pooled": float(centers.purity_pooled) if centers else 0.0,
@@ -997,6 +1220,7 @@ def _run_dataset_scan(
     n_permutations_familywise: int,
     cancel_event: threading.Event,
     spec: CenterSpec,
+    direction: str = "presence",
 ) -> None:
     """
     Global Pattern Scan background worker (see module docstring). For every
@@ -1073,6 +1297,11 @@ def _run_dataset_scan(
     total = len(pairs)
 
     scanned: List[Dict[str, Any]] = []
+    # (column, value) pairs not searched because tau is not above the base
+    # rate of the indicator (`vsf.avr.base_rate_reason`) - reported, not
+    # silently dropped, since "this value is too common to localise at this
+    # tau" is information the analyst needs.
+    skipped_pairs: List[Dict[str, str]] = []
     try:
         done = 0
         for col in df.columns:
@@ -1091,6 +1320,7 @@ def _run_dataset_scan(
             feature_names = list(X_df.columns)
             X = X_df.values
 
+            col_skipped: Dict[str, str] = {}
             by_value = discover_branches_by_value(
                 X,
                 df[col].values,
@@ -1106,13 +1336,20 @@ def _run_dataset_scan(
                 # between a scan bounded by the search and one bounded by
                 # continued-fraction inversions it throws away.
                 cell_bounds=False,
+                direction=direction,
+                skipped=col_skipped,
             )
             done += len(vals)
             for val in vals:
+                if str(val) in col_skipped:
+                    skipped_pairs.append({
+                        "column": col, "value": str(val), "reason": col_skipped[str(val)],
+                    })
+                    continue
                 branches = by_value.get(str(val), {})
                 if not branches:
                     continue
-                _append_scan_record(scanned, col, val, branches)
+                _append_scan_record(scanned, col, val, branches, direction)
 
         # BH over the ENTIRE completed family, before any effect-size filter.
         rejected = benjamini_hochberg([r["_p"] for r in scanned], q=fdr_q)
@@ -1135,6 +1372,8 @@ def _run_dataset_scan(
             server.scan_job["results"] = results
             server.scan_job["n_tested"] = len(scanned)
             server.scan_job["n_fdr_significant"] = int(sum(rejected))
+            server.scan_job["skipped"] = skipped_pairs
+            server.scan_job["n_skipped"] = len(skipped_pairs)
     except Exception as e:
         with server.scan_lock:
             server.scan_job["status"] = "error"

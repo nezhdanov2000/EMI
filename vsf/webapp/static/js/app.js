@@ -186,7 +186,7 @@ function buildScanFilteredCatalog() {
                 const info = passingByValue[c.id];
                 return {
                     id: c.id,
-                    label: `${c.label} · coverage ${(info.coverage * 100).toFixed(1)}% · ${info.n_centers} centre${info.n_centers === 1 ? '' : 's'} (${info.best_d}D, p=${info.p_value === null || info.p_value === undefined ? 'n/a' : info.p_value.toFixed(3)})`,
+                    label: `${c.label} · ${info.direction === 'absence' ? 'free of value' : 'coverage'} ${(info.coverage * 100).toFixed(1)}% · ${info.n_centers} ${info.direction === 'absence' ? 'free cell' : 'centre'}${info.n_centers === 1 ? '' : 's'} (${info.best_d}D, p=${info.p_value === null || info.p_value === undefined ? 'n/a' : info.p_value.toFixed(3)})`,
                 };
             });
         if (criteria.length > 0) {
@@ -301,6 +301,7 @@ async function startDatasetScan() {
                 tau: readCertTau(),
                 alpha: readCertAlpha(),
                 rule: readCertRule(),
+                direction: readDirection(),
                 // The scan's OWN Min. objects, not readCertMinSamples() --
                 // tau/alpha ARE shared with the Green/Red sliders
                 // above (readCertTau()/readCertAlpha()), but min_samples is
@@ -526,6 +527,7 @@ function showAnalysisError(message) {
 // same analysis without the user re-picking it from the tree.
 let lastTargetCol = null;
 let lastCriterion = null;
+let lastFeatures = null;
 
 function readCertTau() {
     const el = document.getElementById('certTau');
@@ -580,22 +582,29 @@ async function applyCertificate() {
         return;
     }
     if (lastTargetCol === null) return;
-    await runAnalysis(lastTargetCol, lastCriterion);
+    await runAnalysis(lastTargetCol, lastCriterion, lastFeatures);
 }
 
 function renderCertificateSummary(response) {
     const el = document.getElementById('certSummary');
     if (!el) return;
     el.innerHTML = '';
+    if (response && response.schema && response.schema.selected_from_landscape) {
+        el.textContent = 'Schema opened from the landscape: '
+            + (response.schema.feature_names || []).join(' + ')
+            + '. Chosen by looking at the data, so no uncorrected permutation p-value is reported for it; '
+            + 'the cross-validated coverage is still out-of-sample.';
+    }
 }
 
-async function runAnalysis(targetCol, criterion = null) {
+async function runAnalysis(targetCol, criterion = null, features = null) {
     _plotlyWarmupCancelled = true; // the real render triangulates what it needs
     showWelcomeState(false);
     showLoader(true);
     showAnalysisError(null);
     lastTargetCol = targetCol;
     lastCriterion = criterion;
+    lastFeatures = features; // an explicit schema opened from the landscape, or null
     try {
         const reqBody = {
             target: targetCol,
@@ -603,9 +612,13 @@ async function runAnalysis(targetCol, criterion = null) {
             alpha: readCertAlpha(),
             rule: readCertRule(),
             min_samples: readCertMinSamples(),
+            direction: readDirection(),
         };
         if (criterion !== null) {
             reqBody.criterion = criterion;
+        }
+        if (features !== null) {
+            reqBody.features = features;
         }
 
         const response = await fetch('/api/analyze', {
@@ -668,6 +681,7 @@ function selectDefaultBranchAndRender(preserveActiveIfPossible) {
 function loadBranchesResponse(data) {
     currentBranchesResponse = data;
     renderCertificateSummary(data);
+    onAnalysisLoadedForLandscape(data);
     stopSlicePlayback();
     activeSliceIndex = null;
     currentRenderedDim = null;
@@ -720,7 +734,9 @@ function renderBranchSelector(response) {
         if (sc && sc.undetermined_reason) {
             headline = `<span class="branch-uadj" style="color:var(--text-dim);" title="${sc.undetermined_reason}">coverage undetermined</span>`;
         } else if (cc.n_centers) {
-            headline = `<span class="branch-uadj" title="Share of all target-value samples inside certified centres">coverage ${(cc.coverage * 100).toFixed(1)}% · ${cc.n_centers} centre${cc.n_centers === 1 ? '' : 's'}</span>`;
+            headline = (activeDirection === 'absence')
+                ? `<span class="branch-uadj" title="Share of ALL rows inside cells certified free of the chosen value, then the share of rows without the value that those cells capture">free ${(cc.mass * 100).toFixed(1)}% of rows · coverage ${(cc.coverage * 100).toFixed(1)}% · ${cc.n_centers} cell${cc.n_centers === 1 ? '' : 's'}</span>`
+                : `<span class="branch-uadj" title="Share of all target-value samples inside certified centres">coverage ${(cc.coverage * 100).toFixed(1)}% · ${cc.n_centers} centre${cc.n_centers === 1 ? '' : 's'}</span>`;
         } else {
             const best = (cc.max_purity_lower !== undefined)
                 ? ` (best lower bound ${(cc.max_purity_lower * 100).toFixed(1)}%)` : '';
@@ -772,6 +788,7 @@ function selectBranch(dKey, fromInitialLoad = false) {
     });
 
     updateDashboard(currentPayload);
+    if (viewMode === 'landscape') refreshLandscape();
 }
 
 function showLoader(show) {
@@ -812,8 +829,92 @@ const PROB_COLORS = [
                // control that sets this boundary is now called redTo)
     '#22c55e'  // Green - at or above tau: a discrete centre
 ];
+// Absence search (vsf.avr.Direction): the certified zone is drawn RED --
+// "certified free of the value" -- and the low zone, rows rich in the value
+// but certified for nothing at this tau, slate grey. Never green: a green
+// cell is a presence certificate, and the absence search does not make one.
+const PROB_COLORS_ABSENCE = [
+    '#64748b', // Slate - the value is present here, uncertified either way
+    '#92572e', // Brown - between the boundaries
+    '#ef4444'  // Red   - certified at least tau free of the value
+];
 const PALETTE_COUNT = PROB_COLORS.length;
 const COLOR_CENTER = 2, COLOR_MIXED = 1, COLOR_LOW = 0;
+
+// Which side of the value the current analysis searches for. Part of the
+// server's cache key; switching it re-runs the analysis.
+let activeDirection = 'presence';
+
+function readDirection() {
+    return activeDirection === 'absence' ? 'absence' : 'presence';
+}
+
+function activePalette() {
+    return activeDirection === 'absence' ? PROB_COLORS_ABSENCE : PROB_COLORS;
+}
+
+// Switches the search direction: relabels the legend, the sliders and the
+// HUD, then re-runs the current analysis (the response is a different
+// cache entry) or, before any analysis, just arms the choice for the first
+// click. The legend text must change here rather than in the render: the
+// same slider means "green from" under presence and "certified free from"
+// under absence, and a stale label would describe the wrong quantity.
+async function setDirection(direction) {
+    direction = direction === 'absence' ? 'absence' : 'presence';
+    const changed = direction !== activeDirection;
+    activeDirection = direction;
+    document.body.classList.toggle('absence-mode', direction === 'absence');
+    document.querySelectorAll('#directionToggle .direction-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.direction === direction);
+    });
+    const labelTau = document.getElementById('labelTau');
+    const labelRed = document.getElementById('labelRedTo');
+    if (labelTau) {
+        labelTau.textContent = direction === 'absence' ? '🔴 Free from:' : '🟢 Green from:';
+        labelTau.style.color = direction === 'absence' ? '#ef4444' : 'var(--green)';
+        labelTau.title = direction === 'absence'
+            ? 'A cell is certified FREE of the chosen value — and is drawn red — when the share of rows WITHOUT the value reaches this. Moving this re-runs the analysis.'
+            : "A cell is a discrete centre — and is drawn green — when its share of the target value reaches this. Coverage is computed from exactly these cells, so moving this re-runs the analysis. 100% is allowed and means 'only cells that are entirely the target value'.";
+    }
+    if (labelRed) {
+        labelRed.textContent = direction === 'absence' ? '⚪ Grey up to:' : '🔴 Red up to:';
+        labelRed.style.color = direction === 'absence' ? '#94a3b8' : '#ef4444';
+        labelRed.title = direction === 'absence'
+            ? 'Purely a colour boundary: cells whose share of rows without the value is below it are drawn grey (the value is present there); between it and the red boundary, brown. Re-colours immediately, changes no reported number.'
+            : 'Purely a colour boundary: cells below it are drawn red; between it and the green boundary, brown. Changing it re-colours immediately and does not affect any reported number.';
+    }
+    const hudFree = document.getElementById('hud-free');
+    if (hudFree) hudFree.style.display = direction === 'absence' ? 'flex' : 'none';
+    const labelCov = document.getElementById('label-coverage');
+    if (labelCov) labelCov.textContent = direction === 'absence' ? 'Coverage (rows without value):' : 'Coverage:';
+    updateBaseRateNote();
+    if (changed && lastTargetCol !== null) {
+        if (lastCriterion === null) {
+            showAnalysisError(direction === 'absence'
+                ? 'An absence search needs a specific target value: pick one in the catalog.'
+                : null);
+            return;
+        }
+        await runAnalysis(lastTargetCol, lastCriterion, lastFeatures);
+    }
+}
+
+// The base rate the current search is measured against, and the tau it
+// therefore needs. `activePrevalence` is the prevalence of the indicator
+// SEARCHED (the value under presence, its complement under absence).
+function updateBaseRateNote() {
+    const el = document.getElementById('baseRateNote');
+    if (!el) return;
+    if (!currentPayload || !currentPayload.centers) { el.textContent = ''; return; }
+    const pInd = activePrevalence;
+    const pValue = activeDirection === 'absence' ? 1 - pInd : pInd;
+    const need = activeDirection === 'absence'
+        ? `an absence search must use tau above ${(pInd * 100).toFixed(1)}% (the share of rows without it)`
+        : `a presence search must use tau above ${(pInd * 100).toFixed(1)}%`;
+    el.textContent = `Base rate of the chosen value: ${(pValue * 100).toFixed(1)}% of rows; ${need}.`
+        + (pValue > 0.5 && activeDirection === 'presence'
+            ? ' The value is more common than not — consider searching for its absence.' : '');
+}
 
 // Certificate parameters currently in force, mirrored from the payload so the
 // colour function, the legend and the panel can never disagree about tau.
@@ -1014,7 +1115,8 @@ function formatCoverage(payload, d) {
         coverage: pick(vm.coverage_by_d, c.coverage),
         n_centers: pick(vm.n_centers_by_d, c.n_centers),
         purity: pick(vm.purity_by_d, c.purity_pooled),
-        max_lower: pick(vm.max_purity_lower_by_d, c.max_purity_lower)
+        max_lower: pick(vm.max_purity_lower_by_d, c.max_purity_lower),
+        mass: pick(vm.mass_by_d, c.mass)
     };
 }
 
@@ -1029,6 +1131,14 @@ function updateDashboard(payload) {
         ? cert.min_samples : 1;
     activePrevalence = (payload.centers && payload.centers.prevalence !== undefined)
         ? payload.centers.prevalence : 0.0;
+    if (currentBranchesResponse && currentBranchesResponse.direction
+        && currentBranchesResponse.direction !== activeDirection) {
+        // A response computed under the other direction (e.g. loaded from a
+        // stale state): make the legend describe what is on screen.
+        activeDirection = currentBranchesResponse.direction;
+        setDirection(activeDirection);
+    }
+    updateBaseRateNote();
     syncColorScaleFromInputs();
 
     currentRenderedDim = null; // Force full plot re-render with new axis titles
@@ -1119,6 +1229,12 @@ function updateHUDForDimension(d) {
     // with the values anymore — a deliberate trade the user accepted.
     const cov = formatCoverage(currentPayload, d);
     const sc = currentPayload.search_centers;
+    const freeEl = document.getElementById('val-free');
+    if (freeEl) {
+        freeEl.innerText = (cov.mass === undefined || cov.mass === null)
+            ? 'n/a' : `${(cov.mass * 100).toFixed(1)}%`;
+        freeEl.style.color = (cov.mass > 0) ? '#ef4444' : 'var(--text-dim)';
+    }
     const covEl = document.getElementById('val-coverage');
     if (covEl) {
         if (cov.coverage === undefined || cov.coverage === null) {
@@ -1132,7 +1248,9 @@ function updateHUDForDimension(d) {
         } else {
             covEl.innerText = `${(cov.coverage * 100).toFixed(1)}%`;
             covEl.style.color = cov.coverage > 0 ? 'var(--green)' : 'var(--text-dim)';
-            covEl.title = 'Share of all target-value samples that fall inside certified centres.';
+            covEl.title = activeDirection === 'absence'
+                ? 'Share of all rows WITHOUT the chosen value that fall inside cells certified free of it.'
+                : 'Share of all target-value samples that fall inside certified centres.';
         }
     }
     const kEl = document.getElementById('val-centers');
@@ -1404,7 +1522,7 @@ function buildPlotData(payload, dim, sliceIndex) {
         fy.push(yCoords[i]);
         fz.push(zCoords[i]);
 
-        const hex = PROB_COLORS[colorIndex];
+        const hex = activePalette()[colorIndex];
         const rr = parseInt(hex.slice(1, 3), 16);
         const gg = parseInt(hex.slice(3, 5), 16);
         const bb = parseInt(hex.slice(5, 7), 16);
@@ -1884,3 +2002,307 @@ function toggleMainAcc(id) {
 }
 
 window.addEventListener('DOMContentLoaded', init);
+
+
+// ===========================================================================
+// Solution landscape (Project_Master_Document.md Section 4.9)
+// ===========================================================================
+// Every schema the exhaustive search scored, drawn as a 10 x 10 lattice of
+// categories: x = coverage of the value (absence: mass of certified-free
+// cells) in (0,10], (10,20], ..., (90,100] percent; y = the schema's centre
+// count as a share of K max, the largest centre count among the schemas
+// shown, in the same categories. A cell's colour is how many schemas fall
+// in it, under a three-zone scale the user moves; schemas certifying no
+// centre are excluded from the lattice and counted in the header. Clicking
+// a cell lists its schemas (most concentrated first); "open" renders one.
+let viewMode = 'lattice';
+let landscapeState = {
+    key: null,          // JSON of the analyze parameters the landscape belongs to
+    bins: null,         // /api/landscape response for the current d selection
+    dSelection: null,   // the d requested (number) or null for all
+    cell: null,         // {ix, iy} of the open cell
+    cellData: null,     // /api/landscape/cell response
+};
+
+function landscapeParams() {
+    if (!currentBranchesResponse) return null;
+    const p = {
+        target: currentBranchesResponse.target,
+        criterion: currentBranchesResponse.criterion,
+        tau: readCertTau(), alpha: readCertAlpha(), rule: readCertRule(),
+        min_samples: readCertMinSamples(), direction: readDirection(),
+    };
+    return p;
+}
+
+function onAnalysisLoadedForLandscape(data) {
+    // A new analysis of a different target/certificate invalidates the
+    // cached landscape; opening a schema of the same target keeps it, so
+    // the user can return to the same cell.
+    const p = landscapeParams();
+    const key = p ? JSON.stringify(p) : null;
+    if (key !== landscapeState.key) {
+        landscapeState = { key, bins: null, dSelection: null, cell: null, cellData: null };
+    }
+    if (data && data.schema && data.schema.selected_from_landscape) {
+        setViewMode('lattice');
+    } else if (viewMode === 'landscape') {
+        refreshLandscape();
+    }
+}
+
+function setViewMode(mode) {
+    viewMode = mode === 'landscape' ? 'landscape' : 'lattice';
+    document.querySelectorAll('.view-mode-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.mode === viewMode);
+    });
+    const plot = document.getElementById('plot-container');
+    const area = document.getElementById('landscapeArea');
+    const slices = document.getElementById('slice-controller');
+    if (plot) plot.style.display = viewMode === 'landscape' ? 'none' : '';
+    if (area) area.style.display = viewMode === 'landscape' ? 'flex' : 'none';
+    if (slices && viewMode === 'landscape') slices.style.display = 'none';
+    if (viewMode === 'landscape') {
+        refreshLandscape();
+    } else if (currentPayload) {
+        currentRenderedDim = null;
+        renderPlot(currentPayload);
+        if (currentPayload.slice_axis && slices) slices.style.display = '';
+    }
+}
+
+function landscapeDimRequested() {
+    const sel = document.getElementById('landscapeDim');
+    if (sel && sel.value === 'all') return null;
+    const d = currentPayload && currentPayload.metrics ? Number(currentPayload.metrics.d) : null;
+    return Number.isFinite(d) ? d : null;
+}
+
+function onLandscapeDimChange() {
+    landscapeState.cell = null;
+    landscapeState.cellData = null;
+    closeLandscapeCell();
+    refreshLandscape();
+}
+
+async function refreshLandscape() {
+    const p = landscapeParams();
+    if (!p) return;
+    const d = landscapeDimRequested();
+    if (landscapeState.bins && landscapeState.dSelection === d && landscapeState.key === JSON.stringify(p)) {
+        renderLandscape();
+        return;
+    }
+    try {
+        const res = await fetch('/api/landscape', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(Object.assign({ d }, p)),
+        });
+        const data = await res.json();
+        if (!res.ok) { showAnalysisError('Landscape: ' + (data.error || res.status)); return; }
+        landscapeState.key = JSON.stringify(p);
+        landscapeState.bins = data;
+        landscapeState.dSelection = d;
+        renderLandscape();
+        if (landscapeState.cell) openLandscapeCell(landscapeState.cell.ix, landscapeState.cell.iy, 0);
+    } catch (err) {
+        showAnalysisError('Landscape request failed: ' + err.message);
+    }
+}
+
+// Category index of a fraction in (0, 1] under (0,1/n], ..., ((n-1)/n, 1]:
+// the same rule as vsf.avr.Landscape.bin_index, so the winner marker lands
+// in the cell the server counted it in.
+function landscapeBinIndex(fraction, n) {
+    const idx = Math.ceil(fraction * n - 1e-9) - 1;
+    return Math.max(0, Math.min(n - 1, idx));
+}
+
+function densityBoundaries() {
+    const lowEl = document.getElementById('densityLow');
+    const highEl = document.getElementById('densityHigh');
+    let low = lowEl ? Math.max(0, Math.round(Number(lowEl.value))) : 10;
+    let high = highEl ? Math.max(0, Math.round(Number(highEl.value))) : 40;
+    if (!Number.isFinite(low)) low = 10;
+    if (!Number.isFinite(high)) high = 40;
+    if (high < low) high = low;
+    return { low, high };
+}
+
+const DENSITY_COLORS = ['#334155', '#6366f1', '#e0e7ff']; // faint, mid, dark(bright)
+
+function renderLandscape() {
+    const bins = landscapeState.bins;
+    const container = document.getElementById('landscape-plot');
+    if (!bins || !container) return;
+    const n = bins.n_bins;
+    const { low, high } = densityBoundaries();
+    const maxCount = bins.max_count || 0;
+    const bar = document.getElementById('densityBar');
+    if (bar) {
+        const pct = (v) => maxCount > 0 ? Math.max(0, Math.min(100, 100 * v / maxCount)) : 0;
+        bar.style.setProperty('--low-pct', `${pct(low)}%`);
+        bar.style.setProperty('--high-pct', `${pct(high)}%`);
+    }
+    const maxEl = document.getElementById('densityMax');
+    if (maxEl) maxEl.textContent = `max ${maxCount}`;
+
+    const summary = document.getElementById('landscapeSummary');
+    if (summary) {
+        const shown = bins.n_total - bins.n_zero;
+        const scope = bins.d === null || bins.d === undefined ? 'all dimensionalities' : `${bins.d}D`;
+        summary.innerHTML = `<strong>${shown}</strong> of <strong>${bins.n_total}</strong> schemas (${scope}) certify at least one `
+            + (bins.direction === 'absence' ? 'value-free cell' : 'centre')
+            + ` at tau = ${(activeTau * 100).toFixed(0)}%; <strong>${bins.n_zero}</strong> certify none and are not drawn. K max = <strong>${bins.k_max}</strong>.`;
+    }
+
+    const xLabels = [], yLabels = [];
+    for (let i = 0; i < n; i++) {
+        xLabels.push(`(${i * 100 / n},${(i + 1) * 100 / n}]%`);
+        const lo = Math.floor(i * bins.k_max / n), hi = Math.ceil((i + 1) * bins.k_max / n);
+        yLabels.push(`(${lo},${hi}]`);
+    }
+    const xs = [], ys = [], colors = [], texts = [], hovers = [], customs = [];
+    for (let iy = 0; iy < n; iy++) {
+        for (let ix = 0; ix < n; ix++) {
+            const c = bins.counts[iy][ix];
+            if (!c) continue;
+            xs.push(ix); ys.push(iy);
+            colors.push(c > high ? DENSITY_COLORS[2] : (c > low ? DENSITY_COLORS[1] : DENSITY_COLORS[0]));
+            texts.push(String(c));
+            hovers.push(`${c} schema${c === 1 ? '' : 's'}<br>${bins.x}: ${xLabels[ix]}<br>centres: ${yLabels[iy]} of K max ${bins.k_max}<br><i>click to list</i>`);
+            customs.push([ix, iy]);
+        }
+    }
+    const isBright = colors.map(col => col === DENSITY_COLORS[2]);
+    const traces = [{
+        type: 'scatter', mode: 'markers+text', x: xs, y: ys, text: texts, textposition: 'middle center',
+        textfont: { size: 11, color: isBright.map(b => b ? '#0f172a' : '#f8fafc') },
+        marker: { size: 34, color: colors, line: { width: 1, color: 'rgba(255,255,255,0.25)' } },
+        hovertext: hovers, hoverinfo: 'text', customdata: customs, name: 'schemas',
+    }];
+    // Winner of the selected branch, from the SEARCH partition's exact
+    // numbers (`search_centers`): the landscape is the search's family, and
+    // a capacity-coarsened winner can differ from the drawn (raw) lattice's
+    // `centers` block.
+    const cc = currentPayload && (currentPayload.search_centers || currentPayload.centers);
+    if (cc && cc.n_centers > 0 && bins.k_max > 0
+        && (bins.d === null || bins.d === undefined || Number(bins.d) === Number(currentPayload.metrics.d))) {
+        const xFrac = bins.x === 'mass' ? cc.mass : cc.coverage;
+        const wx = landscapeBinIndex(xFrac, n), wy = landscapeBinIndex(cc.n_centers / bins.k_max, n);
+        traces.push({
+            type: 'scatter', mode: 'markers', x: [wx], y: [wy],
+            marker: { symbol: 'star', size: 16, color: '#facc15', line: { width: 1, color: '#0f172a' } },
+            hovertext: [`search winner (${currentPayload.metrics.d}D): ${(currentPayload.selected_features || []).join(' + ')}<br>${bins.x} ${(xFrac * 100).toFixed(1)}% · ${cc.n_centers} centres`],
+            hoverinfo: 'text', name: 'winner',
+        });
+    }
+    if (landscapeState.cell) {
+        traces.push({
+            type: 'scatter', mode: 'markers', x: [landscapeState.cell.ix], y: [landscapeState.cell.iy],
+            marker: { symbol: 'circle-open', size: 44, color: '#f8fafc', line: { width: 2 } },
+            hoverinfo: 'skip', name: 'selected',
+        });
+    }
+    const layout = {
+        paper_bgcolor: '#070a13', plot_bgcolor: '#090d1a', showlegend: false,
+        margin: { l: 90, r: 20, t: 20, b: 70 }, font: { family: 'Inter', color: '#94a3b8' },
+        xaxis: {
+            title: { text: bins.x === 'mass' ? 'Mass of certified value-free cells' : 'Coverage of the value', font: { color: '#c084fc', size: 13 } },
+            tickvals: xLabels.map((_, i) => i), ticktext: xLabels, range: [-0.6, n - 0.4],
+            tickfont: { size: 10 }, showgrid: true, gridcolor: 'rgba(255,255,255,0.06)', zeroline: false, fixedrange: true,
+        },
+        yaxis: {
+            title: { text: `Certified centres (of K max = ${bins.k_max})`, font: { color: '#c084fc', size: 13 } },
+            tickvals: yLabels.map((_, i) => i), ticktext: yLabels, range: [-0.6, n - 0.4],
+            tickfont: { size: 10 }, showgrid: true, gridcolor: 'rgba(255,255,255,0.06)', zeroline: false, fixedrange: true,
+        },
+    };
+    Plotly.react(container, traces, layout, { responsive: true, displayModeBar: false });
+    container.removeAllListeners && container.removeAllListeners('plotly_click');
+    container.on('plotly_click', (ev) => {
+        const pt = ev.points && ev.points[0];
+        if (!pt || !pt.customdata) return;
+        openLandscapeCell(pt.customdata[0], pt.customdata[1], 0);
+    });
+}
+
+async function openLandscapeCell(ix, iy, offset) {
+    const p = landscapeParams();
+    if (!p || !landscapeState.bins) return;
+    const limit = 50;
+    try {
+        const res = await fetch('/api/landscape/cell', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(Object.assign({ d: landscapeState.dSelection, ix, iy, limit, offset }, p)),
+        });
+        const data = await res.json();
+        if (!res.ok) { showAnalysisError('Landscape cell: ' + (data.error || res.status)); return; }
+        landscapeState.cell = { ix, iy };
+        landscapeState.cellData = data;
+        renderLandscapeCell();
+        renderLandscape();
+    } catch (err) {
+        showAnalysisError('Landscape cell request failed: ' + err.message);
+    }
+}
+
+function closeLandscapeCell() {
+    landscapeState.cell = null;
+    landscapeState.cellData = null;
+    const panel = document.getElementById('landscapeCellPanel');
+    if (panel) panel.style.display = 'none';
+    if (viewMode === 'landscape' && landscapeState.bins) renderLandscape();
+}
+
+function renderLandscapeCell() {
+    const panel = document.getElementById('landscapeCellPanel');
+    const list = document.getElementById('landscapeCellList');
+    const more = document.getElementById('landscapeCellMore');
+    const title = document.getElementById('landscapeCellTitle');
+    const data = landscapeState.cellData;
+    const bins = landscapeState.bins;
+    if (!panel || !list || !data || !bins) return;
+    panel.style.display = '';
+    const n = bins.n_bins;
+    const ix = landscapeState.cell.ix, iy = landscapeState.cell.iy;
+    if (title) {
+        title.textContent = `${data.total} schema${data.total === 1 ? '' : 's'} with ${bins.x} in (${ix * 100 / n},${(ix + 1) * 100 / n}]% and `
+            + `${Math.floor(iy * bins.k_max / n)} < centres ≤ ${Math.ceil((iy + 1) * bins.k_max / n)} — most concentrated first`;
+    }
+    const currentFeats = (currentBranchesResponse && currentBranchesResponse.schema)
+        ? currentBranchesResponse.schema.features.slice().sort().join(',')
+        : (currentPayload && currentPayload.selected_feature_indices ? currentPayload.selected_feature_indices.slice().sort().join(',') : null);
+    list.innerHTML = '';
+    data.schemas.forEach(sc => {
+        const row = document.createElement('div');
+        row.className = 'landscape-row' + (currentFeats === sc.features.slice().sort().join(',') ? ' current' : '');
+        const xv = bins.x === 'mass' ? sc.mass : sc.coverage;
+        row.innerHTML = `
+            <span class="axes">${sc.feature_names.join(' + ')}</span>
+            <span class="num">${bins.x} ${(xv * 100).toFixed(2)}%</span>
+            <span class="num">${sc.n_centers} centre${sc.n_centers === 1 ? '' : 's'}</span>
+            <span class="num">mass ${(sc.mass * 100).toFixed(2)}%</span>
+            <button type="button" class="landscape-open">open</button>`;
+        row.querySelector('.landscape-open').onclick = () => openSchemaFromLandscape(sc.features);
+        list.appendChild(row);
+    });
+    if (more) {
+        more.innerHTML = '';
+        const shown = data.offset + data.schemas.length;
+        more.textContent = `${data.offset + 1}–${shown} of ${data.total}`;
+        if (data.offset > 0) {
+            const b = document.createElement('button'); b.className = 'landscape-open'; b.textContent = '← previous';
+            b.onclick = () => openLandscapeCell(ix, iy, Math.max(0, data.offset - data.limit)); more.appendChild(b);
+        }
+        if (shown < data.total) {
+            const b = document.createElement('button'); b.className = 'landscape-open'; b.textContent = 'next →';
+            b.onclick = () => openLandscapeCell(ix, iy, data.offset + data.limit); more.appendChild(b);
+        }
+    }
+}
+
+async function openSchemaFromLandscape(features) {
+    if (lastTargetCol === null) return;
+    await runAnalysis(lastTargetCol, lastCriterion, features.slice());
+}

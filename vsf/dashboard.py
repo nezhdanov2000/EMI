@@ -51,7 +51,7 @@ from typing import Any, Dict, Optional
 
 import pandas as pd
 
-from .avr import DEFAULT_N_PERMUTATIONS, MAX_BRANCH_D, discover_branches
+from .avr import DEFAULT_N_PERMUTATIONS, MAX_BRANCH_D, Direction, discover_branches
 from .centers import CenterSpec
 from .vis import (
     Translations,
@@ -92,10 +92,11 @@ def _read_template(name: str) -> str:
 
 
 def _prepare_target(
-    df: pd.DataFrame, target: str, criterion: Optional[str], translations: Optional[Translations]
+    df: pd.DataFrame, target: str, criterion: Optional[str], translations: Optional[Translations],
+    direction: Direction = "presence",
 ):
     """
-    Mirrors `vsf.server`'s `_handle_analyze_api` target-preparation logic,
+    Mirrors `vsf.server`'s `_build_analyze_response` target-preparation logic,
     so the baked-in branches are identical to what selecting this same
     target/criterion in the live app would produce. `sort_Z` is always the
     raw column values (used for target-conditioned axis-category ordering),
@@ -104,17 +105,29 @@ def _prepare_target(
     if target not in df.columns:
         raise ValueError(f"target column {target!r} not found in the dataframe")
     sort_Z = df[target].values
+    indicator_labels = None
     if criterion is not None:
         Z = (df[target].astype(str) == str(criterion)).astype(int).values
         display_target_name = (
             f"{humanize_col(target, translations)} = "
             f"{humanize_val(target, str(criterion), translations)}"
         )
+        if direction == "absence":
+            # The renderer's positive indicator is the complement (see
+            # `vsf.avr.Direction`); the class labels keep naming the value.
+            Z = 1 - Z
+            indicator_labels = (display_target_name, f"not {display_target_name}")
+            display_target_name = (
+                f"{humanize_col(target, translations)} \u2260 "
+                f"{humanize_val(target, str(criterion), translations)}"
+            )
+    elif direction == "absence":
+        raise ValueError("an absence export needs an explicit criterion whose absence to certify")
     else:
         Z = df[target].values
         display_target_name = target
     X_df = df.drop(columns=[target])
-    return Z, sort_Z, X_df, display_target_name
+    return Z, sort_Z, X_df, display_target_name, indicator_labels
 
 
 def _render_html(
@@ -166,6 +179,7 @@ def export_full_dashboard(
     title: str = "VSF Interactive Dashboard",
     max_d: int = MAX_BRANCH_D,
     center_spec: Optional[CenterSpec] = None,
+    direction: Direction = "presence",
 ) -> str:
     """
     Builds one self-contained HTML dashboard: up to 4 independently
@@ -199,6 +213,11 @@ def export_full_dashboard(
             tau = 0.90, alpha = 0.05, Bonferroni. A static page cannot be
             re-certified after the fact, so this value is final for the
             exported document and is stated in its legend.
+        direction: `"presence"` (default) or `"absence"` — see
+            `vsf.avr.Direction`. Under `"absence"` the exported branches
+            certify cells where `criterion` is almost missing; they are
+            drawn red, every coverage figure refers to rows without the
+            value, and `criterion` is required.
         max_d: upper bound on branch dimensionality — passed through to
             `vsf.avr.discover_branches`. Must be in `[1, 4]`; this export's
             spatial encoding stops at 3D + one time/frame axis (see the
@@ -228,7 +247,9 @@ def export_full_dashboard(
     if target not in df.columns:
         raise ValueError(f"target column {target!r} not found in the dataframe")
 
-    Z, sort_Z, X_df, display_target_name = _prepare_target(df, target, criterion, translations)
+    Z, sort_Z, X_df, display_target_name, indicator_labels = _prepare_target(
+        df, target, criterion, translations, direction
+    )
     feature_names = list(X_df.columns)
     X = X_df.values
 
@@ -244,6 +265,7 @@ def export_full_dashboard(
         X, Z, feature_names=feature_names, max_d=max_d, random_state=0,
         positive_class=positive_class, center_spec=spec,
         n_permutations_centers=DEFAULT_N_PERMUTATIONS,
+        direction=direction,
     )
 
     branches_data: Dict[str, Any] = {}
@@ -262,6 +284,7 @@ def export_full_dashboard(
             translations=translations,
             positive_value=(1 if criterion is not None else None),
             center_spec=spec,
+            indicator_labels=indicator_labels,
         )
         branches_data[str(d)] = payload
 
@@ -273,6 +296,7 @@ def export_full_dashboard(
     dashboard_data = {
         "target": target,
         "criterion": criterion,
+        "direction": direction,
         "catalog": catalog,
         "total_rows": len(df),
         "branch_dims": sorted(branches.keys()),
