@@ -31,8 +31,9 @@ Architecture note (unchanged from v1.0, still the governing principle):
 every statistic in the exported page — feature selection, purity — is
 computed HERE, in Python, by calling the same `vsf` functions the live
 `vsf.serve()` app calls. The client-side JavaScript this module embeds
-(`vsf/templates/dashboard.js`) never recomputes MI or refits anything; it
-only re-slices, masks, counts, and renders data already computed in Python.
+(`vsf/templates/dashboard.js`) never recomputes a statistic or refits
+anything; it only re-slices, masks, counts, and renders data already
+computed in Python.
 
 Dimensionality is capped at 4 — see `vsf.avr.MAX_BRANCH_D` — because that is
 where this export's spatial encoding actually stops: `vsf.vis.

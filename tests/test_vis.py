@@ -536,3 +536,27 @@ def test_every_payload_key_the_renderers_read_is_actually_produced():
     # payload builds server-side, not through a JS lookup, so they are pinned
     # on the payload instead of on app.js.
     assert "Confidence bound" in payload["grids"]["1"]["hover_text"][0]
+
+
+# ---------------------------------------------------------------------------
+# Catalog: value shares and share ordering (2026-09)
+# ---------------------------------------------------------------------------
+
+def test_catalog_orders_values_by_share_and_reports_counts():
+    import pandas as pd
+    from vsf.vis import catalog_from_dataframe
+
+    df = pd.DataFrame({
+        "t": ["a"] * 6 + ["b"] * 3 + ["c"] * 1 + [None] * 2,
+        "u": ["x", "y"] * 6,
+    })
+    catalog = catalog_from_dataframe(df, None)
+    t = next(c for c in catalog if c["id"] == "t")
+    assert [c["id"] for c in t["criteria"]] == ["a", "b", "c"]
+    assert [c["count"] for c in t["criteria"]] == [6, 3, 1]
+    assert [round(c["share"], 6) for c in t["criteria"]] == [0.5, 0.25, round(1 / 12, 6)]
+    # Missing values are neither a criterion nor part of any share.
+    assert sum(c["share"] for c in t["criteria"]) < 1.0
+    u = next(c for c in catalog if c["id"] == "u")
+    assert [c["id"] for c in u["criteria"]] == ["x", "y"]  # tie -> string order
+    assert all(c["share"] == 0.5 for c in u["criteria"])

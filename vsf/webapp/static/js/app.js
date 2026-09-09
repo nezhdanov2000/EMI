@@ -170,8 +170,8 @@ function showWelcomeState(show) {
 // values a completed scan kept (a no-op copy when no scan filter is
 // active). Surviving criteria get their certified coverage, centre count and
 // dimensionality appended to their label so the filtered list still carries
-// that information. v2.2: coverage, not U_adj -- the scan now selects on the
-// quantity the display delivers, and the label must name the same one.
+// that information: the scan selects on the quantity the display delivers
+// (coverage), and the label names the same one.
 function buildScanFilteredCatalog() {
     if (!scanResultsByColumn) return allColumnsData;
     const filtered = [];
@@ -479,13 +479,20 @@ function populateCatalog(cols, defaultTarget) {
             charItem.classList.toggle('open');
         };
 
+        // Values arrive ordered by share (server, catalog_from_dataframe),
+        // so the donuts read as one decreasing series, and the tau divider
+        // (updateCatalogTauDividers) splits the list into "absence only"
+        // above and "either direction" below.
         col.criteria.forEach(crit => {
             const critItem = document.createElement('div');
             critItem.className = 'crit-item';
+            if (typeof crit.share === 'number') critItem.dataset.share = String(crit.share);
 
             const critHeader = document.createElement('div');
             critHeader.className = 'crit-header';
-            critHeader.innerHTML = `<span>${crit.label}</span>`;
+            const share = (typeof crit.share === 'number') ? crit.share : null;
+            critHeader.innerHTML = `<span class="crit-label">${crit.label}</span>`
+                + (share === null ? '' : `<span class="crit-share" title="${crit.count.toLocaleString()} rows — ${(share * 100).toFixed(1)}% of all rows">${shareDonutSVG(share)}<span class="crit-share-pct">${formatSharePct(share)}</span></span>`);
 
             critHeader.onclick = async (e) => {
                 e.stopPropagation();
@@ -509,6 +516,73 @@ function populateCatalog(cols, defaultTarget) {
             charItem.classList.add('open');
         }
     });
+    updateCatalogTauDividers();
+}
+
+// A 14 px donut showing a value's share of all rows. Neutral indigo: the
+// greens and reds of the interface are certificates, and a share is not
+// one. The exact percentage sits beside it; on a donut this small, 3 % and
+// 8 % are the same picture.
+function shareDonutSVG(share) {
+    const r = 5.5, c = 2 * Math.PI * r;
+    const filled = Math.max(0, Math.min(1, share)) * c;
+    return `<svg class="share-donut" width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">`
+        + `<circle cx="7" cy="7" r="${r}" fill="none" stroke="rgba(148,163,184,0.25)" stroke-width="3"/>`
+        + `<circle cx="7" cy="7" r="${r}" fill="none" stroke="#818cf8" stroke-width="3" `
+        + `stroke-dasharray="${filled.toFixed(3)} ${(c - filled).toFixed(3)}" transform="rotate(-90 7 7)"/></svg>`;
+}
+
+function formatSharePct(share) {
+    const pct = share * 100;
+    if (pct >= 10) return `${pct.toFixed(0)}%`;
+    if (pct >= 1) return `${pct.toFixed(1)}%`;
+    return pct > 0 ? `${pct.toFixed(2)}%` : '0%';
+}
+
+// The base-rate invariant, drawn: within each column's (share-ordered)
+// list, a divider is placed after the last value whose share is at least
+// the current tau. Above it a presence search is void (tau is not above
+// the value's base rate) and only Absence is available; below it either
+// direction works. Re-run whenever tau changes.
+// With an anchored scale a value can always be analysed (the boundary is
+// re-anchored on click), so the divider now says what WILL happen: values
+// whose base rate lies on the wrong side of the current certified boundary
+// will have that boundary moved when picked.
+function updateCatalogTauDividers() {
+    const cert = readCertBoundaryPct() / 100;
+    const absence = activeDirection === 'absence';
+    document.querySelectorAll('#catalogAccordion .crit-item').forEach(item => {
+        const share = Number(item.dataset.share);
+        // Under absence the axis is the complement, whose base rate is 1 - share.
+        const flagged = Number.isFinite(share) && (absence ? (1 - share) >= cert : share >= cert);
+        item.classList.toggle('above-tau', flagged);
+        item.title = flagged
+            ? (absence
+                ? `Rows without this value are ${((1 - share) * 100).toFixed(1)}% of all rows, not below the red boundary (${(cert * 100).toFixed(0)}%): picking it raises the boundary above that.`
+                : `This value fills ${(share * 100).toFixed(1)}% of the rows, not below the green boundary (${(cert * 100).toFixed(0)}%): picking it raises the boundary above its base rate.`)
+            : '';
+    });
+    document.querySelectorAll('#catalogAccordion .char-content').forEach(content => {
+        const old = content.querySelector('.tau-divider');
+        if (old) old.remove();
+        const items = Array.from(content.querySelectorAll('.crit-item'));
+        const flags = items.map(i => i.classList.contains('above-tau'));
+        const divider = document.createElement('div');
+        divider.className = 'tau-divider';
+        if (absence) {
+            // Rare values are at the bottom of the share-ordered list, and
+            // those are the ones whose complement base rate is high.
+            const first = flags.indexOf(true);
+            if (first < 0) return;
+            divider.innerHTML = `<span>below: rows without the value ≥ ${(cert * 100).toFixed(0)}% — boundary moves when picked</span>`;
+            items[first].before(divider);
+        } else {
+            const last = flags.lastIndexOf(true);
+            if (last < 0) return;
+            divider.innerHTML = `<span>above: base rate ≥ ${(cert * 100).toFixed(0)}% — boundary moves when picked</span>`;
+            items[last].after(divider);
+        }
+    });
 }
 
 function showAnalysisError(message) {
@@ -529,13 +603,19 @@ let lastTargetCol = null;
 let lastCriterion = null;
 let lastFeatures = null;
 
+// The certificate boundary the SERVER receives, as a purity of the
+// indicator searched. The scale is always drawn in shares of the chosen
+// VALUE (see the anchored-scale block below): under presence the certified
+// boundary is that share itself; under absence it is "value share <= c",
+// i.e. a complement purity of 1 - c.
 function readCertTau() {
-    const el = document.getElementById('certTau');
-    const v = el ? Number(el.value) / 100 : 0.90;
+    // Under absence the scale's axis is the share of rows WITHOUT the
+    // value, so the boundary is already the complement purity.
+    const tau = readCertBoundaryPct() / 100;
     // 1.0 is allowed: "cells that are entirely the target value" is a
     // well-posed request about the observed table (it is rejected only in
     // strict mode, where it would be a request to PROVE exact purity).
-    return (Number.isFinite(v) && v > 0 && v <= 1) ? v : 0.90;
+    return (Number.isFinite(tau) && tau > 0 && tau <= 1) ? tau : 0.90;
 }
 
 function readCertAlpha() {
@@ -590,10 +670,17 @@ function renderCertificateSummary(response) {
     if (!el) return;
     el.innerHTML = '';
     if (response && response.schema && response.schema.selected_from_landscape) {
-        el.textContent = 'Schema opened from the landscape: '
+        let note = 'Schema opened from the landscape: '
             + (response.schema.feature_names || []).join(' + ')
             + '. Chosen by looking at the data, so no uncorrected permutation p-value is reported for it; '
             + 'the cross-validated coverage is still out-of-sample.';
+        const dKey = String(response.default_branch);
+        const b = response.branches && response.branches[dKey];
+        const cert = b && b.certificate;
+        if (b && cert && cert.partition_matches_search === false && b.search_centers && b.centers) {
+            note += ` The search scored this schema on a capacity-coarsened partition (coverage ${(b.search_centers.coverage * 100).toFixed(1)}%, ${b.search_centers.n_centers} centres — the numbers in the landscape); the lattice shows the full-resolution partition (${(b.centers.coverage * 100).toFixed(1)}%, ${b.centers.n_centers} centres).`;
+        }
+        el.textContent = note;
     }
 }
 
@@ -605,6 +692,16 @@ async function runAnalysis(targetCol, criterion = null, features = null) {
     lastTargetCol = targetCol;
     lastCriterion = criterion;
     lastFeatures = features; // an explicit schema opened from the landscape, or null
+    // Re-anchor the colour scale to this value's base rate BEFORE asking,
+    // so the certified boundary is always admissible (the server refuses a
+    // boundary on the wrong side of the base rate); a forced move is shown.
+    if (criterion !== null) {
+        const share = catalogShareOf(targetCol, criterion);
+        if (share !== null) {
+            const moved = setScaleAnchor(share);
+            showBaseRateMove(moved);
+        }
+    }
     try {
         const reqBody = {
             target: targetCol,
@@ -742,11 +839,8 @@ function renderBranchSelector(response) {
                 ? ` (best lower bound ${(cc.max_purity_lower * 100).toFixed(1)}%)` : '';
             headline = `<span class="branch-uadj" style="color:var(--text-dim);" title="No cell in this branch reaches the certified purity floor.">no certified centres${best}</span>`;
         }
-        // MI/E₀/U_adj and the p-value line were dropped from this card
-        // (2026-09, same cleanup pass as the HUD strip's Purity/MI/U_adj/p),
-        // and formatSignificance() was deleted from this file along with
-        // their last call site here -- as clutter on top of the headline
-        // coverage+centres number, which is already what selects and ranks
+        // The card carries only the headline coverage + centres number,
+        // which is already what selects and ranks
         // these branches under the coverage-only ranking (vsf.avr.discover_branches,
         // v2.3). Nothing in the UI now
         // shows the per-branch p-value: it was the only signal for whether
@@ -870,18 +964,28 @@ async function setDirection(direction) {
     const labelTau = document.getElementById('labelTau');
     const labelRed = document.getElementById('labelRedTo');
     if (labelTau) {
-        labelTau.textContent = direction === 'absence' ? '🔴 Free from:' : '🟢 Green from:';
+        labelTau.textContent = direction === 'absence' ? '🔴 Red from:' : '🟢 Green from:';
         labelTau.style.color = direction === 'absence' ? '#ef4444' : 'var(--green)';
         labelTau.title = direction === 'absence'
-            ? 'A cell is certified FREE of the chosen value — and is drawn red — when the share of rows WITHOUT the value reaches this. Moving this re-runs the analysis.'
-            : "A cell is a discrete centre — and is drawn green — when its share of the target value reaches this. Coverage is computed from exactly these cells, so moving this re-runs the analysis. 100% is allowed and means 'only cells that are entirely the target value'.";
+            ? 'A cell is certified FREE of the chosen value — and is drawn red — when its share of rows WITHOUT the value reaches this. Must lie above the base rate of rows without the value (the 1−p₀ tick). Moving this re-runs the analysis.'
+            : "A cell is a discrete centre — and is drawn green — when its share of the target value reaches this. Must lie above the value's base rate (the p₀ tick). Coverage is computed from exactly these cells, so moving this re-runs the analysis. 100% is allowed and means 'only cells that are entirely the target value'.";
     }
     if (labelRed) {
         labelRed.textContent = direction === 'absence' ? '⚪ Grey up to:' : '🔴 Red up to:';
         labelRed.style.color = direction === 'absence' ? '#94a3b8' : '#ef4444';
         labelRed.title = direction === 'absence'
-            ? 'Purely a colour boundary: cells whose share of rows without the value is below it are drawn grey (the value is present there); between it and the red boundary, brown. Re-colours immediately, changes no reported number.'
-            : 'Purely a colour boundary: cells below it are drawn red; between it and the green boundary, brown. Changing it re-colours immediately and does not affect any reported number.';
+            ? 'Purely a colour boundary, at or below the base rate: cells whose share of rows without the value is below it are drawn grey (the value is present there at least as often as in the data as a whole); between it and the red boundary, brown. Re-colours immediately, changes no reported number.'
+            : 'Purely a colour boundary, at or below the base rate: cells below it are drawn red (the value is rarer there than in the data as a whole); between it and the green boundary, brown. Re-colours immediately, changes no reported number.';
+    }
+    if (changed) {
+        // Defaults for the new direction (the same purity floor of 90 % on
+        // its own axis), then clamp to the anchor.
+        const tauEl = document.getElementById('certTau');
+        const decoEl = document.getElementById('colorRedTo');
+        if (tauEl) tauEl.value = '90';
+        const a = axisAnchorPct();
+        if (decoEl) { decoEl.value = String(a === null ? 40 : a); decoEl.dataset.userSet = ''; }
+        syncColorScaleFromInputs();
     }
     const hudFree = document.getElementById('hud-free');
     if (hudFree) hudFree.style.display = direction === 'absence' ? 'flex' : 'none';
@@ -899,6 +1003,12 @@ async function setDirection(direction) {
     }
 }
 
+let _baseRateMoveNote = null;
+function showBaseRateMove(note) {
+    _baseRateMoveNote = note || null;
+    updateBaseRateNote();
+}
+
 // The base rate the current search is measured against, and the tau it
 // therefore needs. `activePrevalence` is the prevalence of the indicator
 // SEARCHED (the value under presence, its complement under absence).
@@ -909,11 +1019,12 @@ function updateBaseRateNote() {
     const pInd = activePrevalence;
     const pValue = activeDirection === 'absence' ? 1 - pInd : pInd;
     const need = activeDirection === 'absence'
-        ? `an absence search must use tau above ${(pInd * 100).toFixed(1)}% (the share of rows without it)`
-        : `a presence search must use tau above ${(pInd * 100).toFixed(1)}%`;
+        ? `rows without it are ${((1 - pValue) * 100).toFixed(1)}%, and a certificate of absence must lie above that on the "without" axis`
+        : `a certificate of presence must lie above it`;
     el.textContent = `Base rate of the chosen value: ${(pValue * 100).toFixed(1)}% of rows; ${need}.`
         + (pValue > 0.5 && activeDirection === 'presence'
-            ? ' The value is more common than not — consider searching for its absence.' : '');
+            ? ' The value is more common than not — consider searching for its absence.' : '')
+        + (_baseRateMoveNote ? ' ' + _baseRateMoveNote : '');
 }
 
 // Certificate parameters currently in force, mirrored from the payload so the
@@ -924,10 +1035,11 @@ let activeRule = 'purity';
 let activeMinSamples = 1;
 let activePrevalence = 0.0;
 
+// The decorative boundary in INDICATOR terms (what getColorIndexForCell
+// compares cell purities against): under presence the value share itself;
+// under absence the complement of the "grey from" value share.
 function readRedTo() {
-    const el = document.getElementById('colorRedTo');
-    const v = el ? Number(el.value) / 100 : 0.40;
-    return (Number.isFinite(v) && v >= 0 && v <= 1) ? v : 0.40;
+    return readDecoBoundaryPct() / 100;
 }
 
 function getColorIndexForCell(purity, isCenter, tau, redTo) {
@@ -971,36 +1083,181 @@ function clampPct(value, lo, hi) {
 // Positions the two handles and repaints the gradient from two percentages
 // already known to be valid (0 <= redPct < tauPct <= 100). Pure DOM/CSS
 // update: never reads or writes the number inputs itself.
-function setColorScaleUI(redPct, tauPct) {
+// ---------------------------------------------------------------------------
+// The anchored colour scale.
+//
+// The axis is the share, in a cell, of what is being searched for: the
+// chosen VALUE under presence, the rows WITHOUT it under absence. The base
+// rate of that quantity -- p0 under presence, 1 - p0 under absence -- is a
+// fixed tick on it (the anchor), and the certified boundary starts one
+// point beyond the anchor and can only move further right, never across
+// it: a certificate at or below the base rate would call cells "centres"
+// that say nothing (Project_Master_Document.md Section 4.8, base-rate
+// invariant). The second boundary is decorative -- it partitions the
+// UNCERTIFIED cells into "above the base rate but short of the certificate"
+// (brown) and "below the base rate" (red under presence: the value is
+// rarer there than overall; grey under absence: the value is present at
+// least as often as overall) -- and defaults to the anchor so that brown
+// never covers a cell that sits below the base rate.
+//
+//   presence (axis = share of the value):
+//              red [0, deco)   brown [deco, cert)   green [cert, 100]
+//   absence  (axis = share of rows without the value):
+//              grey [0, deco)  brown [deco, cert)   red [cert, 100]
+//   in both:   deco <= anchor < cert
+//
+// `cert` is what #certTau shows, on the axis of the current mode, and is
+// exactly the purity the server certifies (readCertTau()).
+let scaleAnchorPct = null;   // round(p0 * 100) of the chosen VALUE, or null
+
+// The anchor on the axis of the current mode.
+function axisAnchorPct() {
+    if (scaleAnchorPct === null) return null;
+    return activeDirection === 'absence' ? 100 - scaleAnchorPct : scaleAnchorPct;
+}
+
+function readCertBoundaryPct() {
+    const el = document.getElementById('certTau');
+    const v = el ? Number(el.value) : NaN;
+    if (Number.isFinite(v)) return clampPct(Math.round(v), 0, 100);
+    return activeDirection === 'absence' ? 10 : 90;
+}
+
+function readDecoBoundaryPct() {
+    const el = document.getElementById('colorRedTo');
+    const v = el ? Number(el.value) : NaN;
+    if (Number.isFinite(v)) return clampPct(Math.round(v), 0, 100);
+    const a = axisAnchorPct();
+    return a !== null ? a : 40;
+}
+
+// Admissible range of the certified boundary: strictly above the anchor
+// (one point past it at the closest), up to 100.
+function certBoundaryRange() {
+    const a = axisAnchorPct();
+    return { lo: a === null ? 1 : Math.min(100, a + 1), hi: 100 };
+}
+
+// Admissible range of the decorative boundary: at or below the anchor and
+// at least one point below the certified boundary.
+function decoBoundaryRange(certPct) {
+    const a = axisAnchorPct();
+    const hi = Math.min(a === null ? 100 : a, certPct - COLOR_SCALE_MIN_GAP);
+    return { lo: 0, hi: Math.max(hi, 0) };
+}
+
+function clampCertBoundary(pct) {
+    const r = certBoundaryRange();
+    return clampPct(Math.round(pct), r.lo, r.hi);
+}
+
+function clampDecoBoundary(pct, certPct) {
+    const r = decoBoundaryRange(certPct);
+    return clampPct(Math.round(pct), r.lo, r.hi);
+}
+
+// Paints the track, the two handles and the anchor tick from percentages
+// on the value-share axis.
+function setColorScaleUI(decoPct, certPct) {
     const track = document.getElementById('colorScaleTrack');
-    const handleRed = document.getElementById('handleRed');
-    const handleGreen = document.getElementById('handleGreen');
-    const redValueEl = document.getElementById('handleRedValue');
-    const greenValueEl = document.getElementById('handleGreenValue');
-    if (!track || !handleRed || !handleGreen) return;
-    track.style.setProperty('--red-pct', `${redPct}%`);
-    track.style.setProperty('--tau-pct', `${tauPct}%`);
-    handleRed.style.left = `${redPct}%`;
-    handleGreen.style.left = `${tauPct}%`;
-    handleRed.setAttribute('aria-valuenow', String(Math.round(redPct)));
-    handleGreen.setAttribute('aria-valuenow', String(Math.round(tauPct)));
-    if (redValueEl) redValueEl.textContent = `${Math.round(redPct)}%`;
-    if (greenValueEl) greenValueEl.textContent = `${Math.round(tauPct)}%`;
+    const handleDeco = document.getElementById('handleRed');
+    const handleCert = document.getElementById('handleGreen');
+    const decoValueEl = document.getElementById('handleRedValue');
+    const certValueEl = document.getElementById('handleGreenValue');
+    if (!track || !handleDeco || !handleCert) return;
+    track.style.setProperty('--red-pct', `${decoPct}%`);
+    track.style.setProperty('--tau-pct', `${certPct}%`);
+    handleDeco.style.left = `${decoPct}%`;
+    handleCert.style.left = `${certPct}%`;
+    handleDeco.setAttribute('aria-valuenow', String(Math.round(decoPct)));
+    handleCert.setAttribute('aria-valuenow', String(Math.round(certPct)));
+    if (decoValueEl) decoValueEl.textContent = `${Math.round(decoPct)}%`;
+    if (certValueEl) certValueEl.textContent = `${Math.round(certPct)}%`;
+    const tick = document.getElementById('anchorTick');
+    const a = axisAnchorPct();
+    if (tick) {
+        if (a === null) {
+            tick.style.display = 'none';
+        } else {
+            tick.style.display = '';
+            tick.style.left = `${a}%`;
+            tick.title = activeDirection === 'absence'
+                ? `Base rate of rows WITHOUT the chosen value: ${a}% (the value itself fills ${scaleAnchorPct}%). The certified boundary cannot cross it.`
+                : `Base rate of the chosen value: ${a}% of rows. The certified boundary cannot cross it.`;
+            const label = tick.querySelector('.anchor-label');
+            if (label) label.textContent = (activeDirection === 'absence' ? '1−p₀ ' : 'p₀ ') + `${a}%`;
+        }
+    }
+    const caption = document.getElementById('scaleAxisCaption');
+    if (caption) {
+        const name = currentValueLabel();
+        caption.textContent = activeDirection === 'absence'
+            ? (name ? `axis: share of rows WITHOUT «${name}» in a cell` : 'axis: share of rows without the chosen value in a cell')
+            : (name ? `axis: share of «${name}» in a cell` : 'axis: share of the chosen value in a cell');
+    }
 }
 
-// Reflects the current #certTau / #colorRedTo input values onto the
-// slider. Call this whenever those inputs change from ANY source (typed by
-// hand, a payload reload, dragging the other handle) so the slider can never
-// show a stale position.
+function currentValueLabel() {
+    if (lastTargetCol === null || lastCriterion === null) return null;
+    const col = (allColumnsData || []).find(c => c.id === lastTargetCol);
+    const crit = col && (col.criteria || []).find(c => String(c.id) === String(lastCriterion));
+    return crit ? crit.label : String(lastCriterion);
+}
+
+// Reads the two number inputs, clamps them to the admissible ranges (writing
+// the clamped values back), and paints the slider. Call this whenever the
+// inputs change from ANY source so the slider can never show a stale or
+// inadmissible position.
 function syncColorScaleFromInputs() {
+    updateCatalogTauDividers();
     const tauEl = document.getElementById('certTau');
-    const redEl = document.getElementById('colorRedTo');
-    const tau = tauEl ? clampPct(Number(tauEl.value), 1, 100) : 90;
-    const red = redEl ? clampPct(Number(redEl.value), 0, 99) : 40;
-    setColorScaleUI(Math.min(red, tau - COLOR_SCALE_MIN_GAP), tau);
+    const decoEl = document.getElementById('colorRedTo');
+    const cert = clampCertBoundary(readCertBoundaryPct());
+    const deco = clampDecoBoundary(readDecoBoundaryPct(), cert);
+    if (tauEl && String(cert) !== tauEl.value) tauEl.value = String(cert);
+    if (decoEl && String(deco) !== decoEl.value) decoEl.value = String(deco);
+    setColorScaleUI(deco, cert);
 }
 
-let colorScaleDragTarget = null; // 'red' | 'green' | null
+// Re-anchors the scale to a value's base rate (p0 as a share of all rows).
+// If the certified boundary now sits on the wrong side of the anchor, it is
+// moved to the nearest admissible position and the move is reported; the
+// decorative boundary is reset to the anchor unless it is still admissible.
+// Returns a note describing any forced move, or null.
+function setScaleAnchor(p0) {
+    scaleAnchorPct = (typeof p0 === 'number' && Number.isFinite(p0)) ? clampPct(Math.round(p0 * 100), 0, 100) : null;
+    const tauEl = document.getElementById('certTau');
+    const decoEl = document.getElementById('colorRedTo');
+    const before = readCertBoundaryPct();
+    const cert = clampCertBoundary(before);
+    let note = null;
+    if (cert !== before) {
+        note = activeDirection === 'absence'
+            ? `The red boundary was raised from ${before}% to ${cert}%: rows without the value are ${axisAnchorPct()}% of all rows, and a certificate of absence must lie above that.`
+            : `The green boundary was raised from ${before}% to ${cert}%: the value fills ${scaleAnchorPct}% of the rows, and a certificate of presence must lie above that.`;
+    }
+    if (tauEl) tauEl.value = String(cert);
+    if (decoEl) {
+        const decoRange = decoBoundaryRange(cert);
+        const current = Number(decoEl.value);
+        const keep = Number.isFinite(current) && current >= decoRange.lo && current <= decoRange.hi && decoEl.dataset.userSet === '1';
+        const a = axisAnchorPct();
+        decoEl.value = String(keep ? Math.round(current) : clampDecoBoundary(a === null ? current : a, cert));
+    }
+    syncColorScaleFromInputs();
+    return note;
+}
+
+// The base rate of a (column, value) from the catalog, if the server sent
+// shares (catalog_from_dataframe), else null.
+function catalogShareOf(colId, critId) {
+    const col = (allColumnsData || []).find(c => c.id === colId);
+    if (!col) return null;
+    const crit = (col.criteria || []).find(c => String(c.id) === String(critId));
+    return (crit && typeof crit.share === 'number') ? crit.share : null;
+}
+
+let colorScaleDragTarget = null; // 'red' (decorative) | 'green' (certified) | null
 
 function colorScalePctFromEvent(evt) {
     const track = document.getElementById('colorScaleTrack');
@@ -1019,38 +1276,42 @@ function onColorScalePointerDown(which) {
     };
 }
 
+function moveDecoBoundary(pct) {
+    const decoEl = document.getElementById('colorRedTo');
+    const cert = clampCertBoundary(readCertBoundaryPct());
+    const next = clampDecoBoundary(pct, cert);
+    if (decoEl) { decoEl.value = String(next); decoEl.dataset.userSet = '1'; }
+    setColorScaleUI(next, cert);
+    applyColorBoundary(); // cosmetic: re-colour live
+}
+
+function moveCertBoundary(pct) {
+    const tauEl = document.getElementById('certTau');
+    const next = clampCertBoundary(pct);
+    if (tauEl) tauEl.value = String(next);
+    const deco = clampDecoBoundary(readDecoBoundaryPct(), next);
+    const decoEl = document.getElementById('colorRedTo');
+    if (decoEl) decoEl.value = String(deco);
+    setColorScaleUI(deco, next);
+}
+
 function onColorScalePointerMove(evt) {
     if (!colorScaleDragTarget) return;
     evt.preventDefault();
-    const tauEl = document.getElementById('certTau');
-    const redEl = document.getElementById('colorRedTo');
-    const tau = tauEl ? Number(tauEl.value) : 90;
-    const red = redEl ? Number(redEl.value) : 40;
     const pct = colorScalePctFromEvent(evt);
-
-    if (colorScaleDragTarget === 'red') {
-        const next = clampPct(pct, 0, tau - COLOR_SCALE_MIN_GAP);
-        if (redEl) redEl.value = String(next);
-        setColorScaleUI(next, tau);
-        applyColorBoundary(); // cosmetic: re-colour live while dragging
-    } else if (colorScaleDragTarget === 'green') {
-        const next = clampPct(pct, Math.max(1, red + COLOR_SCALE_MIN_GAP), 100);
-        if (tauEl) tauEl.value = String(next);
-        setColorScaleUI(red, next);
-        // Deliberately NOT recomputed while dragging — see file header.
-    }
+    if (colorScaleDragTarget === 'red') moveDecoBoundary(pct);
+    else moveCertBoundary(pct); // deliberately NOT recomputed while dragging
 }
 
 function onColorScalePointerUp() {
     if (!colorScaleDragTarget) return;
-    const wasGreen = colorScaleDragTarget === 'green';
+    const wasCert = colorScaleDragTarget === 'green';
     colorScaleDragTarget = null;
     document.body.style.userSelect = '';
-    if (wasGreen) applyCertificate(); // commit: re-run the analysis at the new tau
+    if (wasCert) applyCertificate(); // commit: re-run the analysis at the new boundary
 }
 
-// Arrow-key nudge for the focused handle (1 point; Shift = 5 points), so the
-// boundaries stay operable without a mouse or touch.
+// Arrow-key nudge for the focused handle (1 point; Shift = 5 points).
 function onColorScaleKeyDown(which) {
     return function (evt) {
         const step = evt.shiftKey ? 5 : 1;
@@ -1059,21 +1320,10 @@ function onColorScaleKeyDown(which) {
         else if (evt.key === 'ArrowRight' || evt.key === 'ArrowUp') delta = step;
         else return;
         evt.preventDefault();
-
-        const tauEl = document.getElementById('certTau');
-        const redEl = document.getElementById('colorRedTo');
-        const tau = tauEl ? Number(tauEl.value) : 90;
-        const red = redEl ? Number(redEl.value) : 40;
-
         if (which === 'red') {
-            const next = clampPct(red + delta, 0, tau - COLOR_SCALE_MIN_GAP);
-            if (redEl) redEl.value = String(next);
-            setColorScaleUI(next, tau);
-            applyColorBoundary();
+            moveDecoBoundary(readDecoBoundaryPct() + delta);
         } else {
-            const next = clampPct(tau + delta, Math.max(1, red + COLOR_SCALE_MIN_GAP), 100);
-            if (tauEl) tauEl.value = String(next);
-            setColorScaleUI(red, next);
+            moveCertBoundary(readCertBoundaryPct() + delta);
             applyCertificate();
         }
     };
@@ -1098,6 +1348,8 @@ function initColorScale() {
 
     handleRed.addEventListener('keydown', onColorScaleKeyDown('red'));
     handleGreen.addEventListener('keydown', onColorScaleKeyDown('green'));
+    const decoEl = document.getElementById('colorRedTo');
+    if (decoEl) decoEl.addEventListener('input', () => { decoEl.dataset.userSet = '1'; });
 
     syncColorScaleFromInputs();
 }
@@ -1131,6 +1383,11 @@ function updateDashboard(payload) {
         ? cert.min_samples : 1;
     activePrevalence = (payload.centers && payload.centers.prevalence !== undefined)
         ? payload.centers.prevalence : 0.0;
+    // Anchor the scale on the value's base rate as the server measured it
+    // (the indicator's prevalence, complemented under absence).
+    if (payload.centers && payload.centers.prevalence !== undefined && (currentBranchesResponse && currentBranchesResponse.criterion !== null)) {
+        setScaleAnchor(activeDirection === 'absence' ? 1 - activePrevalence : activePrevalence);
+    }
     if (currentBranchesResponse && currentBranchesResponse.direction
         && currentBranchesResponse.direction !== activeDirection) {
         // A response computed under the other direction (e.g. loaded from a
@@ -1217,13 +1474,10 @@ function renderDimensionButtons(payload) {
 function updateHUDForDimension(d) {
     if (!currentPayload || !currentPayload.metrics) return;
 
-    // HUD strip intentionally shows only Coverage and Centres (trimmed from
-    // 7 chips on user request: Purity, MI raw/E₀, U_adj, the raw p-value
-    // chip and the "Viewing" dimensionality label were judged clutter for
-    // this always-visible strip). renderBranchSelector's per-branch cards
-    // went through the same cleanup in the same pass, so MI/U_adj/p are no
-    // longer shown there either -- there is no remaining place in this UI
-    // that surfaces them. Which `d` Coverage/Centres refer to is no longer
+    // HUD strip intentionally shows only Coverage and Centres (plus the
+    // certified-free mass under absence); purity and the raw p-value were
+    // judged clutter for this always-visible strip, and the per-branch
+    // cards follow the same rule. Which `d` Coverage/Centres refer to is no longer
     // stated in text next to them; it is still visible from
     // dimButtonsGroup's active-button state, just not textually paired
     // with the values anymore — a deliberate trade the user accepted.
@@ -2044,10 +2298,15 @@ function onAnalysisLoadedForLandscape(data) {
     if (key !== landscapeState.key) {
         landscapeState = { key, bins: null, dSelection: null, cell: null, cellData: null };
     }
+    const ck = curvesKey();
+    if (ck !== curvesState.key) {
+        curvesState = { key: ck, data: null, point: null, pointData: null };
+    }
     if (data && data.schema && data.schema.selected_from_landscape) {
         setViewMode('lattice');
     } else if (viewMode === 'landscape') {
         refreshLandscape();
+        refreshTauCurves();
     }
 }
 
@@ -2062,8 +2321,17 @@ function setViewMode(mode) {
     if (plot) plot.style.display = viewMode === 'landscape' ? 'none' : '';
     if (area) area.style.display = viewMode === 'landscape' ? 'flex' : 'none';
     if (slices && viewMode === 'landscape') slices.style.display = 'none';
+    // Display Settings: the scan rows and the contour panel belong to the
+    // lattice; the landscape shows the tau-curves in their place.
+    const scanRows = document.getElementById('scanOnlyRows');
+    const contour = document.getElementById('contourPanel');
+    const curvesPanel = document.getElementById('tauCurvePanel');
+    if (scanRows) scanRows.style.display = viewMode === 'landscape' ? 'none' : 'contents';
+    if (contour) contour.style.display = viewMode === 'landscape' ? 'none' : '';
+    if (curvesPanel) curvesPanel.style.display = viewMode === 'landscape' ? '' : 'none';
     if (viewMode === 'landscape') {
         refreshLandscape();
+        refreshTauCurves();
     } else if (currentPayload) {
         currentRenderedDim = null;
         renderPlot(currentPayload);
@@ -2090,7 +2358,7 @@ async function refreshLandscape() {
     if (!p) return;
     const d = landscapeDimRequested();
     if (landscapeState.bins && landscapeState.dSelection === d && landscapeState.key === JSON.stringify(p)) {
-        renderLandscape();
+        rerenderLandscapeFromCache();
         return;
     }
     try {
@@ -2105,11 +2373,19 @@ async function refreshLandscape() {
         landscapeState.dSelection = d;
         renderLandscape();
         if (landscapeState.cell) openLandscapeCell(landscapeState.cell.ix, landscapeState.cell.iy, 0);
+        return;
     } catch (err) {
         showAnalysisError('Landscape request failed: ' + err.message);
+        return;
     }
 }
 
+// Cached bins: redraw, and redraw the open cell's list so the "current"
+// highlight follows whichever schema is on the lattice now.
+function rerenderLandscapeFromCache() {
+    renderLandscape();
+    if (landscapeState.cellData) renderLandscapeCell();
+}
 // Category index of a fraction in (0, 1] under (0,1/n], ..., ((n-1)/n, 1]:
 // the same rule as vsf.avr.Landscape.bin_index, so the winner marker lands
 // in the cell the server counted it in.
@@ -2190,11 +2466,12 @@ function renderLandscape() {
         && (bins.d === null || bins.d === undefined || Number(bins.d) === Number(currentPayload.metrics.d))) {
         const xFrac = bins.x === 'mass' ? cc.mass : cc.coverage;
         const wx = landscapeBinIndex(xFrac, n), wy = landscapeBinIndex(cc.n_centers / bins.k_max, n);
+        const opened = !!(currentBranchesResponse && currentBranchesResponse.schema);
         traces.push({
             type: 'scatter', mode: 'markers', x: [wx], y: [wy],
-            marker: { symbol: 'star', size: 16, color: '#facc15', line: { width: 1, color: '#0f172a' } },
-            hovertext: [`search winner (${currentPayload.metrics.d}D): ${(currentPayload.selected_features || []).join(' + ')}<br>${bins.x} ${(xFrac * 100).toFixed(1)}% · ${cc.n_centers} centres`],
-            hoverinfo: 'text', name: 'winner',
+            marker: { symbol: opened ? 'diamond' : 'star', size: 16, color: '#facc15', line: { width: 1, color: '#0f172a' } },
+            hovertext: [`${opened ? 'opened schema' : 'search winner'} (${currentPayload.metrics.d}D): ${(currentPayload.selected_features || []).join(' + ')}<br>${bins.x} ${(xFrac * 100).toFixed(1)}% · ${cc.n_centers} centres (search partition)`],
+            hoverinfo: 'text', name: opened ? 'opened' : 'winner',
         });
     }
     if (landscapeState.cell) {
@@ -2304,5 +2581,235 @@ function renderLandscapeCell() {
 
 async function openSchemaFromLandscape(features) {
     if (lastTargetCol === null) return;
+    await runAnalysis(lastTargetCol, lastCriterion, features.slice());
+}
+
+// ---------------------------------------------------------------------------
+// Tau-curves: the landscape's envelope over the purity floor (Section 4.9)
+// ---------------------------------------------------------------------------
+// One line per dimensionality d: at every whole-percent purity floor from
+// the base rate of the searched indicator to 100 %, the best coverage
+// (absence: mass certified free) any d-axis schema reaches, with that
+// schema and its centre count in the hover. Computed once per target,
+// criterion, direction, rule, alpha and min_samples - NOT per tau, the
+// curve is the dependence on tau; the current certified boundary is drawn
+// as a vertical cursor. Clicking a point lists the schemas of that d whose
+// x-fraction at that floor lies in the point's ten-percent category (the
+// landscape at that floor, `Landscape.by_x_category`); "open" moves the
+// boundary to that floor and renders the schema.
+let curvesState = {
+    key: null,          // JSON of the parameters the curves belong to (no tau)
+    data: null,         // /api/landscape/curves response
+    point: null,        // {d, ti, ix} of the clicked point
+    pointData: null,    // /api/landscape/at response
+};
+const TAU_CURVE_COLORS = { 1: '#94a3b8', 2: '#38bdf8', 3: '#a78bfa', 4: '#f472b6' };
+
+function curvesKey() {
+    const p = landscapeParams();
+    if (!p) return null;
+    const q = Object.assign({}, p);
+    delete q.tau;
+    return JSON.stringify(q);
+}
+
+async function refreshTauCurves() {
+    const p = landscapeParams();
+    if (!p) return;
+    const key = curvesKey();
+    if (curvesState.data && curvesState.key === key) {
+        renderTauCurves();
+        if (curvesState.pointData) renderTauPoint();
+        return;
+    }
+    const note = document.getElementById('tauCurveNote');
+    if (note) note.textContent = 'Computing the curves…';
+    try {
+        const res = await fetch('/api/landscape/curves', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(p),
+        });
+        const data = await res.json();
+        if (!res.ok) { showAnalysisError('Tau-curves: ' + (data.error || res.status)); return; }
+        curvesState = { key, data, point: null, pointData: null };
+        closeTauPoint();
+        renderTauCurves();
+    } catch (err) {
+        showAnalysisError('Tau-curves request failed: ' + err.message);
+    }
+}
+
+function tauCurveXLabel(data) {
+    return data.direction === 'absence' ? 'purity floor: share of rows without the value, %' : 'purity floor: share of the value, %';
+}
+
+function tauCurveYLabel(data) {
+    return data.x === 'mass' ? 'mass certified free of the value, %' : 'coverage of the value, %';
+}
+
+function renderTauCurves() {
+    const data = curvesState.data;
+    const container = document.getElementById('tau-curve-plot');
+    const note = document.getElementById('tauCurveNote');
+    if (!data || !container) return;
+    const taus = data.taus;
+    const traces = [];
+    const dims = Object.keys(data.curves).map(Number).sort((a, b) => a - b);
+    dims.forEach(d => {
+        const c = data.curves[String(d)];
+        const custom = taus.map((t, i) => [
+            c.n_centers[i], c.feature_names[i].join(' + '), (c.mass[i] * 100).toFixed(2),
+            c.n_certifying[i], c.n_family,
+        ]);
+        traces.push({
+            type: 'scatter', mode: 'lines+markers', name: `${d}D`,
+            x: taus.map(t => t * 100), y: c.x.map(v => v * 100),
+            customdata: custom,
+            line: { color: TAU_CURVE_COLORS[d] || '#e2e8f0', width: 1.5 },
+            marker: { size: 4, color: TAU_CURVE_COLORS[d] || '#e2e8f0' },
+            hovertemplate: `<b>${d}D</b> at %{x:.0f}%: ${data.x} %{y:.2f}%<br>`
+                + '%{customdata[1]}<br>%{customdata[0]} centres, mass %{customdata[2]}%<br>'
+                + `%{customdata[3]} of %{customdata[4]} schemas certify a centre<extra></extra>`,
+        });
+    });
+    const shapes = [];
+    const cursor = readCertTau() * 100;
+    shapes.push({
+        type: 'line', xref: 'x', yref: 'paper', x0: cursor, x1: cursor, y0: 0, y1: 1,
+        line: { color: '#f8fafc', width: 1, dash: 'dot' },
+    });
+    if (curvesState.point) {
+        const c = data.curves[String(curvesState.point.d)];
+        const ti = curvesState.point.ti;
+        if (c) {
+            traces.push({
+                type: 'scatter', mode: 'markers', x: [taus[ti] * 100], y: [c.x[ti] * 100],
+                marker: { size: 11, color: 'rgba(0,0,0,0)', line: { color: '#f8fafc', width: 2 } },
+                hoverinfo: 'skip', showlegend: false,
+            });
+        }
+    }
+    const xmin = taus.length ? Math.floor(taus[0] * 100) - 1 : 0;
+    const layout = {
+        paper_bgcolor: 'rgba(0,0,0,0)', plot_bgcolor: 'rgba(15,23,42,0.4)',
+        margin: { l: 42, r: 8, t: 26, b: 44 }, autosize: true,
+        font: { color: '#94a3b8', size: 10 },
+        xaxis: { title: { text: tauCurveXLabel(data), font: { size: 10 } }, range: [xmin, 101], gridcolor: 'rgba(255,255,255,0.06)', zeroline: false },
+        yaxis: { title: { text: tauCurveYLabel(data), font: { size: 10 } }, range: [0, 102], gridcolor: 'rgba(255,255,255,0.06)', zeroline: false },
+        legend: { orientation: 'h', x: 0, y: 1.0, yanchor: 'bottom', font: { size: 9 }, itemwidth: 14, traceorder: 'normal' },
+        shapes, hovermode: 'closest', showlegend: true,
+    };
+    Plotly.react(container, traces, layout, { displayModeBar: false, responsive: true });
+    container.removeAllListeners && container.removeAllListeners('plotly_click');
+    container.on('plotly_click', ev => {
+        const pt = ev.points && ev.points[0];
+        if (!pt || pt.curveNumber >= dims.length) return;
+        openTauPoint(dims[pt.curveNumber], pt.pointNumber, 0);
+    });
+    if (note) {
+        const p0 = (data.anchor * 100).toFixed(1);
+        const nfam = dims.map(d => `${d}D: ${data.curves[String(d)].n_family}`).join(', ');
+        note.textContent = `${data.x === 'mass' ? 'Mass certified free' : 'Coverage'} of the best schema per dimensionality at every whole-percent purity floor above the base rate `
+            + `(${p0}%)${data.rule === 'certified' ? ', certified rule (100% is not certifiable)' : ''}. Schemas scored — ${nfam}. `
+            + 'Dotted line: the current boundary. Click a point for its schemas.';
+    }
+}
+
+async function openTauPoint(d, ti, offset) {
+    const p = landscapeParams();
+    const data = curvesState.data;
+    if (!p || !data) return;
+    const c = data.curves[String(d)];
+    if (!c || ti < 0 || ti >= data.taus.length) return;
+    const tau = data.taus[ti];
+    const ix = landscapeBinIndex(c.x[ti], 10);
+    if (c.x[ti] <= 0) {
+        curvesState.point = { d, ti, ix, tau };
+        curvesState.pointData = { total: 0, offset: 0, limit: 50, schemas: [], empty_reason: 'no schema certifies a centre at this floor' };
+        renderTauPoint();
+        renderTauCurves();
+        return;
+    }
+    try {
+        const res = await fetch('/api/landscape/at', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(Object.assign({}, p, { tau, d, ix, limit: 50, offset })),
+        });
+        const out = await res.json();
+        if (!res.ok) { showAnalysisError('Tau-curve point: ' + (out.error || res.status)); return; }
+        curvesState.point = { d, ti, ix, tau };
+        curvesState.pointData = out;
+        renderTauPoint();
+        renderTauCurves();
+    } catch (err) {
+        showAnalysisError('Tau-curve point request failed: ' + err.message);
+    }
+}
+
+function closeTauPoint() {
+    curvesState.point = null;
+    curvesState.pointData = null;
+    const panel = document.getElementById('tauPointPanel');
+    if (panel) panel.style.display = 'none';
+    if (viewMode === 'landscape' && curvesState.data) renderTauCurves();
+}
+
+function renderTauPoint() {
+    const panel = document.getElementById('tauPointPanel');
+    const list = document.getElementById('tauPointList');
+    const more = document.getElementById('tauPointMore');
+    const title = document.getElementById('tauPointTitle');
+    const pt = curvesState.point, out = curvesState.pointData, data = curvesState.data;
+    if (!panel || !list || !pt || !out || !data) return;
+    panel.style.display = '';
+    const xName = data.x;
+    const tauPct = Math.round(pt.tau * 100);
+    if (title) {
+        title.textContent = out.empty_reason
+            ? `${pt.d}D at ${tauPct}%: ${out.empty_reason}`
+            : `${out.total} ${pt.d}D schema${out.total === 1 ? '' : 's'} with ${xName} in (${pt.ix * 10},${(pt.ix + 1) * 10}]% at a ${tauPct}% floor — highest first`;
+    }
+    list.innerHTML = '';
+    (out.schemas || []).forEach(sc => {
+        const row = document.createElement('div');
+        row.className = 'landscape-row';
+        const xv = xName === 'mass' ? sc.mass : sc.coverage;
+        row.innerHTML = `
+            <span class="axes">${sc.feature_names.join(' + ')}</span>
+            <span class="num">${xName} ${(xv * 100).toFixed(2)}%</span>
+            <span class="num">${sc.n_centers} centre${sc.n_centers === 1 ? '' : 's'}</span>
+            <span class="num">mass ${(sc.mass * 100).toFixed(2)}%</span>
+            <button type="button" class="landscape-open" title="Move the certified boundary to ${tauPct}% and render this schema">open at ${tauPct}%</button>`;
+        row.querySelector('.landscape-open').onclick = () => openSchemaAtTau(sc.features, pt.tau);
+        list.appendChild(row);
+    });
+    if (more) {
+        more.innerHTML = '';
+        if (out.total > 0) {
+            const shown = out.offset + out.schemas.length;
+            more.textContent = `${out.offset + 1}–${shown} of ${out.total}`;
+            if (out.offset > 0) {
+                const b = document.createElement('button'); b.className = 'landscape-open'; b.textContent = '← previous';
+                b.onclick = () => openTauPoint(pt.d, pt.ti, Math.max(0, out.offset - out.limit)); more.appendChild(b);
+            }
+            if (shown < out.total) {
+                const b = document.createElement('button'); b.className = 'landscape-open'; b.textContent = 'next →';
+                b.onclick = () => openTauPoint(pt.d, pt.ti, out.offset + out.limit); more.appendChild(b);
+            }
+        }
+    }
+}
+
+// Opens a schema at a purity floor chosen on the curve: the certified
+// boundary is moved to that floor (the same input applyCertificate reads,
+// so the lattice, HUD and catalog dividers all follow), then the schema is
+// rendered exactly as an "open" from the lattice would render it.
+async function openSchemaAtTau(features, tau) {
+    if (lastTargetCol === null) return;
+    const tauEl = document.getElementById('certTau');
+    if (tauEl) {
+        tauEl.value = String(Math.round(tau * 100));
+        syncColorScaleFromInputs();
+    }
     await runAnalysis(lastTargetCol, lastCriterion, features.slice());
 }

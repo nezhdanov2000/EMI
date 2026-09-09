@@ -653,7 +653,7 @@ main {
         #92572e var(--red-pct, 40%), #92572e var(--tau-pct, 90%),
         #22c55e var(--tau-pct, 90%), #22c55e 100%);
     border: 1px solid rgba(255, 255, 255, 0.12);
-    margin: 20px 8px 6px 8px;
+    margin: 20px 8px 18px 8px; /* room below for the p0 anchor label */
 }
 
 .color-scale-handle {
@@ -916,11 +916,24 @@ select:focus {
 /* Under absence the certified zone is red and the low zone (rows rich in
    the value, uncertified either way) is slate grey -- never green, which
    would read as a presence certificate that was not made. */
+/* Under absence the axis is the share of rows WITHOUT the value: grey
+   below the decorative boundary (the value is present at least as often
+   as overall), brown up to the certified boundary, red beyond it
+   (certified free of the value). Same layout as presence, other colours. */
 body.absence-mode .color-scale-track {
     background: linear-gradient(90deg,
         #64748b 0%, #64748b var(--red-pct, 40%),
         #92572e var(--red-pct, 40%), #92572e var(--tau-pct, 90%),
         #ef4444 var(--tau-pct, 90%), #ef4444 100%);
+}
+.scale-axis-caption { font-size: 0.66rem; color: var(--text-dim); margin: -10px 8px 8px 8px; }
+.anchor-tick {
+    position: absolute; top: -6px; width: 2px; height: 22px; margin-left: -1px;
+    background: #f8fafc; z-index: 1; pointer-events: auto; opacity: 0.9;
+}
+.anchor-label {
+    position: absolute; top: 20px; left: 50%; transform: translateX(-50%);
+    font-size: 0.62rem; color: #f8fafc; white-space: nowrap; letter-spacing: 0.02em;
 }
 body.absence-mode .color-scale-handle--green { --handle-color: #ef4444; }
 body.absence-mode .color-scale-handle--red { --handle-color: #64748b; }
@@ -975,3 +988,28 @@ body.absence-mode .color-scale-handle--red { --handle-color: #64748b; }
 }
 .landscape-cell-more { margin-top: 6px; color: var(--text-dim); }
 .landscape-cell-more button { margin-left: 8px; }
+
+
+/* ---- Catalog: value share donuts and the tau divider ------------------ */
+.crit-share { display: inline-flex; align-items: center; gap: 5px; margin-left: 10px; color: var(--text-dim); font-size: 0.72rem; font-variant-numeric: tabular-nums; }
+.share-donut { flex: none; }
+.crit-item.above-tau .crit-label { color: var(--text-dim); }
+.tau-divider {
+    display: flex; align-items: center; gap: 8px; margin: 2px 0.85rem; font-size: 0.66rem;
+    color: #ef4444; letter-spacing: 0.02em;
+}
+.tau-divider::before, .tau-divider::after { content: ""; flex: 1; border-top: 1px dashed rgba(239, 68, 68, 0.6); }
+
+
+/* ---- Tau-curves in the sidebar (Landscape view mode) ------------------ */
+.tau-curve-panel {
+    display: flex; flex-direction: column; gap: 8px; font-size: 0.78rem;
+    background: rgba(15, 23, 42, 0.4); padding: 10px; border-radius: 12px;
+    border: 1px solid var(--border-color);
+}
+.tau-curve-note { color: var(--text-dim); line-height: 1.4; min-height: 1em; }
+#tau-curve-plot { width: 100%; height: 300px; }
+.tau-point-panel { border-top: 1px solid var(--border-color); padding-top: 8px; max-height: 320px; overflow: auto; }
+.tau-point-panel .landscape-row { grid-template-columns: 1fr auto; row-gap: 2px; }
+.tau-point-panel .landscape-row .axes { grid-column: 1 / span 2; }
+.tau-point-panel .landscape-row .num { font-size: 0.72rem; }

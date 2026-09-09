@@ -69,12 +69,27 @@ def catalog_from_dataframe(df, translations: Optional[Translations] = None) -> L
     function in this module.
     """
     catalog = []
+    n_rows = int(len(df))
     for col in df.columns:
         label = humanize_col(col, translations)
-        unique_vals = df[col].dropna().unique().tolist()
+        # Values ordered by how much of the column they occupy (ties by
+        # string, for a stable order), each with its share of ALL rows:
+        # the number the search direction and the admissible tau depend
+        # on (`vsf.avr.base_rate_reason`), shown in the catalog before a
+        # value is picked rather than after. Shares are of `n_rows`, so a
+        # column with missing values sums to less than 1.
+        counts = df[col].dropna().astype(str).value_counts()
+        ordered = sorted(
+            counts.items(), key=lambda kv: (-int(kv[1]), str(kv[0]))
+        )
         criteria = [
-            {"id": str(val), "label": humanize_val(col, str(val), translations)}
-            for val in unique_vals
+            {
+                "id": val,
+                "label": humanize_val(col, val, translations),
+                "count": int(cnt),
+                "share": (int(cnt) / n_rows) if n_rows else 0.0,
+            }
+            for val, cnt in ordered
         ]
         catalog.append({"id": col, "label": label, "criteria": criteria})
     return catalog
@@ -811,14 +826,10 @@ def prepare_visualization_payload(
         # `features` takes, so a schema can be re-opened or matched in the
         # landscape's cell listings.
         "selected_feature_indices": [int(j) for j in branch.selected_features],
-        # No scenario/vir/l_target/l_feat/xai_message/history. `d` is this
-        # branch's dimensionality, not a globally "optimal" d* chosen by the
-        # algorithm — the caller (or user) picked which branch to render.
-        # v2.3 dropped mi/mi_null/mi_adj/u_adj/h_target/p_value(_familywise)/
-        # significant along with `BranchResult`'s mutual-information fields
-        # (see `vsf.avr`'s module docstring) — `d` is what remains of this
-        # dict; `search_centers`/`centers` below carry the coverage-search
-        # statistics the branch is actually ranked and displayed by.
+        # `d` is this branch's dimensionality, not a globally "optimal" d*
+        # chosen by the algorithm — the caller (or user) picked which branch
+        # to render. `search_centers`/`centers` below carry the statistics
+        # the branch is ranked and displayed by.
         #
         # The frontend's WITHIN-branch dimensionality collapse (Section 5.6,
         # case 2) must NOT read this dict for a view dimensionality other

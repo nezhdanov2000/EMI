@@ -15,8 +15,8 @@ Covers the properties this module is actually supposed to guarantee now:
      named actually changes what the search reports.
   4. Determinism: repeated calls on identical input return identical
      output — no randomness anywhere in the algorithm's own logic.
-  5. The Grid Capacity Limit coarsening path (`check_grid_capacity` /
-     `adaptively_coarsen_bins`) is genuinely invoked for a combination
+  5. The Grid Capacity coarsening path (occupancy check in
+     `_CandidateFactory`, `coarsen_column`) is genuinely invoked for a combination
      whose joint table would be too sparse.
   6. Edge cases: fewer features than max_d, a single feature, zero
      features, out-of-range max_d, negative permutation counts.
@@ -245,9 +245,8 @@ def test_determinism_holds_on_real_categorical_data():
 
 def test_grid_capacity_coarsening_invoked_for_sparse_combination():
     # A single categorical feature with 25 distinct levels against n=200
-    # samples: prod(k) = 25 > n // 10 = 20 -> check_grid_capacity must
-    # report the limit exceeded, and adaptively_coarsen_bins must actually
-    # be invoked to coarsen it before scoring.
+    # samples: 25 occupied cells > n // 10 = 20 -> the capacity rule must
+    # merge levels before scoring.
     rng = np.random.default_rng(0)
     n = 200
     high_card = np.array([f"cat_{i % 25}" for i in rng.permutation(n)])
@@ -256,17 +255,16 @@ def test_grid_capacity_coarsening_invoked_for_sparse_combination():
     X = np.column_stack([high_card, other])
 
     # The search coarsens per column through `vsf.pmd.coarsen_column` (once
-    # per (column, dimensionality), cached in `_CandidateFactory`) rather
-    # than per subset through `adaptively_coarsen_bins`; the partition is the
-    # same, see `test_candidate_factory_matches_per_subset_coarsening`.
+    # per (column, level count), cached in `_CandidateFactory`) rather than
+    # per subset through `adaptively_coarsen_bins`; the partition is the
+    # same, see `test_candidate_factory_matches_per_subset_coarsening`. The
+    # capacity check itself is the occupancy count of the joint code
+    # (`_CandidateFactory.capacity`), not a separate call.
     with mock.patch.object(
         avr_mod, "coarsen_column", wraps=avr_mod.coarsen_column
-    ) as spy_coarsen, mock.patch.object(
-        avr_mod, "check_grid_capacity", wraps=avr_mod.check_grid_capacity
-    ) as spy_check:
+    ) as spy_coarsen:
         branches = discover_branches(X, Z, max_d=1, cv_repeats=0)
 
-    assert spy_check.called, "check_grid_capacity must be called during discovery"
     assert spy_coarsen.called, (
         "coarsen_column must be invoked for the 25-level combination "
         "whose joint table exceeds the N/10 capacity limit"

@@ -45,11 +45,12 @@ from vsf.pmd import adaptively_coarsen_bins, check_grid_capacity, discretize_dat
 # Reference forms
 # ---------------------------------------------------------------------------
 
-def _reference_subset_codes(X_discrete, bin_counts, n_samples, combo):
-    """The pre-2026-09 `vsf.avr._subset_codes`, verbatim."""
+def _reference_subset_codes(X_discrete, bin_counts, n_samples, combo, ordered=None):
+    """The straightforward form of `vsf.avr._subset_codes`: occupancy check, then merge."""
     X_S = X_discrete[:, combo]
-    if not check_grid_capacity([bin_counts[j] for j in combo], n_samples):
-        X_S = adaptively_coarsen_bins(X_S, n_samples)
+    if not check_grid_capacity(X_S, n_samples):
+        flags = None if ordered is None else [ordered[j] for j in combo]
+        X_S = adaptively_coarsen_bins(X_S, n_samples, ordered=flags)
     return cell_codes(X_S)
 
 
@@ -167,7 +168,8 @@ def test_candidate_factory_matches_per_subset_coarsening(seed):
     ]
     assert seen == expected_order
     # The dataset must actually have exercised the coarsening branch.
-    assert any(factory._needs_coarsening(c) for c in expected_order)
+    from vsf.pmd import occupied_cells
+    assert any(occupied_cells(X_discrete[:, list(c)]) > factory.capacity for c in expected_order)
 
 
 # ---------------------------------------------------------------------------
@@ -385,3 +387,25 @@ def test_vectorised_lattice_offsets_equal_scalar_loop(n_cell):
         np.round(cz + (k - half) * step, 4),
     ])
     np.testing.assert_array_equal(got, ref)
+
+
+def test_candidate_factory_matches_reference_with_ordered_columns():
+    from vsf.pmd import ordered_columns
+    rng = np.random.default_rng(21)
+    n = 400
+    X = np.empty((n, 4), dtype=object)
+    X[:, 0] = rng.normal(size=n)                      # continuous: 400 levels, ordered
+    X[:, 1] = rng.integers(0, 40, size=n)              # integer, ordered
+    X[:, 2] = rng.choice(["p", "q", "r", "s", "t"], size=n)
+    X[:, 3] = rng.choice(["x", "y"], size=n)
+    ordered = ordered_columns(X)
+    assert ordered == [True, True, False, False]
+    X_discrete, bin_counts = discretize_dataset(X)
+    factory = _CandidateFactory(X_discrete, bin_counts, n, ordered=ordered)
+    for combo, codes, n_cells in factory.iter_candidates(4):
+        ref_codes, ref_cells = _reference_subset_codes(X_discrete, bin_counts, n, combo, ordered)
+        assert n_cells == ref_cells, combo
+        np.testing.assert_array_equal(codes, ref_codes, err_msg=str(combo))
+        assert n_cells <= factory.capacity or all(
+            len(np.unique(X_discrete[:, j])) == 1 for j in combo
+        )

@@ -283,8 +283,11 @@
                     </div>
                     <div id="baseRateNote" style="font-size: 0.72rem; color: var(--text-dim); min-height: 1em; margin: 2px 0 4px 0;"></div>
                     <div class="color-scale"
-                        title="Drag to set the colour boundaries. The upper boundary (tau) defines a certified cell and re-runs the analysis on release. The lower boundary is cosmetic and re-colours instantly.">
+                        title="Presence: shares of the chosen value, tick at its base rate p₀. Absence: shares of rows WITHOUT the value, tick at 1−p₀. The certified boundary starts just above the tick, moves only right, and re-runs the analysis on release. The other boundary is cosmetic, defaults to the tick and re-colours instantly.">
                         <div class="color-scale-track" id="colorScaleTrack">
+                            <!-- The value's base rate p0: a fixed tick the certified
+                                 boundary cannot cross (anchored scale, app.js). -->
+                            <div class="anchor-tick" id="anchorTick" style="display: none;"><span class="anchor-label">p₀</span></div>
                             <div class="color-scale-handle color-scale-handle--red" id="handleRed" role="slider"
                                 aria-label="Red boundary (cosmetic)" aria-valuemin="0" aria-valuemax="99"
                                 aria-valuenow="40" tabindex="0">
@@ -298,13 +301,14 @@
                         </div>
                         <div class="color-scale-ticks"><span>0%</span><span>50%</span><span>100%</span></div>
                     </div>
+                    <div class="scale-axis-caption" id="scaleAxisCaption">axis: share of the chosen value in a cell</div>
 
                     <div style="display: flex; justify-content: space-between; align-items: center;">
                         <label id="labelTau" style="color: var(--green);"
                             title="A cell is a discrete centre — and is drawn green — when its share of the target value reaches this. Coverage is computed from exactly these cells, so moving this re-runs the analysis. 100% is allowed and means 'only cells that are entirely the target value'.">🟢 Green from:</label>
                         <div style="display: flex; align-items: center; gap: 4px;">
-                            <input type="number" id="certTau" min="1" max="100" step="1" value="90"
-                                oninput="syncColorScaleFromInputs()" onchange="applyCertificate()"
+                            <input type="number" id="certTau" min="0" max="100" step="1" value="90"
+                                onchange="syncColorScaleFromInputs(); applyCertificate()"
                                 style="background: rgba(15, 23, 42, 0.8); color: white; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 2px 6px; width: 55px;">
                             <span style="color: var(--text-muted);">%</span>
                         </div>
@@ -313,14 +317,18 @@
                         <label id="labelRedTo" style="color: #ef4444;"
                             title="Purely a colour boundary: cells below it are drawn red; between it and the green boundary, brown. Changing it re-colours immediately and does not affect any reported number.">🔴 Red up to:</label>
                         <div style="display: flex; align-items: center; gap: 4px;">
-                            <input type="number" id="colorRedTo" min="0" max="99" step="1" value="40"
-                                oninput="applyColorBoundary(); syncColorScaleFromInputs();"
+                            <input type="number" id="colorRedTo" min="0" max="100" step="1" value="40"
+                                onchange="applyColorBoundary(); syncColorScaleFromInputs();"
                                 style="background: rgba(15, 23, 42, 0.8); color: white; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 2px 6px; width: 55px;">
                             <span style="color: var(--text-muted);">%</span>
                         </div>
                     </div>
                     <div id="certSummary" style="font-size: 0.72rem; color: var(--text-dim); line-height: 1.45;"></div>
 
+                    <!-- The scan's own rows: hidden in the Landscape view mode,
+                         where the sidebar shows the tau-curves instead
+                         (setViewMode in app.js). -->
+                    <div id="scanOnlyRows" style="display: contents;">
                     <div style="display: flex; justify-content: space-between; align-items: center;">
                         <label style="color: var(--text-muted);"
                             title="Minimum share of the criterion's own target-value samples that must fall inside certified centres (>=, so 100% is achievable). This is a coverage, not an entropy share: 40% means two fifths of the value's occurrences are localised in cells certified at the current tau and alpha. Empty = no filter — the scan cannot be started until a value is entered; to go back to an unfiltered catalog after a scan has run, use “Show All Columns/Values” below rather than clearing this field.">Coverage threshold:</label>
@@ -353,11 +361,40 @@
                     <div id="scanStatusMsg" class="scan-status-msg" style="display: none;"></div>
                     <button id="btnClearScan" class="filter-btn add-btn" style="width: 100%; padding: 6px; margin-top: 4px; display: none;"
                         onclick="clearDatasetScan()">Show All Columns/Values</button>
+                    </div><!-- /scanOnlyRows -->
+                </div>
+            </div>
+
+            <!-- Tau-curves (Project_Master_Document.md Section 4.9): shown in
+                 the Landscape view mode in place of the scan rows and the
+                 contour panel. X = the purity floor, every whole percent from
+                 the base rate of the searched indicator to 100 %; Y = the best
+                 coverage (absence: mass certified free) any schema of that
+                 dimensionality reaches at that floor -- one line per d, the
+                 envelope of the landscape over tau. The vertical cursor is
+                 the current certified boundary. Clicking a point lists the
+                 schemas of that d whose coverage at that floor falls in the
+                 point's ten-percent category; "open" renders one at that
+                 floor (the boundary is moved to it). -->
+            <div id="tauCurvePanel" style="display: none;">
+                <div style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 8px;"
+                    title="For each dimensionality d, the best coverage any d-axis schema reaches as the certified boundary is raised, one percent at a time, from the base rate to 100%. Where a line for a larger d stops lying above the line for a smaller d, the extra axis has stopped paying for itself. The vertical line is the current boundary. Click a point to list the schemas behind it.">📈 Coverage vs. purity floor</div>
+                <div class="tau-curve-panel">
+                    <div id="tauCurveNote" class="tau-curve-note">—</div>
+                    <div id="tau-curve-plot"></div>
+                    <div id="tauPointPanel" class="tau-point-panel" style="display: none;">
+                        <div class="landscape-cell-head">
+                            <span id="tauPointTitle">—</span>
+                            <button type="button" class="landscape-close" onclick="closeTauPoint()" title="Close">✕</button>
+                        </div>
+                        <div id="tauPointList" class="landscape-cell-list"></div>
+                        <div id="tauPointMore" class="landscape-cell-more"></div>
+                    </div>
                 </div>
             </div>
 
             <!-- Stroke Settings -->
-            <div>
+            <div id="contourPanel">
                 <div style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 8px;">✨ Purity Contour (Focus)</div>
                 <div
                     style="display: flex; flex-direction: column; gap: 10px; font-size: 0.85rem; background: rgba(15, 23, 42, 0.4); padding: 12px; border-radius: 12px; border: 1px solid var(--border-color);">

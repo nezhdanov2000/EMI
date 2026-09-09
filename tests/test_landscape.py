@@ -18,7 +18,10 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from vsf.avr import Landscape, _subset_codes, compute_landscape, discover_branches, report_schema
+from vsf.avr import (
+    Landscape, _subset_codes, compute_landscape, compute_tau_curves, discover_branches,
+    report_schema, tau_grid,
+)
 from vsf.centers import CenterSpec, coverage_score
 from vsf.pmd import discretize_dataset
 from vsf.server import _build_server
@@ -244,5 +247,156 @@ def test_landscape_endpoints_and_opening_a_schema():
         assert srv.post("/api/landscape/cell", dict(base, ix=10, iy=0))[0] == 400
         assert srv.post("/api/landscape", dict(base, d=9))[0] == 400
         assert srv.post("/api/landscape", dict(base, tau=0.01))[0] == 400  # below base rate
+    finally:
+        srv.close()
+
+
+# ---------------------------------------------------------------------------
+# Tau-curves: the landscape's envelope over the purity floor
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("anchor, step, first, last, count", [
+    (0.0, 1.0, 0.01, 1.0, 100),
+    (0.383, 1.0, 0.39, 1.0, 62),
+    (0.39, 1.0, 0.40, 1.0, 61),      # a grid point IS the anchor: strictly above it
+    (0.5, 5.0, 0.55, 1.0, 10),
+    (1.0, 1.0, None, None, 0),
+])
+def test_tau_grid_is_whole_steps_strictly_above_the_anchor(anchor, step, first, last, count):
+    g = tau_grid(anchor, step)
+    assert g.shape == (count,)
+    if count:
+        assert g[0] == pytest.approx(first) and g[-1] == pytest.approx(last)
+        assert np.allclose(np.diff(g), step / 100.0)
+        assert (g > anchor).all()
+
+
+@pytest.mark.parametrize("bad", [(-0.1, 1.0), (1.1, 1.0), (0.5, 0.0), (0.5, 60.0)])
+def test_tau_grid_rejects_bad_arguments(bad):
+    with pytest.raises(ValueError):
+        tau_grid(*bad)
+
+
+@pytest.mark.parametrize("rule", ["purity", "certified"])
+@pytest.mark.parametrize("direction", ["presence", "absence"])
+def test_tau_curves_equal_the_search_at_every_grid_point(rule, direction):
+    """
+    At each grid tau and each d the curve's point is exactly the winner
+    `discover_branches` reports for that d at that tau on the search
+    partition (coverage, centres, mass, features) - the curve is the search
+    evaluated on the grid, not an approximation of it.
+    """
+    df = _df(3, n=500)
+    X = df[["a", "b", "c", "d", "e"]].values
+    Z = (df["target"] == "yes").astype(int).values
+    names = ["a", "b", "c", "d", "e"]
+    out = compute_tau_curves(
+        X, Z, names, max_d=4, positive_class=1,
+        center_spec=CenterSpec(tau=0.5, rule=rule, alpha=0.05, min_samples=2),
+        direction=direction, step_pct=5.0,
+    )
+    taus = out["taus"]
+    assert out["x"] == ("mass" if direction == "absence" else "coverage")
+    assert len(taus) >= 5 and all(t > out["anchor"] for t in taus)
+    if rule == "certified":
+        assert taus[-1] < 1.0
+    for ti in [0, len(taus) // 2, len(taus) - 1]:
+        tau = taus[ti]
+        branches = discover_branches(
+            X, Z, names, max_d=4, positive_class=1,
+            center_spec=CenterSpec(tau=tau, rule=rule, alpha=0.05, min_samples=2),
+            direction=direction, random_state=0, n_permutations_centers=0,
+            n_permutations_familywise_coverage=0, cv_splits=2, cv_repeats=1,
+        )
+        for d, br in branches.items():
+            c = out["curves"][str(d)]
+            sc = br.centers  # the search partition's statistics (vis derives search_centers from it)
+            assert c["coverage"][ti] == pytest.approx(sc.coverage)
+            assert c["n_centers"][ti] == sc.n_centers
+            assert c["mass"][ti] == pytest.approx(sc.mass)
+            if sc.n_centers > 0:
+                assert c["features"][ti] == list(br.selected_features)
+                assert c["feature_names"][ti] == br.selected_feature_names
+    for d in range(1, 5):
+        c = out["curves"][str(d)]
+        assert c["n_family"] == len(list(itertools.combinations(range(5), d)))
+        assert all(a >= b for a, b in zip(c["x"], c["x"][1:]))   # envelope non-increasing in tau
+        assert all(0 <= v <= c["n_family"] for v in c["n_certifying"])
+        assert all(k == 0 or f for k, f in zip(c["n_centers"], c["features"]))
+
+
+def test_tau_curves_ignore_the_spec_tau_and_reject_bad_max_d():
+    df = _df(4, n=300)
+    X = df[["a", "b", "c", "d", "e"]].values
+    Z = (df["target"] == "yes").astype(int).values
+    a = compute_tau_curves(X, Z, max_d=2, positive_class=1, center_spec=CenterSpec(tau=0.6), step_pct=10.0)
+    b = compute_tau_curves(X, Z, max_d=2, positive_class=1, center_spec=CenterSpec(tau=0.95), step_pct=10.0)
+    assert a == b
+    with pytest.raises(ValueError):
+        compute_tau_curves(X, Z, max_d=0, positive_class=1)
+
+
+def test_by_x_category_lists_the_schemas_at_a_coverage_category():
+    df = _df(5)
+    X = df[["a", "b", "c", "d", "e"]].values
+    Z = (df["target"] == "yes").astype(int).values
+    spec = CenterSpec(tau=0.8)
+    ls = compute_landscape(X, Z, ["a", "b", "c", "d", "e"], max_d=4, positive_class=1, center_spec=spec)
+    ref, n_pos = _reference_records(df, spec)
+    for d in (None, 2, 4):
+        seen = 0
+        for ix in range(10):
+            out = ls.by_x_category(d, ix, limit=1000)
+            seen += out["total"]
+            xs = [s["coverage"] for s in out["schemas"]]
+            assert xs == sorted(xs, reverse=True)
+            for s in out["schemas"]:
+                assert s["n_centers"] > 0
+                assert int(Landscape.bin_index(np.array([s["coverage"]]), 10)[0]) == ix
+                assert d is None or s["d"] == d
+                cov, k, mass = ref[tuple(s["features"])]
+                assert s["coverage"] == pytest.approx(cov) and s["n_centers"] == k
+            # the union over categories is every certifying schema of the family
+        expected = sum(1 for combo, (cov, k, _) in ref.items() if k > 0 and (d is None or len(combo) == d))
+        assert seen == expected
+    page = ls.by_x_category(None, 9, limit=2, offset=1)
+    full = ls.by_x_category(None, 9, limit=1000)
+    assert page["schemas"] == full["schemas"][1:3]
+
+
+def test_tau_curve_endpoints():
+    df = _df(7)
+    srv = _Server(df)
+    base = {"target": "target", "criterion": "yes", "tau": 0.85}
+    try:
+        status, curves = srv.post("/api/landscape/curves", base)
+        assert status == 200, curves
+        assert curves["direction"] == "presence" and curves["rule"] == "purity" and curves["x"] == "coverage"
+        assert curves["step_pct"] == 1.0 and curves["taus"][-1] == pytest.approx(1.0)
+        assert set(curves["curves"]) == {"1", "2", "3", "4"}
+        # tau is not part of the key: another tau is the same cached object
+        status, curves2 = srv.post("/api/landscape/curves", dict(base, tau=0.95))
+        assert status == 200 and curves2["taus"] == curves["taus"] and len(srv.httpd.curves_cache) == 1
+        assert srv.post("/api/landscape/curves", dict(base, min_samples=3))[0] == 200
+        assert len(srv.httpd.curves_cache) == 2
+        # a curve point's click-through: the schemas of d at that tau in the point's category
+        c = curves["curves"]["2"]
+        ti = next(i for i, v in enumerate(c["x"]) if v > 0)
+        tau = curves["taus"][ti]
+        ix = int(Landscape.bin_index(np.array([c["x"][ti]]), 10)[0])
+        status, at = srv.post("/api/landscape/at", dict(base, tau=tau, d=2, ix=ix, limit=1000))
+        assert status == 200, at
+        assert at["tau"] == pytest.approx(tau) and at["d"] == 2 and at["ix"] == ix
+        top = at["schemas"][0]
+        assert top["coverage"] == pytest.approx(c["x"][ti])
+        assert top["features"] == c["features"][ti] and top["n_centers"] == c["n_centers"][ti]
+        assert all(s["d"] == 2 for s in at["schemas"])
+        # the landscape at that tau is what served the listing
+        assert any(k[0] == ("alpha", "0.05") for k in srv.httpd.landscape_cache)
+        assert srv.post("/api/landscape/at", dict(base, tau=tau, ix=ix))[0] == 400        # d required
+        assert srv.post("/api/landscape/at", dict(base, tau=tau, d=2, ix=10))[0] == 400   # bad ix
+        assert srv.post("/api/landscape/curves", dict(base, direction="absence", criterion=None))[0] == 400
+        status, absent = srv.post("/api/landscape/curves", dict(base, direction="absence", tau=0.95))
+        assert status == 200 and absent["x"] == "mass" and absent["anchor"] == pytest.approx(1 - curves["anchor"])
     finally:
         srv.close()

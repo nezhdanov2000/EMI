@@ -66,10 +66,12 @@ from .centers import (
 from .centers import select_dimensionality as _select_dimensionality
 from .metrics import cell_codes, dense_codes_from_flat
 from .pmd import (
-    check_grid_capacity,
     coarsen_column,
     discretize_dataset,
-    max_bins_per_dimension,
+    grid_capacity,
+    level_frequency_order,
+    merge_state,
+    ordered_columns,
 )
 
 # Hard ceiling on branch dimensionality. Matches the display's actual spatial
@@ -235,31 +237,39 @@ def _discretize_target(Z_arr: np.ndarray) -> np.ndarray:
 class _CandidateFactory:
     """
     Single source of truth for how a feature subset becomes a cell partition,
-    shared by the exhaustive search, the per-branch prefix breakdown and the
-    familywise null - all three must score the IDENTICAL partition or their
-    numbers are not comparable.
+    shared by the exhaustive search, the per-branch prefix breakdown, the
+    landscape and the familywise null - all of them must score the IDENTICAL
+    partition or their numbers are not comparable.
 
-    The partition of a subset S is `vsf.metrics.cell_codes(X_S)`, after the
-    Grid Capacity Limit (`vsf.pmd.check_grid_capacity`) and, when it is
-    exceeded, the adaptive coarsening of `vsf.pmd.adaptively_coarsen_bins`.
-    What this class adds is bookkeeping that makes producing that partition
-    cheap enough to do C(M, 1) + ... + C(M, 4) times:
+    The partition of a subset S is the dense joint category code of its
+    columns, after the Grid Capacity rule (Project_Master_Document.md
+    Section 2.3): if the joint partition occupies more than
+    `grid_capacity(N)` cells, levels are merged exactly as
+    `vsf.pmd.adaptively_coarsen_bins` merges them - the widest column loses
+    its rarest kept level into an "other" group, one level at a time, until
+    the occupancy fits. `codes(combo)` returns exactly what
+    `cell_codes(adaptively_coarsen_bins(X[:, combo], N))` returns (pinned in
+    `tests/test_fastpaths.py`).
 
-    * Coarsening is per column and depends only on (column, |S|, N) -
-      `vsf.pmd.max_bins_per_dimension` - so each coarsened column is built
-      once per dimensionality, lazily, instead of once per subset.
-    * The mixed-radix joint code of S is `code(S \\ {j}) * r_j + x_j`, so an
+    What this class adds is the bookkeeping that makes producing that
+    partition cheap enough to do C(M, 1) + ... + C(M, 4) times:
+
+    * the mixed-radix joint code of S is `code(S \\ {j}) * r_j + x_j`, so an
       enumeration that fixes a prefix and varies the last column reuses the
-      prefix's code (`iter_candidates`).
-    * Dense relabelling of the joint code goes through
-      `vsf.metrics.dense_codes_from_flat` (an occupancy count, not a sort).
-
-    None of this changes the partition: `codes(combo)` returns exactly what
-    `cell_codes(adaptively_coarsen_bins(X[:, combo]))` returned before.
+      prefix's code (`iter_candidates`);
+    * dense relabelling goes through `vsf.metrics.dense_codes_from_flat`
+      (an occupancy count, not a sort), and the same count is the capacity
+      check, so a combination that fits costs nothing beyond its own code;
+    * each column's frequency order and each (column, level count)
+      coarsening are computed once and cached.
     """
 
     def __init__(
-        self, X_discrete: np.ndarray, bin_counts: Sequence[int], n_samples: int
+        self,
+        X_discrete: np.ndarray,
+        bin_counts: Sequence[int],
+        n_samples: int,
+        ordered: Optional[Sequence[bool]] = None,
     ) -> None:
         X = np.asarray(X_discrete)
         if X.ndim != 2:
@@ -267,56 +277,45 @@ class _CandidateFactory:
         self.n_samples = int(n_samples)
         self.n_features = int(X.shape[1])
         self.bin_counts = [int(b) for b in bin_counts]
-        self.target_max_cells = max(1, self.n_samples // 10)
+        self.capacity = grid_capacity(self.n_samples)
+        # Which columns carry an order (numeric): merged by adjacency when
+        # coarsened; the rest by frequency (`vsf.pmd.coarsen_column`).
+        self.ordered = [bool(v) for v in ordered] if ordered is not None else [False] * self.n_features
+        if len(self.ordered) != self.n_features:
+            raise ValueError("ordered must have one flag per feature column")
         self._raw = X
         # Shifted int64 columns and their radices, exactly as
         # `vsf.metrics._as_cell_codes` forms the mixed-radix code.
         self._raw_shifted: List[np.ndarray] = []
         self._raw_radix: List[int] = []
-        self._raw_levels: List[int] = []
+        self._orders: List[np.ndarray] = []
+        self._levels: List[int] = []
         for j in range(self.n_features):
             col = X[:, j].astype(np.int64, copy=False)
             lo = int(col.min()) if col.size else 0
             hi = int(col.max()) if col.size else 0
             self._raw_shifted.append(col - lo)
             self._raw_radix.append(hi - lo + 1)
-            self._raw_levels.append(int(np.unique(col).shape[0]))
+            order = level_frequency_order(col) if col.size else np.zeros(0, dtype=np.int64)
+            self._orders.append(order)
+            self._levels.append(int(order.shape[0]))
         self._coarse: Dict[Tuple[int, int], Tuple[np.ndarray, int]] = {}
 
     # -- coarsening ---------------------------------------------------------
-    def _needs_coarsening(self, combo: Tuple[int, ...]) -> bool:
-        """
-        Mirrors `_subset_codes`'s two-stage decision exactly: the capacity
-        check on the discretiser's bin counts, then
-        `adaptively_coarsen_bins`'s own early return when the ACTUAL joint
-        level product already fits.
-        """
-        if check_grid_capacity([self.bin_counts[j] for j in combo], self.n_samples):
-            return False
-        prod_levels = 1
-        for j in combo:
-            prod_levels *= self._raw_levels[j]
-        return prod_levels > self.target_max_cells
-
-    def _coarse_column(self, j: int, d: int) -> Tuple[np.ndarray, int]:
-        key = (j, d)
+    def _coarse_column(self, j: int, k: int) -> Tuple[np.ndarray, int]:
+        """Column j reduced to k levels (`vsf.pmd.coarsen_column`), shifted, with its radix."""
+        key = (j, k)
         hit = self._coarse.get(key)
         if hit is None:
-            k_max = max_bins_per_dimension(d, self.n_samples, self.target_max_cells)
-            col = coarsen_column(self._raw[:, j], k_max).astype(np.int64, copy=False)
+            col = coarsen_column(
+                self._raw[:, j], k, self._orders[j], ordered=self.ordered[j]
+            ).astype(np.int64, copy=False)
             lo = int(col.min()) if col.size else 0
             hi = int(col.max()) if col.size else 0
             hit = (col - lo, hi - lo + 1)
             self._coarse[key] = hit
         return hit
 
-    def _columns(self, combo: Tuple[int, ...]) -> List[Tuple[np.ndarray, int]]:
-        d = len(combo)
-        if self._needs_coarsening(combo):
-            return [self._coarse_column(j, d) for j in combo]
-        return [(self._raw_shifted[j], self._raw_radix[j]) for j in combo]
-
-    # -- partitions ---------------------------------------------------------
     @staticmethod
     def _flatten(columns: Sequence[Tuple[np.ndarray, int]]) -> Tuple[np.ndarray, int]:
         flat, total = None, 1
@@ -326,15 +325,59 @@ class _CandidateFactory:
         assert flat is not None
         return flat, total
 
+    def _dense(self, flat: np.ndarray, total: int) -> Tuple[np.ndarray, int]:
+        if total >= (1 << 62):  # pragma: no cover - >2^62 nominal cells
+            _, codes = np.unique(flat, return_inverse=True)
+            codes = codes.astype(np.int64).ravel()
+            return codes, int(codes.max()) + 1
+        dense = dense_codes_from_flat(flat, total)
+        return dense, int(dense.max()) + 1
+
+    def _coarsened_codes(self, combo: Tuple[int, ...]) -> Tuple[np.ndarray, int]:
+        """
+        The partition of an over-capacity combination: the first state of
+        the greedy merge sequence (`vsf.pmd.merge_state` - widest column
+        first, ties lowest index, one level at a time) whose occupancy fits
+        the capacity, found by bisection over the step count exactly as
+        `vsf.pmd.coarsen_to_capacity` finds it.
+        """
+        k0 = [self._levels[j] for j in combo]
+
+        def build(k: List[int]) -> Tuple[np.ndarray, int]:
+            cols = [
+                self._coarse_column(j, k[i]) if k[i] < k0[i]
+                else (self._raw_shifted[j], self._raw_radix[j])
+                for i, j in enumerate(combo)
+            ]
+            return self._dense(*self._flatten(cols))
+
+        total_steps = sum(max(0, v - 1) for v in k0)
+        last = build(merge_state(k0, total_steps))
+        if last[1] > self.capacity:
+            return last
+        lo, hi = 0, total_steps
+        best = last
+        while hi - lo > 1:
+            mid = (lo + hi) // 2
+            dense, n_cells = build(merge_state(k0, mid))
+            if n_cells <= self.capacity:
+                hi, best = mid, (dense, n_cells)
+            else:
+                lo = mid
+        return best
+
+    # -- partitions ---------------------------------------------------------
     def codes(self, combo: Tuple[int, ...]) -> Tuple[np.ndarray, int]:
         """Dense joint cell codes and cell count for one feature subset."""
         if self.n_samples == 0:
             return np.zeros(0, dtype=np.int64), 0
-        flat, total = self._flatten(self._columns(combo))
-        if total >= (1 << 62):  # pragma: no cover - >2^62 nominal cells
-            return cell_codes(np.column_stack([c for c, _ in self._columns(combo)]))
-        dense = dense_codes_from_flat(flat, total)
-        return dense, int(dense.max()) + 1
+        flat, total = self._flatten(
+            [(self._raw_shifted[j], self._raw_radix[j]) for j in combo]
+        )
+        dense, n_cells = self._dense(flat, total)
+        if n_cells <= self.capacity:
+            return dense, n_cells
+        return self._coarsened_codes(tuple(combo))
 
     def iter_candidates(
         self, max_d: int
@@ -352,34 +395,23 @@ class _CandidateFactory:
             return
         for d in range(1, max_d + 1):
             for prefix in itertools.combinations(range(m), d - 1):
-                raw_prefix: Optional[Tuple[np.ndarray, int]] = None
-                coarse_prefix: Optional[Tuple[np.ndarray, int]] = None
+                base: Optional[Tuple[np.ndarray, int]] = (
+                    self._flatten([(self._raw_shifted[q], self._raw_radix[q]) for q in prefix])
+                    if prefix else None
+                )
                 start = prefix[-1] + 1 if prefix else 0
                 for j in range(start, m):
                     combo = prefix + (j,)
-                    if self._needs_coarsening(combo):
-                        if coarse_prefix is None and prefix:
-                            coarse_prefix = self._flatten(
-                                [self._coarse_column(q, d) for q in prefix]
-                            )
-                        col, radix = self._coarse_column(j, d)
-                        base = coarse_prefix
-                    else:
-                        if raw_prefix is None and prefix:
-                            raw_prefix = self._flatten(
-                                [(self._raw_shifted[q], self._raw_radix[q]) for q in prefix]
-                            )
-                        col, radix = self._raw_shifted[j], self._raw_radix[j]
-                        base = raw_prefix
+                    col, radix = self._raw_shifted[j], self._raw_radix[j]
                     if base is None:
                         flat, total = col, radix
                     else:
                         flat, total = base[0] * radix + col, base[1] * radix
-                    if total >= (1 << 62):  # pragma: no cover
-                        yield (combo,) + self.codes(combo)
-                        continue
-                    dense = dense_codes_from_flat(flat, total)
-                    yield combo, dense, int(dense.max()) + 1
+                    dense, n_cells = self._dense(flat, total)
+                    if n_cells <= self.capacity:
+                        yield combo, dense, n_cells
+                    else:
+                        yield (combo,) + self._coarsened_codes(combo)
 
 
 def _subset_codes(
@@ -387,13 +419,14 @@ def _subset_codes(
     bin_counts: Sequence[int],
     n_samples: int,
     combo: Tuple[int, ...],
+    ordered: Optional[Sequence[bool]] = None,
 ) -> Tuple[np.ndarray, int]:
     """
     Dense joint cell codes for one feature subset, applying the Grid Capacity
-    Limit and adaptive coarsening exactly as the search does. Thin wrapper
-    over `_CandidateFactory.codes` for callers holding no factory.
+    rule exactly as the search does. Thin wrapper over
+    `_CandidateFactory.codes` for callers holding no factory.
     """
-    return _CandidateFactory(X_discrete, bin_counts, n_samples).codes(tuple(combo))
+    return _CandidateFactory(X_discrete, bin_counts, n_samples, ordered=ordered).codes(tuple(combo))
 
 
 def _iter_candidates(
@@ -401,9 +434,10 @@ def _iter_candidates(
     bin_counts: Sequence[int],
     n_samples: int,
     max_d: int,
+    ordered: Optional[Sequence[bool]] = None,
 ) -> Iterator[Tuple[Tuple[int, ...], np.ndarray, int]]:
     """Every (combo, cell codes, n_cells) the exhaustive search will score."""
-    return _CandidateFactory(X_discrete, bin_counts, n_samples).iter_candidates(max_d)
+    return _CandidateFactory(X_discrete, bin_counts, n_samples, ordered=ordered).iter_candidates(max_d)
 
 
 #: The lexicographic ranking key of `vsf.centers.coverage_score`, paired
@@ -533,6 +567,45 @@ class Landscape:
             "counts": counts.tolist(),
             "max_count": int(counts.max()) if counts.size else 0,
             "x": "mass" if self.direction == "absence" else "coverage",
+        }
+
+    def by_x_category(
+        self, d: Optional[int], ix: int, limit: int = 100, offset: int = 0
+    ) -> Dict[str, object]:
+        """
+        The candidates whose x-fraction (coverage, or mass under absence)
+        falls in category `ix` of the ten `bin_index` intervals, at ANY
+        centre count above zero: the schemas "at this coverage" for the
+        tau-curve's click-through. Highest x first, then fewest centres,
+        then lowest mass.
+        """
+        n = self.N_BINS
+        family = self.d == int(d) if d is not None else np.ones(self.d.shape, dtype=bool)
+        idx = np.nonzero(family & (self.n_centers > 0))[0]
+        if idx.size == 0:
+            return {"total": 0, "offset": int(offset), "limit": int(limit), "schemas": []}
+        x = self.x_values()[idx]
+        hit = idx[self.bin_index(x, n) == int(ix)]
+        xs = self.x_values()[hit]
+        mass = self.n_sel[hit] / float(self.n_samples) if self.n_samples else np.zeros(hit.shape)
+        order = np.lexsort((mass, self.n_centers[hit], -xs))
+        hit = hit[order]
+        total = int(hit.shape[0])
+        page = hit[int(offset): int(offset) + int(limit)]
+        return {
+            "total": total, "offset": int(offset), "limit": int(limit),
+            "schemas": [self._schema_dict(i) for i in page.tolist()],
+        }
+
+    def _schema_dict(self, i: int) -> Dict[str, object]:
+        feats = self.features[i]
+        return {
+            "d": int(self.d[i]),
+            "features": [int(j) for j in feats],
+            "feature_names": [self.feature_names[j] for j in feats],
+            "coverage": (self.k_sel[i] / self.n_positive) if self.n_positive else 0.0,
+            "n_centers": int(self.n_centers[i]),
+            "mass": (self.n_sel[i] / self.n_samples) if self.n_samples else 0.0,
         }
 
     def cell(
@@ -989,7 +1062,11 @@ def _prepare_search(
     reason = base_rate_reason(spec, prevalence, direction)
     if reason is not None:
         raise ValueError(reason)
-    return _CandidateFactory(X_discrete, bin_counts, n_samples), z_binary, names
+    return (
+        _CandidateFactory(X_discrete, bin_counts, n_samples, ordered=ordered_columns(X_arr)),
+        z_binary,
+        names,
+    )
 
 
 def compute_landscape(
@@ -1019,6 +1096,183 @@ def compute_landscape(
         landscape=landscape,
     )
     return landscape.freeze()
+
+
+def tau_grid(anchor: float, step_pct: float = 1.0) -> np.ndarray:
+    """
+    The purity floors a tau-curve is evaluated at: every `step_pct` percent
+    from the first grid point strictly above `anchor` (the base rate of the
+    indicator searched) up to and including 100 %. Grid points are exact
+    multiples of the step, so that the curve's x values coincide with the
+    values a user can set on the certificate boundary.
+    """
+    if not (0.0 <= anchor <= 1.0):
+        raise ValueError(f"anchor must be in [0, 1], got {anchor}")
+    if not (0.0 < step_pct <= 50.0):
+        raise ValueError(f"step_pct must be in (0, 50], got {step_pct}")
+    first = int(np.floor(anchor * 100.0 / step_pct)) + 1
+    values = np.arange(first, int(np.floor(100.0 / step_pct)) + 1, dtype=np.float64) * step_pct
+    values = values[values <= 100.0 + 1e-9]
+    return np.round(values / 100.0, 10)
+
+
+def compute_tau_curves(
+    X: np.ndarray,
+    Z: np.ndarray,
+    feature_names: Optional[List[str]] = None,
+    max_d: int = MAX_BRANCH_D,
+    positive_class: Optional[object] = None,
+    center_spec: Optional[CenterSpec] = None,
+    direction: Direction = "presence",
+    step_pct: float = 1.0,
+) -> Dict[str, object]:
+    """
+    The per-dimensionality ENVELOPE of the solution landscape over the
+    purity floor: for every d <= max_d and every tau on `tau_grid`
+    (base rate of the searched indicator up to 100 %, in `step_pct`
+    steps), the best coverage any d-subset reaches at that tau, with the
+    subset that reaches it, its centre count and mass, and how many of the
+    d-subsets certify anything at all. `center_spec.tau` is ignored - the
+    curve IS the dependence on tau; `rule`, `min_samples` and `alpha` are
+    honoured.
+
+    For a fixed partition, coverage(tau) is a right-continuous step function
+    of tau, non-increasing, with steps at the cells' purities: under
+    Rule P a cell of size n >= min_samples is a centre at tau iff
+    k / n >= tau, so sorting the cells by purity once and taking cumulative
+    sums gives the whole curve, and the grid is read off by one
+    `searchsorted` per candidate. Under Rule C the threshold depends on n
+    and tau jointly (`min_successes_to_certify`), so each grid point is a
+    separate selection; the memo in `vsf.centers` keeps that affordable.
+    The per-d envelope is the pointwise maximum over the family, so it is
+    non-increasing in tau as well; where two envelopes cross, the extra
+    axis has stopped paying for itself at that purity floor.
+
+    Ranking at each grid point follows `coverage_score`'s first three
+    components (coverage, fewer centres, less mass) with the first
+    candidate in enumeration order winning exact ties. The Wilson
+    tie-break is not evaluated because it cannot matter: two candidates
+    tied on coverage and mass have the same (k_sel, n_sel), hence the
+    same Wilson bound, so the ranking here is exactly `coverage_score`'s.
+    """
+    if max_d < 1 or max_d > MAX_BRANCH_D:
+        raise ValueError(f"max_d must be in [1, {MAX_BRANCH_D}], got {max_d}")
+    spec = center_spec if center_spec is not None else CenterSpec()
+    # The base-rate invariant is what the grid starts from, not a reason to
+    # refuse: build the search with a floor that is always admissible.
+    prepared = _prepare_search(
+        X, Z, feature_names, positive_class,
+        CenterSpec(tau=1.0 if spec.rule == "purity" else 0.999, alpha=spec.alpha,
+                   rule=spec.rule, min_samples=spec.min_samples, method=spec.method,
+                   multiplicity=spec.multiplicity),
+        direction,
+    )
+    if prepared is None:
+        return {"taus": [], "curves": {}, "anchor": 0.0, "step_pct": step_pct,
+                "x": "mass" if direction == "absence" else "coverage", "n_positive": 0, "n_samples": 0}
+    factory, z_binary, names = prepared
+    n_samples = factory.n_samples
+    n_positive = int(z_binary.sum())
+    anchor = n_positive / n_samples if n_samples else 0.0
+    taus = tau_grid(anchor, step_pct)
+    if spec.rule == "certified":
+        taus = taus[taus < 1.0]  # tau = 1 is not certifiable
+    T = int(taus.shape[0])
+    effective_max_d = min(max_d, factory.n_features)
+    z64 = z_binary.astype(np.int64)
+    use_mass = direction == "absence"
+
+    best_x = {d: np.full(T, -1.0) for d in range(1, effective_max_d + 1)}
+    best_key = {d: [None] * T for d in range(1, effective_max_d + 1)}
+    best_combo = {d: [None] * T for d in range(1, effective_max_d + 1)}
+    best_k = {d: np.zeros(T, dtype=np.int64) for d in range(1, effective_max_d + 1)}
+    best_cov = {d: np.zeros(T) for d in range(1, effective_max_d + 1)}
+    best_mass = {d: np.zeros(T) for d in range(1, effective_max_d + 1)}
+    n_family = {d: 0 for d in range(1, effective_max_d + 1)}
+    n_certifying = {d: np.zeros(T, dtype=np.int64) for d in range(1, effective_max_d + 1)}
+
+    for combo, codes, n_cells in factory.iter_candidates(effective_max_d):
+        d = len(combo)
+        n_family[d] += 1
+        if n_cells == 0 or n_positive == 0:
+            continue
+        table = np.bincount(codes * 2 + z64, minlength=2 * n_cells).reshape(n_cells, 2)
+        n_cell = table.sum(axis=1)
+        k_cell = table[:, 1]
+        eligible = n_cell >= spec.min_samples
+        if spec.rule == "purity":
+            # Sorted-by-purity cumulative sums: the whole curve at once.
+            n_e = n_cell[eligible]
+            k_e = k_cell[eligible]
+            if n_e.size == 0:
+                continue
+            purity = k_e / n_e
+            order = np.argsort(-purity, kind="stable")
+            p_sorted = purity[order]
+            cum_k = np.cumsum(k_e[order])
+            cum_n = np.cumsum(n_e[order])
+            # number of cells with purity >= tau (with the same 1e-9
+            # tolerance `min_successes_to_select` applies to tau * n)
+            count = np.searchsorted(-p_sorted, -(taus - 1e-9), side="right")
+            k_sel = np.where(count > 0, cum_k[np.maximum(count - 1, 0)], 0)
+            n_sel = np.where(count > 0, cum_n[np.maximum(count - 1, 0)], 0)
+            K = count
+        else:
+            occupied = int(np.count_nonzero(n_cell > 0))
+            alpha_eff = spec.effective_alpha(occupied)
+            k_sel = np.zeros(T, dtype=np.int64)
+            n_sel = np.zeros(T, dtype=np.int64)
+            K = np.zeros(T, dtype=np.int64)
+            for ti, tau in enumerate(taus.tolist()):
+                k_min = min_successes_to_select(
+                    n_cell, CenterSpec(tau=float(tau), alpha=spec.alpha, rule="certified",
+                                       min_samples=spec.min_samples, method=spec.method,
+                                       multiplicity=spec.multiplicity),
+                    alpha_eff,
+                )
+                mask = (k_cell >= k_min) & (n_cell > 0)
+                k_sel[ti] = int(k_cell[mask].sum())
+                n_sel[ti] = int(n_cell[mask].sum())
+                K[ti] = int(mask.sum())
+        cov = k_sel / n_positive
+        mass = n_sel / n_samples
+        x = mass if use_mass else cov
+        n_certifying[d] += (K > 0)
+        # lexicographic (x, -K, -mass) improvement, first-wins on ties
+        better = (x > best_x[d]) | ((x == best_x[d]) & (
+            (K < best_k[d]) | ((K == best_k[d]) & (mass < best_mass[d]))
+        ))
+        # A candidate that ties exactly on all three does not replace.
+        idx = np.nonzero(better)[0]
+        if idx.size:
+            best_x[d][idx] = x[idx]
+            best_k[d][idx] = K[idx]
+            best_cov[d][idx] = cov[idx]
+            best_mass[d][idx] = mass[idx]
+            for ti in idx.tolist():
+                best_combo[d][ti] = combo
+
+    curves: Dict[str, Dict[str, object]] = {}
+    for d in range(1, effective_max_d + 1):
+        curves[str(d)] = {
+            "coverage": [float(v) for v in best_cov[d]],
+            "mass": [float(v) for v in best_mass[d]],
+            "x": [float(v) if v >= 0 else 0.0 for v in best_x[d]],
+            "n_centers": [int(v) for v in best_k[d]],
+            "features": [list(c) if c is not None else [] for c in best_combo[d]],
+            "feature_names": [[names[j] for j in c] if c is not None else [] for c in best_combo[d]],
+            "n_certifying": [int(v) for v in n_certifying[d]],
+            "n_family": int(n_family[d]),
+        }
+    return {
+        "taus": [float(v) for v in taus],
+        "anchor": float(anchor),
+        "step_pct": float(step_pct),
+        "x": "mass" if use_mass else "coverage",
+        "n_positive": n_positive,
+        "n_samples": n_samples,
+        "curves": curves,
+    }
 
 
 def report_schema(
@@ -1209,7 +1463,7 @@ def iter_branches_by_value(
 
     X_discrete, bin_counts = discretize_dataset(X_arr)
     effective_max_d = min(max_d, n_features)
-    factory = _CandidateFactory(X_discrete, bin_counts, n_samples)
+    factory = _CandidateFactory(X_discrete, bin_counts, n_samples, ordered=ordered_columns(X_arr))
 
     uniq, z_codes = np.unique(Z_str, return_inverse=True)
     z_codes = z_codes.astype(np.int64).ravel()

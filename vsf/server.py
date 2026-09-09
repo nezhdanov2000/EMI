@@ -102,6 +102,16 @@ a background thread (`_prefetch_sibling_values`, one shared exhaustive search
 via `vsf.avr.iter_branches_by_value`) so the user's next clicks in that
 column are served from the cache. `serve(prefetch=False)` disables the
 prefetch; responses are byte-identical either way.
+
+Solution landscape (Section 4.9): `/api/landscape` (the 10 x 10 count
+lattice of every scored schema at the request's certificate),
+`/api/landscape/cell` (the schemas of one lattice cell, paged),
+`/api/landscape/curves` (the per-d envelope over the purity floor -
+`vsf.avr.compute_tau_curves`; cached per parameters WITHOUT tau, which is
+the abscissa) and `/api/landscape/at` (the schemas of one dimensionality
+at a given floor within one ten-percent coverage category - the
+click-through of a curve point; computes the landscape at that floor).
+`/api/analyze` with `features=[...]` opens one schema (`report_schema`).
 """
 
 from __future__ import annotations
@@ -125,6 +135,7 @@ from .avr import (
     MAX_BRANCH_D,
     discover_branches,
     compute_landscape,
+    compute_tau_curves,
     discover_branches_by_value,
     iter_branches_by_value,
     report_schema,
@@ -165,6 +176,11 @@ _ANALYZE_CACHE_MAX_BYTES = 512 * 1024 * 1024
 #: Solution landscapes kept per server (each holds every scored candidate
 #: of one search: a few MB at M ~ 50).
 _LANDSCAPE_CACHE_MAX_ENTRIES = 8
+#: Tau-curves (`vsf.avr.compute_tau_curves`) kept per server, keyed by the
+#: landscape parameters WITHOUT tau (the curve is the dependence on tau).
+_CURVES_CACHE_MAX_ENTRIES = 8
+#: Grid step of the tau-curves, in percent of purity.
+_CURVES_STEP_PCT = 1.0
 
 # Static asset content-types served from the packaged `vsf.webapp` resources.
 _STATIC_ROUTES: Dict[str, tuple] = {
@@ -235,6 +251,9 @@ class _VSFServer(http.server.ThreadingHTTPServer):
         # cache minus `features`; computed on first request (the ranking
         # pass alone), kept for the lattice and its cell listings.
         self.landscape_cache: "OrderedDict[Tuple[Any, ...], Any]" = OrderedDict()
+        # Tau-curves per (target, criterion, rule, alpha, min_samples,
+        # direction) - the same analyze key with tau removed.
+        self.curves_cache: "OrderedDict[Tuple[Any, ...], Dict[str, Any]]" = OrderedDict()
         # Requests being computed right now, so two clicks on the same key
         # (or a click racing the background prefetch of that key) compute it
         # once: the second waits on the first's Event and reads the cache.
@@ -313,12 +332,8 @@ class _VSFServer(http.server.ThreadingHTTPServer):
             if hit is not None:
                 self.landscape_cache.move_to_end(key)
                 return hit
-        target_col, criterion = params["target_col"], params["criterion"]
-        X_df = self.df.drop(columns=[target_col])
-        Z = (
-            (self.df[target_col].astype(str) == str(criterion)).astype(int).values
-            if criterion is not None else self.df[target_col].values
-        )
+        X_df, Z = self._target_arrays(params["target_col"], params["criterion"])
+        criterion = params["criterion"]
         landscape = compute_landscape(
             X_df.values, Z, feature_names=list(X_df.columns), max_d=_MAX_D,
             positive_class=(1 if criterion is not None else None),
@@ -329,6 +344,39 @@ class _VSFServer(http.server.ThreadingHTTPServer):
             while len(self.landscape_cache) > _LANDSCAPE_CACHE_MAX_ENTRIES:
                 self.landscape_cache.popitem(last=False)
         return landscape
+
+    def _target_arrays(self, target_col: str, criterion: Optional[object]):
+        X_df = self.df.drop(columns=[target_col])
+        Z = (
+            (self.df[target_col].astype(str) == str(criterion)).astype(int).values
+            if criterion is not None else self.df[target_col].values
+        )
+        return X_df, Z
+
+    def get_tau_curves(self, params: Dict[str, Any], center_spec: CenterSpec) -> Dict[str, Any]:
+        """
+        The tau-curves (`compute_tau_curves`) for an analyze parameter set,
+        computed once per parameters-without-tau: `center_spec.tau` does not
+        enter the key, the curve is the dependence on it.
+        """
+        key = _analyze_key({k: v for k, v in params.items() if k != "tau"})
+        with self.cache_lock:
+            hit = self.curves_cache.get(key)
+            if hit is not None:
+                self.curves_cache.move_to_end(key)
+                return hit
+        X_df, Z = self._target_arrays(params["target_col"], params["criterion"])
+        curves = compute_tau_curves(
+            X_df.values, Z, feature_names=list(X_df.columns), max_d=_MAX_D,
+            positive_class=(1 if params["criterion"] is not None else None),
+            center_spec=center_spec, direction=params["direction"],
+            step_pct=_CURVES_STEP_PCT,
+        )
+        with self.cache_lock:
+            self.curves_cache[key] = curves
+            while len(self.curves_cache) > _CURVES_CACHE_MAX_ENTRIES:
+                self.curves_cache.popitem(last=False)
+        return curves
 
     # -- background prefetch ------------------------------------------------
     def start_prefetch(
@@ -411,6 +459,10 @@ class VSFRequestHandler(http.server.BaseHTTPRequestHandler):
             self._handle_landscape_api(cell=False)
         elif path == "/api/landscape/cell":
             self._handle_landscape_api(cell=True)
+        elif path == "/api/landscape/curves":
+            self._handle_curves_api(at=False)
+        elif path == "/api/landscape/at":
+            self._handle_curves_api(at=True)
         else:
             self._read_json_body()
             self.send_error(404, "Endpoint not found")
@@ -690,6 +742,57 @@ class VSFRequestHandler(http.server.BaseHTTPRequestHandler):
         except Exception as e:
             self._send_json_response(500, {"error": str(e)})
 
+    def _parse_landscape_request(
+        self, req: Dict[str, Any]
+    ) -> Optional[Tuple[Dict[str, Any], CenterSpec, Optional[int]]]:
+        """
+        The (params, center_spec, d) of a landscape-family request, or None
+        after a 400 has been sent. `params` is the analyze key's material:
+        target, criterion, tau, alpha, rule, min_samples, direction.
+        """
+        df = self.server.df
+        target_col = req.get("target", self.server.default_target)
+        criterion = req.get("criterion", None)
+        if target_col not in df.columns:
+            self._send_json_response(400, {"error": f"target {target_col!r} is not a column of this dataset"})
+            return None
+        try:
+            tau = float(req.get("tau", 0.90))
+            alpha = float(req.get("alpha", 0.05))
+            min_samples = int(req.get("min_samples", 1))
+        except (TypeError, ValueError):
+            self._send_json_response(400, {"error": "tau, alpha and min_samples must be numbers"})
+            return None
+        rule = req.get("rule", "purity")
+        direction = req.get("direction", "presence")
+        if rule not in ("purity", "certified") or direction not in ("presence", "absence"):
+            self._send_json_response(400, {"error": "invalid rule or direction"})
+            return None
+        if direction == "absence" and criterion is None:
+            self._send_json_response(400, {"error": "an absence landscape needs an explicit criterion"})
+            return None
+        try:
+            center_spec = CenterSpec(tau=tau, alpha=alpha, rule=rule, min_samples=min_samples)
+        except ValueError as exc:
+            self._send_json_response(400, {"error": str(exc)})
+            return None
+        d = req.get("d", None)
+        if d is not None:
+            try:
+                d = int(d)
+            except (TypeError, ValueError):
+                self._send_json_response(400, {"error": "d must be an integer or null"})
+                return None
+            if d < 1 or d > _MAX_D:
+                self._send_json_response(400, {"error": f"d must be in [1, {_MAX_D}]"})
+                return None
+        params = {
+            "target_col": target_col, "criterion": criterion, "tau": tau,
+            "alpha": alpha, "rule": rule, "min_samples": min_samples,
+            "direction": direction,
+        }
+        return params, center_spec, d
+
     def _handle_landscape_api(self, cell: bool) -> None:
         """
         `/api/landscape`: the 10 x 10 count lattice of every candidate the
@@ -701,47 +804,11 @@ class VSFRequestHandler(http.server.BaseHTTPRequestHandler):
         """
         try:
             req = self._read_json_body()
-            df = self.server.df
-            target_col = req.get("target", self.server.default_target)
-            criterion = req.get("criterion", None)
-            if target_col not in df.columns:
-                self._send_json_response(400, {"error": f"target {target_col!r} is not a column of this dataset"})
+            parsed = self._parse_landscape_request(req)
+            if parsed is None:
                 return
-            try:
-                tau = float(req.get("tau", 0.90))
-                alpha = float(req.get("alpha", 0.05))
-                min_samples = int(req.get("min_samples", 1))
-            except (TypeError, ValueError):
-                self._send_json_response(400, {"error": "tau, alpha and min_samples must be numbers"})
-                return
-            rule = req.get("rule", "purity")
-            direction = req.get("direction", "presence")
-            if rule not in ("purity", "certified") or direction not in ("presence", "absence"):
-                self._send_json_response(400, {"error": "invalid rule or direction"})
-                return
-            if direction == "absence" and criterion is None:
-                self._send_json_response(400, {"error": "an absence landscape needs an explicit criterion"})
-                return
-            try:
-                center_spec = CenterSpec(tau=tau, alpha=alpha, rule=rule, min_samples=min_samples)
-            except ValueError as exc:
-                self._send_json_response(400, {"error": str(exc)})
-                return
-            d = req.get("d", None)
-            if d is not None:
-                try:
-                    d = int(d)
-                except (TypeError, ValueError):
-                    self._send_json_response(400, {"error": "d must be an integer or null"})
-                    return
-                if d < 1 or d > _MAX_D:
-                    self._send_json_response(400, {"error": f"d must be in [1, {_MAX_D}]"})
-                    return
-            params = {
-                "target_col": target_col, "criterion": criterion, "tau": tau,
-                "alpha": alpha, "rule": rule, "min_samples": min_samples,
-                "direction": direction,
-            }
+            params, center_spec, d = parsed
+            target_col, criterion, direction = params["target_col"], params["criterion"], params["direction"]
             landscape = self.server.get_landscape(params, center_spec)
             if not cell:
                 out = landscape.bins(d)
@@ -765,6 +832,58 @@ class VSFRequestHandler(http.server.BaseHTTPRequestHandler):
                 return
             out = landscape.cell(d, ix, iy, limit=min(limit, 1000), offset=offset)
             out.update({"d": d, "ix": ix, "iy": iy, "target": target_col, "criterion": criterion, "direction": direction})
+            self._send_json_response(200, out)
+        except ValueError as exc:
+            self._send_json_response(400, {"error": str(exc)})
+        except Exception as e:
+            self._send_json_response(500, {"error": str(e)})
+
+    def _handle_curves_api(self, at: bool) -> None:
+        """
+        `/api/landscape/curves`: the per-d envelope of the landscape over
+        the purity floor (`vsf.avr.compute_tau_curves`) - coverage (mass
+        under absence) of the best d-subset at every whole-percent tau from
+        the base rate to 100 %, with that subset and its centre count. The
+        request's `tau` is ignored (the curve is the dependence on tau);
+        rule/alpha/min_samples/direction are honoured. Cached per those.
+
+        `/api/landscape/at`: the schemas of dimensionality `d` whose
+        x-fraction at the purity floor `tau` falls in the same ten-percent
+        category (`ix`, 0..9, left-open right-closed) - the click-through
+        of a curve point. Computes (and caches) the landscape at that tau.
+        """
+        try:
+            req = self._read_json_body()
+            parsed = self._parse_landscape_request(req)
+            if parsed is None:
+                return
+            params, center_spec, d = parsed
+            target_col, criterion, direction = params["target_col"], params["criterion"], params["direction"]
+            if not at:
+                curves = self.server.get_tau_curves(params, center_spec)
+                out = dict(curves)
+                out.update({"target": target_col, "criterion": criterion, "direction": direction,
+                            "rule": params["rule"]})
+                self._send_json_response(200, out)
+                return
+            if d is None:
+                self._send_json_response(400, {"error": "d is required for /api/landscape/at"})
+                return
+            try:
+                ix = int(req["ix"])
+                limit = int(req.get("limit", 100))
+                offset = int(req.get("offset", 0))
+            except (KeyError, TypeError, ValueError):
+                self._send_json_response(400, {"error": "ix is a required integer; limit/offset optional integers"})
+                return
+            landscape = self.server.get_landscape(params, center_spec)
+            n = landscape.N_BINS
+            if not (0 <= ix < n) or limit < 1 or offset < 0:
+                self._send_json_response(400, {"error": f"ix must be in [0, {n}); limit >= 1; offset >= 0"})
+                return
+            out = landscape.by_x_category(d, ix, limit=min(limit, 1000), offset=offset)
+            out.update({"d": d, "ix": ix, "tau": params["tau"], "x": ("mass" if direction == "absence" else "coverage"),
+                        "target": target_col, "criterion": criterion, "direction": direction})
             self._send_json_response(200, out)
         except ValueError as exc:
             self._send_json_response(400, {"error": str(exc)})

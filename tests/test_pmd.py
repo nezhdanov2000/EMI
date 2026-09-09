@@ -17,9 +17,12 @@ from vsf.pmd import (
     adaptively_coarsen_bins,
     check_grid_capacity,
     coarsen_column,
+    coarsen_to_capacity,
+    grid_capacity,
+    level_frequency_order,
+    occupied_cells,
     discretize_dataset,
     discretize_feature,
-    max_bins_per_dimension,
 )
 
 
@@ -101,17 +104,33 @@ def test_discretize_dataset_encodes_every_column_and_reports_counts():
 # 2. Grid capacity
 # ---------------------------------------------------------------------------
 
-def test_check_grid_capacity():
-    # 100 samples -> max allowed cells = 10
-    assert check_grid_capacity([2, 3], 100)      # 6 cells <= 10
-    assert not check_grid_capacity([4, 4], 100)  # 16 cells > 10
+def test_capacity_is_measured_on_occupied_cells_not_the_nominal_product():
+    # 100 samples -> at most 10 occupied cells. Two 7-level columns whose
+    # rows only ever combine into 7 joint values occupy 7 of 49 nominal
+    # cells: within capacity, and must not be merged.
+    assert grid_capacity(100) == 10
+    a = np.repeat(np.arange(7), 15)[:100]
+    X = np.column_stack([a, a])
+    assert occupied_cells(X) == 7
+    assert check_grid_capacity(X, 100)
+    assert np.array_equal(adaptively_coarsen_bins(X, n_samples=100), X)
+    rng = np.random.default_rng(0)
+    Y = rng.integers(0, 4, size=(100, 2))  # 16 nominal, ~16 occupied
+    assert occupied_cells(Y) > 10
+    assert not check_grid_capacity(Y, 100)
 
 
-def test_adaptively_coarsen_bins_respects_the_ceiling():
+def test_adaptively_coarsen_bins_respects_the_ceiling_and_stops_at_it():
     rng = np.random.default_rng(42)
     X = rng.integers(0, 5, size=(100, 4))        # 625 nominal cells
-    coarsened = adaptively_coarsen_bins(X, n_samples=100, target_max_cells=10)
-    assert len(np.unique(coarsened, axis=0)) <= 10
+    coarsened, k = adaptively_coarsen_bins(X, n_samples=100, target_max_cells=10), None
+    assert occupied_cells(coarsened) <= 10
+    # Minimal: undoing the last merge would exceed the ceiling again. The
+    # engine reports the level counts it stopped at; re-running it to one
+    # level more on the column it reduced last must not fit.
+    _, levels = coarsen_to_capacity(X.astype(np.int64), 10)
+    assert occupied_cells(coarsened) <= 10
+    assert sum(levels) < 4 * 5
 
 
 def test_adaptively_coarsen_bins_is_a_no_op_below_the_ceiling():
@@ -120,15 +139,56 @@ def test_adaptively_coarsen_bins_is_a_no_op_below_the_ceiling():
     assert np.array_equal(out, X)
 
 
-def test_max_bins_per_dimension_and_coarsen_column():
-    assert max_bins_per_dimension(2, 1000) ** 2 <= 100
-    col = np.arange(10)
+def test_coarsen_column_keeps_the_most_frequent_levels_and_merges_the_rest():
+    # Level 3 is the most frequent, then 0, then 7; the rest are rare.
+    col = np.array([3] * 10 + [0] * 6 + [7] * 4 + [1, 2, 4, 5, 6, 8, 9])
+    assert level_frequency_order(col).tolist()[:3] == [3, 0, 7]
     merged = coarsen_column(col, 3)
     assert len(np.unique(merged)) == 3
-    # Adjacent codes merge into the same group; the mapping is monotone.
-    assert np.all(np.diff(merged) >= 0)
+    # Kept levels are recoded in frequency order; everything else is "other" (2).
+    assert set(merged[col == 3]) == {0}
+    assert set(merged[col == 0]) == {1}
+    assert set(merged[np.isin(col, [7, 1, 2, 4, 5, 6, 8, 9])]) == {2}
     assert np.array_equal(coarsen_column(col, 1), np.zeros_like(col))
     assert np.array_equal(coarsen_column(col, 20), col)
+    # Ties in frequency break by ascending code, so the result is deterministic.
+    tie = np.array([5, 5, 2, 2, 9, 9, 1])
+    assert level_frequency_order(tie).tolist() == [2, 5, 9, 1]
+
+
+def test_ordered_columns_merge_adjacent_values_into_equal_count_ranges():
+    from vsf.pmd import column_is_ordered, ordered_columns
+    assert column_is_ordered(np.array([1.5, 2.0, 3.25]))
+    assert column_is_ordered(np.array([1, 2, 3]))
+    assert not column_is_ordered(np.array(["a", "b"]))
+    assert not column_is_ordered(np.array([True, False]))
+    assert ordered_columns(np.array([[1, "x"], [2, "y"]], dtype=object)) == [True, False]
+    # 100 distinct values, uniform: 4 groups of 25 adjacent values each.
+    col = np.arange(100)
+    merged = coarsen_column(col, 4, ordered=True)
+    assert merged.tolist() == [i // 25 for i in range(100)]
+    # Skewed: one value holds half the rows; groups still follow value order
+    # and never split a value.
+    col = np.array([0] * 50 + list(range(1, 51)))
+    merged = coarsen_column(col, 4, ordered=True)
+    assert np.all(np.diff(merged) >= 0)
+    assert len(np.unique(merged)) <= 4
+    assert len(set(merged[col == 0])) == 1
+    # The nominal rule on the same column would keep 0 and lump the rest.
+    nominal = coarsen_column(col, 4)
+    assert set(nominal[col == 0]) == {0} and len(np.unique(nominal)) == 4
+
+
+def test_greedy_merge_reduces_the_widest_column_first():
+    rng = np.random.default_rng(1)
+    wide = rng.integers(0, 12, size=200)
+    narrow = rng.integers(0, 3, size=200)
+    X = np.column_stack([narrow, wide])
+    out, levels = coarsen_to_capacity(X.astype(np.int64), 15)
+    assert occupied_cells(out) <= 15
+    assert levels[0] == 3            # the 3-level column was never touched
+    assert levels[1] < 12
+    assert np.array_equal(out[:, 0], narrow)
 
 
 # ---------------------------------------------------------------------------
@@ -148,13 +208,18 @@ def test_the_continuous_feature_machinery_stays_deleted():
             f"vsf.pmd.{name} was removed: VSF encodes categories and does not "
             "bin continuous features."
         )
+    assert "max_bins_per_dimension" not in dir(pmd)  # the uniform per-axis cap is gone too
     assert set(pmd.__all__) == {
         "adaptively_coarsen_bins",
         "check_grid_capacity",
         "coarsen_column",
         "discretize_dataset",
         "discretize_feature",
-        "max_bins_per_dimension",
+        "column_is_ordered",
+        "grid_capacity",
+        "merge_state",
+        "occupied_cells",
+        "ordered_columns",
     }
 
 

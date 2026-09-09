@@ -13,17 +13,9 @@ genuinely depends on:
     Global Pattern Scan across the (column, value) family it sweeps. It
     operates on whatever p-values it is given, which are coverage p-values.
 
-No information-theoretic quantity is computed anywhere in this package. The
-plug-in mutual information and Shannon entropy that used to live here
-(`mutual_information_bits`, `entropy_bits_from_counts`) existed to serve
-`vsf.pmd`'s rate-distortion binning of CONTINUOUS features; VSF encodes
-every column as categories (see `vsf.pmd`'s module docstring), so both, and
-the `contingency_table` / `contingency_from_codes` helpers that only ever
-fed them, were deleted along with their last caller. The earlier
-bias-corrected association layer that once ranked branches by adjusted
-mutual information was removed before them. See git history if an
-information-theoretic quantity is ever wanted again -- it would be a new
-feature, with its own estimator-bias argument to make, not a restoration.
+No information-theoretic quantity is computed anywhere in this package:
+every reported number is a count ratio with an exact binomial bound
+(Project_Master_Document.md Section 3.1).
 """
 
 from __future__ import annotations
@@ -103,7 +95,7 @@ def dense_codes_from_flat(flat: np.ndarray, n_nominal: int) -> np.ndarray:
     flat = np.asarray(flat, dtype=np.int64).ravel()
     if flat.size == 0:
         return np.zeros(0, dtype=np.int64)
-    if 0 < n_nominal <= DENSE_CODES_BINCOUNT_LIMIT:
+    if 0 < n_nominal <= min(DENSE_CODES_BINCOUNT_LIMIT, max(1 << 16, 16 * flat.size)):
         occupied = np.bincount(flat, minlength=n_nominal) > 0
         remap = np.cumsum(occupied, dtype=np.int64) - 1
         return remap[flat]

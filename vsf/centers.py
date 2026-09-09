@@ -3,38 +3,27 @@ VSF Certified Discrete Centers: the decision-theoretic reporting layer.
 
 Why this module exists
 -----------------------------------------------------------------------
-The now-deleted `vsf.metrics.adjusted_uncertainty_coefficient` (U_adj)
-answered "does an association exist between Z and the cell partition". The
-product this package implements answers a strictly narrower question:
-"which cells of the displayed lattice are almost purely the target value,
-and how much of the target do they account for". Those two questions have
-different answers, and on a rare target they have OPPOSITE answers -- which
-is the reason this module exists, even though the MI/U_adj path it was
-built to correct is itself gone now too (v2.3, see `vsf.avr`'s docstring).
+The product answers one narrow question: "which cells of the displayed
+lattice are almost purely the target value, and how much of the target do
+they account for". Every number it reports is a count ratio with an exact
+binomial confidence bound, and the search ranks candidates by the same
+quantities (`coverage_score`). An association statistic would answer a
+different question - "is there a relationship" - and on a rare target the
+two have OPPOSITE answers.
 
-Worked example, reproducible from the UCI Adult / Census Income dataset (N = 32 561,
-Z = [occupation == "Armed-Forces"], 9 positives, prevalence 0.0276 %):
-
-    branch                             MI      E_0     U_adj
-    workclass+sex+income               0.0017  0.0003  41.3 %
-    workclass+relationship+race+sex    0.0020  0.0007  44.4 %
-
-U_adj = 41.3 % is arithmetically correct and operationally meaningless.
-H(Z) = 0.00367 bits, so the branch resolves 0.0015 bits of an already almost
-zero uncertainty. In that same branch:
+Worked example, reproducible from the UCI Adult / Census Income dataset
+(N = 32 561, Z = [occupation == "Armed-Forces"], 9 positives, prevalence
+0.0276 %). The branch workclass + sex + income is strongly associated with
+the target by any association measure, and yet:
 
   * the highest cell purity over all 32 occupied cells is 2.42 % (8 of 330);
   * the Bayes rule under 0-1 loss never predicts the target class, so
     Goodman-Kruskal lambda is exactly 0;
   * 8 of the 9 positives sit in ONE cell of 330 samples.
 
-No colour threshold can make that display green, and the headline "41.3 %"
-tells the analyst the opposite. This was the case for retaining U_adj as a
-detection diagnostic even after coverage became the headline in v2.2 -- but
-v2.3 removed U_adj (and MI_adj branch ranking) from the codebase entirely
-(see `vsf.avr`'s module docstring): `discover_branches` now ranks only by
-the quantities defined in this module, unconditionally, with no MI-based
-fallback left to fall back to.
+No colour threshold can make that display green: the honest report is
+zero certified centres, coverage 0, and a best cell purity of 2.42 % -
+which is what this module reports, unconditionally.
 
 What a "discrete centre" is
 -----------------------------------------------------------------------
@@ -1046,7 +1035,8 @@ def center_report(
     `n_repeats = 0` to skip it (the in-sample fields are always computed).
     `n_permutations > 0` attaches the coverage null and its uncorrected
     p-value; for a discovered branch use `familywise_max_coverage_null`
-    instead, for the same look-elsewhere reason that applies to MI_adj.
+    instead - a branch selected as an argmax over the whole candidate family
+    needs a family-aware null (look-elsewhere effect).
 
     `cell_bounds=False` skips the per-cell Clopper-Pearson intervals, which
     are the dominant cost of a report on a fine lattice and which a bulk
@@ -1221,9 +1211,9 @@ def crossvalidated_coverage(
 
     This is the only coverage number that can go DOWN when a branch adds an
     axis, and therefore the only one that can answer "how many features do I
-    need". The in-sample `CenterReport.coverage` is monotone-ish in the
-    number of cells for the same reason raw plug-in MI is: a finer partition
-    always has more chances to isolate a pure cell. The certificate bounds
+    need". The in-sample `CenterReport.coverage` tends to grow with the
+    number of cells: a finer partition always has more chances to isolate a
+    pure cell. The certificate bounds
     the per-cell FALSE-purity rate, not the optimism of selecting cells by
     their own contents.
 
@@ -1304,8 +1294,7 @@ def select_dimensionality(
     is not needed and the answer stays 3.
 
     The scan does NOT stop at the first non-significant step. Coverage is not
-    submodular in the feature set for the same reason mutual information is
-    not (Krause & Guestrin, 2005): a pair of axes can isolate a pure cell
+    submodular in the feature set: a pair of axes can isolate a pure cell
     that neither axis produces alone, so a flat step from d to d + 1 does not
     license skipping d + 2. Every d up to `max(cv_by_d)` is compared against
     the standing incumbent.
@@ -1428,8 +1417,8 @@ def familywise_max_coverage_null(
     `vsf.metrics.familywise_max_null`'s contract, so a caller may regenerate
     codes lazily rather than holding every candidate's (N,) code vector.
 
-    Cost: O(B * sum_S N) gather-and-bincount passes, i.e. the same order as
-    the MI_adj familywise null. Not affordable on an interactive path for
+    Cost: O(B * sum_S N) gather-and-bincount passes. Not affordable on an
+    interactive path for
     wide datasets; that is why it is opt-in and why any published coverage
     must nevertheless set it.
     """

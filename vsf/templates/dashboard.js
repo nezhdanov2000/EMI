@@ -426,10 +426,8 @@ function renderDimensionButtons(payload) {
     }
 }
 
-// v2.3: `formatSignificance` (raw-MI p-value formatting) was removed along
-// with `BranchResult.mi`/`p_value`/`p_value_familywise` (see vsf.avr's
-// module docstring) -- the coverage-search p-value this export still ships
-// is `search_centers.coverage_p_value(_familywise)`, read directly below.
+// The coverage-search p-value this export ships is
+// `search_centers.coverage_p_value(_familywise)`, read directly below.
 //
 // HUD metrics — every readout must track the CURRENTLY VIEWED collapsed
 // dimensionality `viewD`, not the branch's fixed full-d aggregate: a
