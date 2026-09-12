@@ -945,8 +945,17 @@ body.absence-mode .color-scale-handle--red { --handle-color: #64748b; }
     font-size: 0.78rem; padding: 3px 10px; border-radius: 6px; cursor: pointer;
 }
 .view-mode-btn.active { background: rgba(99, 102, 241, 0.22); color: #c7d2fe; }
+/* Scope toggle of the Duplicates tab: looks like the view-mode buttons but is
+   a separate class, so setViewMode() never clears it. */
+.cg-scope-btn {
+    background: transparent; border: none; color: var(--text-dim);
+    font-size: 0.78rem; padding: 3px 10px; border-radius: 6px; cursor: pointer;
+}
+.cg-scope-btn.active { background: rgba(99, 102, 241, 0.22); color: #c7d2fe; }
 #landscapeArea { flex: 1; display: flex; flex-direction: column; min-height: 560px; }
-#landscape-plot { flex: 1; min-height: 420px; }
+/* overflow: hidden -- the Plotly SVG must never paint over the cell panel
+   below it, even for the one frame before fitLandscapePlot() re-measures. */
+#landscape-plot { flex: 1 1 auto; min-height: 420px; overflow: hidden; }
 .landscape-header {
     display: flex; justify-content: space-between; align-items: center; gap: 12px;
     flex-wrap: wrap; padding: 6px 12px; font-size: 0.78rem; color: var(--text-dim);
@@ -971,6 +980,7 @@ body.absence-mode .color-scale-handle--red { --handle-color: #64748b; }
 .landscape-cell-panel {
     border-top: 1px solid var(--border-color); padding: 8px 12px; max-height: 260px;
     overflow: auto; font-size: 0.78rem;
+    flex: none; /* never squeezed by the plot: its rows scroll inside max-height */
 }
 .landscape-cell-head { display: flex; justify-content: space-between; align-items: center; color: #f8fafc; margin-bottom: 6px; }
 .landscape-close { background: transparent; border: none; color: var(--text-dim); cursor: pointer; font-size: 0.9rem; }
@@ -990,8 +1000,135 @@ body.absence-mode .color-scale-handle--red { --handle-color: #64748b; }
 .landscape-cell-more button { margin-left: 8px; }
 
 
+/* ---- Data screen (guide screen and the Data tab) ----------------------- */
+#screenArea { flex: 1; display: flex; flex-direction: column; min-height: 400px; overflow: auto; }
+.sc-panel { padding: 12px 14px 16px; font-size: 0.78rem; color: var(--text-muted); display: flex; flex-direction: column; gap: 10px; }
+.sc-panel-welcome {
+    width: min(980px, 100%); margin: 18px auto 0; text-align: left;
+    background: rgba(15, 23, 42, 0.45); border: 1px solid var(--border-color); border-radius: 14px;
+    max-height: 46vh; overflow: auto;
+}
+.sc-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.sc-title { color: #f8fafc; font-weight: 600; font-size: 0.88rem; }
+.sc-summary strong { color: #f8fafc; font-variant-numeric: tabular-nums; }
+.sc-controls { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.sc-controls label { display: inline-flex; align-items: center; gap: 6px; }
+.sc-controls input[type="number"] {
+    width: 58px; background: rgba(15, 23, 42, 0.8); color: white;
+    border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 2px 6px; font-size: 0.78rem;
+}
+.sc-excluded-list { color: var(--text-dim); }
+.sc-apply { background: rgba(245, 158, 11, 0.25); color: #fcd34d; }
+.sc-section { display: flex; flex-direction: column; gap: 6px; }
+.sc-sub { color: #e2e8f0; font-weight: 600; }
+.sc-list { margin: 0 0 0 18px; line-height: 1.5; }
+.sc-pairs { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 8px; }
+.sc-pair {
+    background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.07);
+    border-radius: 10px; padding: 8px 10px; display: flex; flex-direction: column; gap: 4px;
+}
+.sc-pair-head { color: #f8fafc; }
+.sc-dir { font-variant-numeric: tabular-nums; }
+.sc-num { color: #e2e8f0; font-variant-numeric: tabular-nums; }
+.sc-meaning { color: var(--text-dim); line-height: 1.4; }
+.sc-actions { display: flex; gap: 8px; margin-top: 2px; }
+.sc-table td { vertical-align: middle; }
+.sc-table .sc-name { color: #f8fafc; }
+.sc-table tr.sc-excluded td { opacity: 0.45; text-decoration: line-through; }
+.cg-tag-warn { background: rgba(245, 158, 11, 0.18); color: #fbbf24; }
+
+/* ---- Duplicates tab ----------------------------------------------------- */
+#duplicatesArea { flex: 1; display: flex; flex-direction: column; min-height: 560px; }
+.cg-panel {
+    flex: none; padding: 12px 14px 16px;
+    font-size: 0.78rem; color: var(--text-muted); display: flex; flex-direction: column; gap: 8px;
+}
+.cg-head { display: flex; flex-direction: column; gap: 6px; }
+.cg-title-row { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.cg-title { color: #f8fafc; font-weight: 600; font-size: 0.88rem; }
+.cg-summary { color: var(--text-dim); }
+.cg-summary strong { color: #f8fafc; font-variant-numeric: tabular-nums; }
+.cg-controls { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; }
+.cg-controls label { display: inline-flex; align-items: center; gap: 6px; }
+.cg-controls input, .cg-controls select {
+    background: rgba(15, 23, 42, 0.8); color: white; border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 4px; padding: 2px 6px; font-size: 0.78rem;
+}
+.cg-controls input[type="number"] { width: 58px; }
+.cg-explain { color: var(--text-dim); line-height: 1.45; }
+.cg-explain strong { color: var(--text-muted); }
+.cg-histogram { display: flex; align-items: flex-end; gap: 14px; flex-wrap: wrap; }
+.cg-histogram svg { display: block; overflow: visible; }
+.cg-hist-note { color: var(--text-dim); line-height: 1.45; max-width: 420px; }
+.cg-hist-note strong { color: #f8fafc; font-variant-numeric: tabular-nums; }
+.cg-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 8px; }
+.cg-card {
+    text-align: left; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.07);
+    border-radius: 10px; padding: 8px 10px; color: var(--text-muted); cursor: pointer;
+    display: flex; flex-direction: column; gap: 4px; font: inherit;
+}
+.cg-card:hover { border-color: rgba(99, 102, 241, 0.55); }
+.cg-card.open { border-color: #f59e0b; background: rgba(245, 158, 11, 0.07); }
+.cg-card .cg-desc { color: #f8fafc; font-size: 0.82rem; line-height: 1.35; overflow-wrap: anywhere; }
+.cg-card .cg-num { font-variant-numeric: tabular-nums; }
+.cg-card .cg-num strong { color: #e2e8f0; }
+.cg-card .cg-dup { color: #fbbf24; }
+.cg-card .cg-single { color: var(--text-dim); }
+.cg-centre { display: flex; align-items: flex-start; gap: 8px; }
+.cg-centre .cg-d { flex: none; margin-top: 1px; }
+.cg-centre-body { min-width: 0; }
+/* One characteristic per line: name left, category right, names aligned. */
+.cg-conds {
+    display: grid; grid-template-columns: max-content minmax(0, 1fr); column-gap: 14px; row-gap: 1px;
+    margin: 0; line-height: 1.35;
+}
+.cg-conds dt { color: var(--text-muted); font-weight: 400; }
+.cg-conds dd { margin: 0; color: #f8fafc; overflow-wrap: anywhere; }
+.cg-conds dd.cg-merged { color: #fcd34d; }
+.cg-conds dt.cg-diff, .cg-conds dd.cg-diff, .cg-diff-key { color: #c4b5fd; font-weight: 600; }
+.cg-table tr:not(.cg-rep) .cg-conds dt:not(.cg-diff), .cg-table tr:not(.cg-rep) .cg-conds dd:not(.cg-diff) { color: var(--text-dim); }
+.cg-simpler .cg-conds { margin-top: 3px; }
+.cg-simpler .cg-conds dt { color: rgba(110, 231, 183, 0.75); }
+.cg-simpler .cg-conds dd { color: #a7f3d0; }
+.cg-tags { margin-top: 3px; }
+.cg-tags .cg-tag { margin-left: 0; }
+.cg-d {
+    display: inline-block; min-width: 24px; text-align: center; padding: 0 5px; margin-right: 6px;
+    border-radius: 5px; background: rgba(99, 102, 241, 0.3); color: #e0e7ff; font-size: 0.7rem; font-weight: 600;
+}
+.cg-feat { color: var(--text-dim); }
+.cg-card .cg-simpler {
+    color: #6ee7b7; background: rgba(16, 185, 129, 0.08); border-radius: 6px; padding: 3px 6px; line-height: 1.4;
+}
+.cg-card-muted { cursor: default; opacity: 0.75; }
+.cg-card-muted:hover { border-color: rgba(255,255,255,0.07); }
+.cg-tag.cg-tag-ref { background: rgba(245, 158, 11, 0.25); color: #fcd34d; }
+.cg-detail {
+    grid-column: 1 / -1; border: 1px solid rgba(245, 158, 11, 0.35); border-radius: 10px;
+    padding: 8px 10px; background: rgba(15, 23, 42, 0.55); display: flex; flex-direction: column; gap: 6px;
+}
+.cg-detail-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; color: #f8fafc; }
+.cg-detail-head .cg-sub { color: var(--text-dim); font-weight: 400; }
+.cg-table-wrap { overflow-x: auto; }
+.cg-table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+.cg-table th {
+    text-align: left; font-weight: 500; color: var(--text-dim); padding: 3px 6px;
+    border-bottom: 1px solid var(--border-color); white-space: nowrap;
+}
+.cg-table td { padding: 4px 6px; border-bottom: 1px solid rgba(255,255,255,0.04); vertical-align: top; }
+.cg-table td.cg-desc-cell { color: #e2e8f0; min-width: 260px; }
+.cg-table tr.cg-rep td { background: rgba(245, 158, 11, 0.08); }
+.cg-tag { display: inline-block; margin-left: 6px; padding: 0 5px; border-radius: 4px; font-size: 0.68rem; background: rgba(16, 185, 129, 0.2); color: #6ee7b7; }
+.cg-warn { color: #fbbf24; }
+.cg-busy { color: var(--text-dim); font-style: italic; }
+
+
 /* ---- Catalog: value share donuts and the tau divider ------------------ */
-.crit-share { display: inline-flex; align-items: center; gap: 5px; margin-left: 10px; color: var(--text-dim); font-size: 0.72rem; font-variant-numeric: tabular-nums; }
+/* The label takes all free width, so the donut and the "+" are packed
+   together at the right edge (space-between on three children put the
+   donut in the middle of the row). */
+.crit-header > .crit-label { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.crit-share { flex: none; display: inline-flex; align-items: center; gap: 5px; margin-left: 10px; color: var(--text-dim); font-size: 0.72rem; font-variant-numeric: tabular-nums; }
 .share-donut { flex: none; }
 .crit-item.above-tau .crit-label { color: var(--text-dim); }
 .tau-divider {
@@ -1013,3 +1150,36 @@ body.absence-mode .color-scale-handle--red { --handle-color: #64748b; }
 .tau-point-panel .landscape-row { grid-template-columns: 1fr auto; row-gap: 2px; }
 .tau-point-panel .landscape-row .axes { grid-column: 1 / span 2; }
 .tau-point-panel .landscape-row .num { font-size: 0.72rem; }
+
+
+/* ---- Composite target: the conjunction panel and the "+" buttons ------ */
+.target-panel {
+    margin: 0 0 8px 0; padding: 8px 10px; border-radius: 10px;
+    background: rgba(99, 102, 241, 0.08); border: 1px solid rgba(99, 102, 241, 0.3);
+    font-size: 0.78rem;
+}
+.target-chips { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.target-chip {
+    display: inline-flex; align-items: center; gap: 4px; padding: 2px 6px 2px 8px;
+    border-radius: 999px; background: rgba(99, 102, 241, 0.22); color: #e0e7ff;
+    font-variant-numeric: tabular-nums;
+}
+.target-chip .chip-col { color: #a5b4fc; }
+.target-chip button {
+    background: transparent; border: none; color: #c7d2fe; cursor: pointer;
+    font-size: 0.8rem; line-height: 1; padding: 0 2px;
+}
+.target-chip button:hover { color: #fff; }
+.target-and { color: var(--text-dim); padding: 0 2px; }
+.target-info { margin-top: 5px; color: var(--text-dim); line-height: 1.4; }
+.target-info .warn { color: #fbbf24; }
+.crit-header { position: relative; }
+.crit-add {
+    margin-left: 8px; flex: none; width: 18px; height: 18px; border-radius: 5px;
+    background: rgba(99, 102, 241, 0.15); color: #a5b4fc; border: none; cursor: pointer;
+    font-size: 0.85rem; line-height: 1; opacity: 0; transition: opacity 0.12s;
+}
+.crit-header:hover .crit-add, .crit-item.conjunct .crit-add { opacity: 1; }
+.crit-add:hover { background: rgba(99, 102, 241, 0.35); color: #fff; }
+.crit-item.conjunct > .crit-header { background: rgba(99, 102, 241, 0.10); }
+.crit-item.conjunct .crit-add { color: #fff; background: rgba(99, 102, 241, 0.45); }

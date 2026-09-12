@@ -16,8 +16,8 @@
     <!-- Plotly.js -->
     <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
 
-    <link rel="stylesheet" href="/static/css/styles.css?v=5009">
-    <script src="/static/js/app.js?v=5009" defer></script>
+    <link rel="stylesheet" href="/static/css/styles.css?v=5014">
+    <script src="/static/js/app.js?v=5014" defer></script>
 </head>
 
 <body>
@@ -42,6 +42,18 @@
                 <div class="main-acc-icon">▶</div>
             </div>
             <div class="main-acc-content open" id="contentCatalog">
+
+                <!-- The target as a conjunction of (column, value) pairs
+                     (Project_Master_Document.md Section 4.10). Clicking a
+                     value in the catalog makes it the primary pair; the
+                     "+" beside a value adds it as a further conjunct (at
+                     most three pairs). Every column of the target leaves
+                     the feature space - the server enforces it, this panel
+                     says it. Hidden until a value is picked. -->
+                <div id="targetPanel" class="target-panel" style="display: none;">
+                    <div class="target-chips" id="targetChips"></div>
+                    <div class="target-info" id="targetInfo">—</div>
+                </div>
 
                 <div id="catalogAccordion" class="catalog-accordion">
                     <div style="color: var(--text-dim); font-size: 0.85rem; padding: 1rem;">Loading dataset
@@ -87,6 +99,10 @@
                     columns for the one that concentrates that value most inside certified (green) discrete
                     centres, at the purity floor set by the Green slider in Display Settings.
                 </div>
+                <!-- Dataset screen (Section 4.12): read before the target is
+                     chosen, so excluding a column cannot be a reaction to a
+                     result. -->
+                <div id="screenWelcome" class="sc-panel sc-panel-welcome"></div>
             </div>
 
             <div id="resultsArea" style="display: none;">
@@ -123,10 +139,12 @@
                          of (coverage, centres) categories coloured by how many
                          schemas fall in each. -->
                     <div style="display: flex; align-items: center; gap: 8px; border-left: 1px solid var(--border-color); padding-left: 1rem;"
-                        title="Lattice: the cells of the selected branch. Landscape: every schema the search scored, as a lattice of (coverage, centres) categories coloured by how many schemas reach each — the winner is one point of it.">
+                        title="Lattice: the cells of the selected branch. Landscape: every schema the search scored, as a lattice of (coverage, centres) categories coloured by how many schemas reach each — the winner is one point of it. Duplicates: centres of different schemas that hold (almost) the same rows.">
                         <div class="view-toggle-group" style="padding: 2px;">
                             <button type="button" class="view-mode-btn active" data-mode="lattice" onclick="setViewMode('lattice')">Lattice</button>
                             <button type="button" class="view-mode-btn" data-mode="landscape" onclick="setViewMode('landscape')">Landscape</button>
+                            <button type="button" class="view-mode-btn" data-mode="screen" onclick="setViewMode('screen')" title="The dataset screen: what each column is, which columns (nearly) determine each other, and which columns are excluded from the search.">Data</button>
+                            <button type="button" class="view-mode-btn" data-mode="duplicates" onclick="setViewMode('duplicates')" title="Which centres of other schemas hold (almost) the same rows as the centres of the selected branch - or, on request, of every scored schema.">Duplicates</button>
                         </div>
                     </div>
                     <div style="font-size: 0.85rem; color: var(--text-dim);"
@@ -169,6 +187,74 @@
                     <div id="landscapeCellList" class="landscape-cell-list"></div>
                     <div id="landscapeCellMore" class="landscape-cell-more"></div>
                 </div>
+            </div>
+
+            <!-- Duplicates (Project_Master_Document.md Section 4.11; hidden unless
+                 the Duplicates view mode is on). Two centres are "the same" when
+                 EACH holds at least t of the other's rows. Default scope: the
+                 centres of the selected branch, each with every centre of another
+                 schema that is t-similar to it. "All centres" groups every centre
+                 of every scored schema around a representative. Descriptive only:
+                 no centre, coverage or p-value changes. -->
+            <div id="duplicatesArea" style="display: none;">
+                <div id="centerGroupsPanel" class="cg-panel">
+                    <div class="cg-head">
+                        <div class="cg-title-row">
+                            <div class="view-toggle-group" style="padding: 2px;" title="Selected branch: the centres on the lattice, and who else describes the same rows. All centres: every centre of every scored schema, grouped.">
+                                <button type="button" class="cg-scope-btn active" data-scope="branch" onclick="setCenterGroupsScope('branch')">Selected branch</button>
+                                <button type="button" class="cg-scope-btn" data-scope="all" onclick="setCenterGroupsScope('all')">All centres</button>
+                            </div>
+                            <span id="cgSummary" class="cg-summary">—</span>
+                        </div>
+                        <div class="cg-controls">
+                            <label title="Two centres count as the same group when EACH of them holds at least this share of the other's rows: |A ∩ B| / max(|A|, |B|) ≥ t. A small centre inside a large one is therefore not a duplicate of it. Range 50–100 %.">
+                                Same if each holds ≥
+                                <input type="number" id="cgThreshold" min="50" max="100" step="1" value="80" oninput="onCenterGroupsControl(true)">
+                                % of the other's rows
+                            </label>
+                            <label title="Centres with fewer rows are not compared. Their purity estimate is too uncertain to call two of them 'the same group'. The landscape and the coverage are not affected.">
+                                Min rows
+                                <input type="number" id="cgMinRows" min="1" step="1" value="10" onchange="onCenterGroupsControl(false)">
+                            </label>
+                            <span id="cgAllOnly" style="display: none;">
+                                <label title="Order of the cards: by the share of the value the representative holds, or by how many centres describe the same group.">
+                                    Sort
+                                    <select id="cgSort" onchange="onCenterGroupsControl(false)">
+                                        <option value="coverage">share of the value</option>
+                                        <option value="members">most descriptions</option>
+                                    </select>
+                                </label>
+                                <label title="All groups, or only groups with a centre of the selected branch's dimensionality.">
+                                    Show
+                                    <select id="cgFilter" onchange="onCenterGroupsControl(false)">
+                                        <option value="all">all groups</option>
+                                        <option value="d">with a centre of the branch's d</option>
+                                    </select>
+                                </label>
+                            </span>
+                        </div>
+                    </div>
+                    <div class="cg-explain">
+                        Different characteristics can describe the same people. Each card is a centre of the selected branch;
+                        it lists the centres of other schemas that hold at least the chosen share of the same rows, and says when
+                        the same rows can be found with fewer characteristics. Switch to <strong>All centres</strong> to see every
+                        group in the search, each shown by its <strong>representative</strong> (fewest characteristics, then the
+                        highest certified purity bound). “Open” shows any listed schema as a lattice; the Landscape tab rings the
+                        schemas of the card you opened here.
+                    </div>
+                    <div id="cgNote" class="cg-explain"></div>
+                    <div id="cgHistogram" class="cg-histogram"></div>
+                    <div id="cgList" class="cg-list"></div>
+                    <div id="cgMore" class="landscape-cell-more"></div>
+                </div>
+            </div>
+
+            <!-- Dataset screen (Section 4.12; hidden unless the Data view mode
+                 is on). Same content as the panel on the guide screen: the
+                 column profile, the (near-)dependencies between columns, the
+                 exclusions and the leakage report for the current target. -->
+            <div id="screenArea" style="display: none;">
+                <div id="screenPanel" class="sc-panel"></div>
             </div>
 
             <!-- 4D Slice Controller -->

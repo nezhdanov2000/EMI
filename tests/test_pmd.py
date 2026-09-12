@@ -237,3 +237,28 @@ if __name__ == "__main__":
     import sys
 
     sys.exit(pytest.main([__file__, "-v"]))
+
+
+def test_missing_values_are_one_category_coded_last():
+    x = np.array([1.0, np.nan, 2.0, np.nan, 1.0, np.nan, 2.0, 1.0])
+    for col in (x, x.astype(object)):
+        codes, k = discretize_feature(col)
+        assert k == 3
+        np.testing.assert_array_equal(codes, [0, 2, 1, 2, 0, 2, 1, 0])
+    mixed = np.array(["a", None, "b", float("nan"), "a"], dtype=object)
+    codes, k = discretize_feature(mixed)
+    assert k == 3 and codes[1] == codes[3] == 2 and codes[0] == codes[4] == 0
+    codes, k = discretize_feature(np.array([None, float("nan")], dtype=object))
+    assert k == 1 and list(codes) == [0, 0]
+    # the encoding of the non-missing values is unchanged by the gaps
+    full, _ = discretize_feature(np.array([3.0, 1.0, 2.0]))
+    gappy, _ = discretize_feature(np.array([3.0, np.nan, 1.0, 2.0], dtype=object))
+    np.testing.assert_array_equal(gappy[[0, 2, 3]], full)
+
+
+def test_discretize_dataset_keeps_numeric_gaps_as_one_level():
+    import pandas as pd
+    df = pd.DataFrame({"age": [1.0, None, 2.0, None, 1.0], "s": ["a", None, "b", np.nan, "a"]})
+    X, counts = discretize_dataset(df.values)
+    assert counts == [3, 3]
+    np.testing.assert_array_equal(X[:, 0], [0, 2, 1, 2, 0])

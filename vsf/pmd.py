@@ -93,6 +93,19 @@ def discretize_feature(X: np.ndarray) -> tuple[np.ndarray, int]:
     the same category, which is the only sane reading of a column that
     contains both.
 
+    Missing values - None, float/NumPy NaN, pandas NA/NaT - are ONE
+    category, coded last (k - 1). Before 2026-09 an object column holding
+    NaN beside numbers was passed to `np.unique` as it stood: NaN compares
+    unequal to itself and poisons the sort, so every NaN became its own
+    category and equal non-missing values were split as well
+    (`[1., nan, 2., nan, 1., nan, 2., 1.]` as object encoded as 8 levels
+    instead of 3; pinned in `tests/test_pmd.py`). `discretize_dataset`
+    casts every column to object, so this hit every numeric column with a
+    gap. For an ORDERED column the missing category sits after the largest
+    value, so the capacity rule's adjacent merging (`coarsen_column`) can
+    merge it into the top range; that is a limitation of treating missing
+    as a level, stated here rather than hidden.
+
     Returns:
         (codes, k) -- integer codes in [0, k) and the number of categories.
     """
@@ -101,6 +114,34 @@ def discretize_feature(X: np.ndarray) -> tuple[np.ndarray, int]:
         arr = arr.ravel()
     if arr.size == 0:
         return np.zeros(0, dtype=int), 0
+    if arr.dtype.kind == "f":
+        missing = np.isnan(arr)
+    elif arr.dtype.kind == "O":
+        missing = np.fromiter((_is_missing(v) for v in arr.tolist()), dtype=bool, count=arr.size)
+    else:
+        missing = None
+    if missing is None or not missing.any():
+        return _encode_present(arr)
+    codes = np.empty(arr.size, dtype=int)
+    k = 0
+    if not missing.all():
+        sub, k = _encode_present(arr[~missing])
+        codes[~missing] = sub
+    codes[missing] = k
+    return codes, k + 1
+
+
+def _is_missing(v: object) -> bool:
+    """None, NaN (Python or NumPy float), or a pandas NA/NaT scalar."""
+    if v is None:
+        return True
+    if isinstance(v, (float, np.floating)):
+        return bool(np.isnan(v))
+    return type(v).__name__ in ("NAType", "NaTType")
+
+
+def _encode_present(arr: np.ndarray) -> tuple[np.ndarray, int]:
+    """Sorted-distinct-value codes of a column with no missing values."""
     try:
         _, codes = np.unique(arr, return_inverse=True)
     except TypeError:

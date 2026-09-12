@@ -28,9 +28,10 @@ surface):
     `static/{css,js}/graph_reasoning.*` assets that rendered them — the
     reasoning-graph feature is gone, not just its route.
   - `composite_target` support inside `/api/analyze` (the composite AND
-    -filter target builder) — a target is now always a single column
-    (+ optional single criterion value), matching the webapp's plain
-    dropdown.
+    -filter target builder) — replaced in 2026-09 by `also` (see the end
+    of this docstring), which does what the old builder did not: remove
+    the target's columns from the feature space and anchor the certificate
+    to the conjunction's base rate.
 
 `/api/analyze` itself changed shape, not just scope: it used to fit ONE
 `AVRResult` (a single adaptively-chosen `d_star`) per request. It now runs
@@ -112,6 +113,32 @@ the abscissa) and `/api/landscape/at` (the schemas of one dimensionality
 at a given floor within one ten-percent coverage category - the
 click-through of a curve point; computes the landscape at that floor).
 `/api/analyze` with `features=[...]` opens one schema (`report_schema`).
+
+Dataset screen (Section 4.12): `/api/screen` - one profile per column and
+every pair of columns one of which (nearly) determines the other, computed
+on the feature columns alone so it can be read BEFORE a target is chosen,
+plus the target leakage report once a target is named. The reader's
+exclusions travel as `drop=[column, ...]` on every analysis endpoint and
+`prune=true` skips candidates that are renamings of a smaller schema; both
+are part of the analysis cache key and are echoed in `/api/analyze`.
+
+Redundant centres (Section 4.11): `/api/centers/groups` (the centres of
+every scored schema grouped by mutual containment at a user threshold -
+one page of representatives, the run summary and the nearest-neighbour
+histogram; `vsf.redundancy`) and `/api/centers/group` (the members of one
+group, paged) and `/api/centers/branch` (the centres of one schema, each
+with every centre of another schema that holds almost the same rows). The centre catalogue and its similarity graph are computed
+once per (landscape key, min_rows) and cached; the threshold only regroups.
+
+Composite targets (Section 4.10): `/api/analyze` and the landscape family
+accept `also=[[column, value], ...]` - up to two further (column, value)
+pairs conjoined with the primary (target, criterion). The indicator
+searched is the AND of all pairs; every column of the target is removed
+from the feature space (`_Target`, `_resolve_target`, `_target_arrays`).
+`/api/target` reports a target's rows, share and remaining features before
+any search. This supersedes the v1.0 `composite_target` builder removed
+above: that one neither excluded the target's columns from the features
+nor anchored the certificate to the conjunction's base rate.
 """
 
 from __future__ import annotations
@@ -123,8 +150,9 @@ import time
 import urllib.parse
 import webbrowser
 from collections import OrderedDict
+from dataclasses import dataclass
 from importlib import resources
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as _np
 import pandas as pd
@@ -143,6 +171,8 @@ from .avr import (
 )
 from .centers import CenterSpec
 from .metrics import benjamini_hochberg
+from .screen import DEFAULT_MIN_STRENGTH, screen_dataset, target_report
+from .redundancy import DEFAULT_GROUP_THRESHOLD, CenterCatalog, collect_centers
 from .vis import Translations, catalog_from_dataframe, prepare_visualization_payload
 
 __all__ = ["serve"]
@@ -179,8 +209,156 @@ _LANDSCAPE_CACHE_MAX_ENTRIES = 8
 #: Tau-curves (`vsf.avr.compute_tau_curves`) kept per server, keyed by the
 #: landscape parameters WITHOUT tau (the curve is the dependence on tau).
 _CURVES_CACHE_MAX_ENTRIES = 8
+#: Centre catalogues (`vsf.redundancy.CenterCatalog`) kept per server: each
+#: holds the bit-packed rows of every distinct centre and its similarity
+#: graph (tens of MB at S ~ 20 000 distinct centres, N ~ 8 000 rows).
+_CENTERS_CACHE_MAX_ENTRIES = 4
+#: Dataset screens kept per server (one per set of screened columns).
+_SCREEN_CACHE_MAX_ENTRIES = 8
+#: Page sizes the redundant-centres endpoints accept at most.
+_CENTERS_MAX_LIMIT = 500
 #: Grid step of the tau-curves, in percent of purity.
 _CURVES_STEP_PCT = 1.0
+#: Largest number of (column, value) conjuncts a composite target may have:
+#: the primary (target, criterion) plus up to two `also` pairs. Base rates
+#: fall multiplicatively with every conjunct, and beyond three the certified
+#: cells are single objects on every dataset the framework is evaluated on.
+_MAX_TARGET_CONJUNCTS = 3
+
+
+@dataclass(frozen=True)
+class _Target:
+    """
+    A resolved analysis target: the primary column with its optional value,
+    plus the extra (column, value) conjuncts of a COMPOSITE target
+    (`also`, sorted, possibly empty). The indicator searched is the
+    conjunction of all pairs - one more 0/1 column, which is all the search
+    ever sees - and every column named in the conjunction is removed from
+    the feature space, otherwise the search would trivially "find" the
+    target's own columns as its schema.
+    """
+    target_col: str
+    criterion: Optional[str]
+    also: Tuple[Tuple[str, str], ...] = ()
+
+    @property
+    def columns(self) -> List[str]:
+        return [self.target_col] + [c for c, _ in self.also]
+
+    @property
+    def pairs(self) -> List[Tuple[str, str]]:
+        assert self.criterion is not None
+        return [(self.target_col, self.criterion)] + list(self.also)
+
+    def params(self) -> Dict[str, Any]:
+        """The target's part of an analyze cache key."""
+        out: Dict[str, Any] = {"target_col": self.target_col, "criterion": self.criterion}
+        if self.also:
+            out["also"] = self.also
+        return out
+
+
+def _resolve_target(df: pd.DataFrame, req: Dict[str, Any], default_target: str) -> Tuple[Optional[_Target], Optional[str]]:
+    """
+    Reads `target`, `criterion` and `also` (a list of [column, value]
+    pairs) from a request body and validates them against `df`: every
+    column must exist, the conjunct columns must be distinct from each
+    other and from the target, every value must be one the column actually
+    takes, and a conjunction needs an explicit `criterion`. Returns
+    (target, None) or (None, error message).
+    """
+    target_col = req.get("target", default_target)
+    if target_col not in df.columns:
+        return None, f"target {target_col!r} is not a column of this dataset"
+    criterion = req.get("criterion", None)
+    criterion = None if criterion is None else str(criterion)
+    raw_also = req.get("also", None) or []
+    if not isinstance(raw_also, list):
+        return None, "also must be a list of [column, value] pairs"
+    also: List[Tuple[str, str]] = []
+    for item in raw_also:
+        if not isinstance(item, (list, tuple)) or len(item) != 2:
+            return None, "also must be a list of [column, value] pairs"
+        col, val = str(item[0]), str(item[1])
+        if col not in df.columns:
+            return None, f"also: {col!r} is not a column of this dataset"
+        if col == target_col or any(col == c for c, _ in also):
+            return None, f"also: column {col!r} appears twice in the target"
+        if not (df[col].astype(str) == val).any():
+            return None, f"also: {col!r} never takes the value {val!r}"
+        also.append((col, val))
+    if also and criterion is None:
+        return None, "a composite target needs an explicit criterion for the primary column"
+    if len(also) + 1 > _MAX_TARGET_CONJUNCTS:
+        return None, f"a target may have at most {_MAX_TARGET_CONJUNCTS} (column, value) conjuncts"
+    return _Target(target_col, criterion, tuple(sorted(also))), None
+
+
+def _parse_screen_options(
+    df: pd.DataFrame, req: Dict[str, Any], target: Optional["_Target"] = None,
+) -> Tuple[Optional[Tuple[str, ...]], bool, Optional[str]]:
+    """
+    (`drop`, `prune`, error) of a request: the columns the reader excluded in
+    the dataset screen (Section 4.12) and whether the search skips candidates
+    that are renamings of a smaller one. `drop` is returned sorted and
+    de-duplicated so that two requests naming the same columns share a cache
+    entry; a column of the target itself is accepted and ignored (it is
+    already out of the feature space), an unknown column is an error, and
+    excluding EVERY feature is an error rather than an empty search.
+    """
+    raw = req.get("drop", None)
+    prune = bool(req.get("prune", False))
+    if raw is None:
+        return (), prune, None
+    if not isinstance(raw, (list, tuple)):
+        return None, prune, "drop must be a list of column names"
+    names: List[str] = []
+    for item in raw:
+        col = str(item)
+        if col not in df.columns:
+            return None, prune, f"drop: {col!r} is not a column of this dataset"
+        names.append(col)
+    drop = tuple(sorted(dict.fromkeys(names)))
+    if target is not None:
+        remaining = [c for c in df.columns if c not in target.columns and c not in set(drop)]
+        if not remaining:
+            return None, prune, "drop: every feature column would be excluded"
+    return drop, prune, None
+
+
+def _target_arrays(
+    df: pd.DataFrame, target: _Target, drop: Sequence[str] = (),
+) -> Tuple[pd.DataFrame, "_np.ndarray", "_np.ndarray"]:
+    """
+    (X_df, Z, sort_Z) for a target: the feature frame with every target
+    column removed - and with every column of `drop` removed as well, the
+    reader's own exclusions from the dataset screen (Section 4.12) - the
+    indicator (0/1 conjunction of all pairs, or the raw column when no
+    criterion is given) and the raw primary column used for stable ordering
+    of the display.
+    """
+    if target.criterion is None:
+        Z = df[target.target_col].values
+    else:
+        mask = _np.ones(len(df), dtype=bool)
+        for col, val in target.pairs:
+            mask &= (df[col].astype(str) == val).values
+        Z = mask.astype(int)
+    X_df = df.drop(columns=target.columns)
+    extra = [c for c in dict.fromkeys(drop) if c in X_df.columns]
+    if extra:
+        X_df = X_df.drop(columns=extra)
+    return X_df, Z, df[target.target_col].values
+
+
+def _target_display(target: _Target, translations: Optional[Translations]) -> str:
+    """`col = value` for a single pair; `col = value ∧ col2 = value2` for a conjunction."""
+    if target.criterion is None:
+        return target.target_col
+    return " \u2227 ".join(
+        f"{_vis.humanize_col(c, translations)} = {_vis.humanize_val(c, v, translations)}"
+        for c, v in target.pairs
+    )
 
 # Static asset content-types served from the packaged `vsf.webapp` resources.
 _STATIC_ROUTES: Dict[str, tuple] = {
@@ -254,6 +432,13 @@ class _VSFServer(http.server.ThreadingHTTPServer):
         # Tau-curves per (target, criterion, rule, alpha, min_samples,
         # direction) - the same analyze key with tau removed.
         self.curves_cache: "OrderedDict[Tuple[Any, ...], Dict[str, Any]]" = OrderedDict()
+        # Centre catalogues per (landscape key, min_rows). Built under
+        # `centers_lock`, so two requests for one key (e.g. the group list
+        # and a member list opened at once) compute it once.
+        self.centers_cache: "OrderedDict[Tuple[Any, ...], CenterCatalog]" = OrderedDict()
+        self.centers_lock = threading.Lock()
+        # Dataset screens (`vsf.screen.screen_dataset`) per (columns, min_strength).
+        self.screen_cache: "OrderedDict[Tuple[Any, ...], Any]" = OrderedDict()
         # Requests being computed right now, so two clicks on the same key
         # (or a click racing the background prefetch of that key) compute it
         # once: the second waits on the first's Event and reads the cache.
@@ -324,7 +509,7 @@ class _VSFServer(http.server.ThreadingHTTPServer):
                 del self.inflight[key]
         event.set()
 
-    def get_landscape(self, params: Dict[str, Any], center_spec: CenterSpec):
+    def get_landscape(self, params: Dict[str, Any], center_spec: CenterSpec, target: _Target):
         """The `Landscape` for an analyze parameter set, computed once."""
         key = _analyze_key(params)
         with self.cache_lock:
@@ -332,12 +517,12 @@ class _VSFServer(http.server.ThreadingHTTPServer):
             if hit is not None:
                 self.landscape_cache.move_to_end(key)
                 return hit
-        X_df, Z = self._target_arrays(params["target_col"], params["criterion"])
-        criterion = params["criterion"]
+        X_df, Z, _ = _target_arrays(self.df, target, params.get("drop", ()))
         landscape = compute_landscape(
             X_df.values, Z, feature_names=list(X_df.columns), max_d=_MAX_D,
-            positive_class=(1 if criterion is not None else None),
+            positive_class=(1 if target.criterion is not None else None),
             center_spec=center_spec, direction=params["direction"],
+            prune_dependent=bool(params.get("prune", False)),
         )
         with self.cache_lock:
             self.landscape_cache[key] = landscape
@@ -345,32 +530,64 @@ class _VSFServer(http.server.ThreadingHTTPServer):
                 self.landscape_cache.popitem(last=False)
         return landscape
 
-    def _target_arrays(self, target_col: str, criterion: Optional[object]):
-        X_df = self.df.drop(columns=[target_col])
-        Z = (
-            (self.df[target_col].astype(str) == str(criterion)).astype(int).values
-            if criterion is not None else self.df[target_col].values
-        )
-        return X_df, Z
 
-    def get_tau_curves(self, params: Dict[str, Any], center_spec: CenterSpec) -> Dict[str, Any]:
+    def get_screen(self, columns: Tuple[str, ...], min_strength: float):
+        """The `DatasetScreen` of these columns of `df`, computed once per (columns, min_strength)."""
+        key = (columns, round(float(min_strength), 6))
+        with self.cache_lock:
+            hit = self.screen_cache.get(key)
+            if hit is not None:
+                self.screen_cache.move_to_end(key)
+                return hit
+        sub = self.df[list(columns)]
+        screen = screen_dataset(sub.values, list(sub.columns), min_strength=float(min_strength))
+        with self.cache_lock:
+            self.screen_cache[key] = screen
+            while len(self.screen_cache) > _SCREEN_CACHE_MAX_ENTRIES:
+                self.screen_cache.popitem(last=False)
+        return screen
+
+    def get_center_catalog(
+        self, params: Dict[str, Any], center_spec: CenterSpec, target: _Target, min_rows: int,
+    ) -> CenterCatalog:
+        """The `CenterCatalog` for a landscape parameter set and `min_rows`, computed once."""
+        key = _analyze_key(params) + (("min_rows", repr(int(min_rows))),)
+        with self.centers_lock:
+            hit = self.centers_cache.get(key)
+            if hit is not None:
+                self.centers_cache.move_to_end(key)
+                return hit
+            X_df, Z, _ = _target_arrays(self.df, target, params.get("drop", ()))
+            catalog = collect_centers(
+                X_df.values, Z, feature_names=list(X_df.columns), max_d=_MAX_D,
+                positive_class=(1 if target.criterion is not None else None),
+                center_spec=center_spec, direction=params["direction"], min_rows=int(min_rows),
+                prune_dependent=bool(params.get("prune", False)),
+            )
+            self.centers_cache[key] = catalog
+            while len(self.centers_cache) > _CENTERS_CACHE_MAX_ENTRIES:
+                self.centers_cache.popitem(last=False)
+            return catalog
+
+    def get_tau_curves(self, params: Dict[str, Any], center_spec: CenterSpec, target: _Target) -> Dict[str, Any]:
         """
         The tau-curves (`compute_tau_curves`) for an analyze parameter set,
         computed once per parameters-without-tau: `center_spec.tau` does not
         enter the key, the curve is the dependence on it.
         """
-        key = _analyze_key({k: v for k, v in params.items() if k != "tau"})
+        key = _analyze_key({k: v for k, v in params.items() if k != "tau"})  # `_target` is dropped by `_analyze_key`
         with self.cache_lock:
             hit = self.curves_cache.get(key)
             if hit is not None:
                 self.curves_cache.move_to_end(key)
                 return hit
-        X_df, Z = self._target_arrays(params["target_col"], params["criterion"])
+        X_df, Z, _ = _target_arrays(self.df, target, params.get("drop", ()))
         curves = compute_tau_curves(
             X_df.values, Z, feature_names=list(X_df.columns), max_d=_MAX_D,
-            positive_class=(1 if params["criterion"] is not None else None),
+            positive_class=(1 if target.criterion is not None else None),
             center_spec=center_spec, direction=params["direction"],
             step_pct=_CURVES_STEP_PCT,
+            prune_dependent=bool(params.get("prune", False)),
         )
         with self.cache_lock:
             self.curves_cache[key] = curves
@@ -381,7 +598,7 @@ class _VSFServer(http.server.ThreadingHTTPServer):
     # -- background prefetch ------------------------------------------------
     def start_prefetch(
         self, target_col: str, criterion: str, center_spec: CenterSpec,
-        direction: str = "presence",
+        direction: str = "presence", drop: Sequence[str] = (), prune: bool = False,
     ) -> None:
         """
         After a criterion-mode analysis of (`target_col`, `criterion`),
@@ -405,7 +622,7 @@ class _VSFServer(http.server.ThreadingHTTPServer):
             self.prefetch_cancel = cancel
             thread = threading.Thread(
                 target=_prefetch_sibling_values,
-                args=(self, target_col, criterion, center_spec, direction, cancel),
+                args=(self, target_col, criterion, center_spec, direction, cancel, tuple(drop), bool(prune)),
                 daemon=True,
                 name="vsf-prefetch",
             )
@@ -463,6 +680,16 @@ class VSFRequestHandler(http.server.BaseHTTPRequestHandler):
             self._handle_curves_api(at=False)
         elif path == "/api/landscape/at":
             self._handle_curves_api(at=True)
+        elif path == "/api/target":
+            self._handle_target_api()
+        elif path == "/api/centers/groups":
+            self._handle_centers_api(detail=False)
+        elif path == "/api/centers/group":
+            self._handle_centers_api(detail=True)
+        elif path == "/api/centers/branch":
+            self._handle_centers_api(detail=False, branch=True)
+        elif path == "/api/screen":
+            self._handle_screen_api()
         else:
             self._read_json_body()
             self.send_error(404, "Endpoint not found")
@@ -564,28 +791,20 @@ class VSFRequestHandler(http.server.BaseHTTPRequestHandler):
             df = self.server.df
             translations = self.server.translations
 
-            target_col = req.get("target", self.server.default_target)
-            criterion = req.get("criterion", None)
-
-            if target_col not in df.columns:
-                self._send_json_response(
-                    400,
-                    {"error": f"target {target_col!r} is not a column of this dataset"},
-                )
+            target, err = _resolve_target(df, req, self.server.default_target)
+            if target is None:
+                self._send_json_response(400, {"error": err})
                 return
+            target_col, criterion = target.target_col, target.criterion
 
-            sort_Z = df[target_col].values
-
-            if criterion is not None:
-                Z = (df[target_col].astype(str) == str(criterion)).astype(int).values
-                human_criterion = _vis.humanize_val(target_col, str(criterion), translations)
-                human_col = _vis.humanize_col(target_col, translations)
-                display_target_name = f"{human_col} = {human_criterion}"
-            else:
-                Z = df[target_col].values
-                display_target_name = target_col
-
-            X_df = df.drop(columns=[target_col])
+            # Features are `df` minus EVERY column of the target (a
+            # composite target's own columns would otherwise be found as
+            # its schema, tautologically).
+            drop, prune, drop_err = _parse_screen_options(df, req, target)
+            if drop is None:
+                self._send_json_response(400, {"error": drop_err})
+                return
+            X_df, Z, sort_Z = _target_arrays(df, target, drop)
             feature_names = list(X_df.columns)
             X = X_df.values
 
@@ -648,15 +867,16 @@ class VSFRequestHandler(http.server.BaseHTTPRequestHandler):
                     })
                     return
 
-            cache_key = {
-                "target_col": target_col,
-                "criterion": criterion,
+            cache_key = dict(target.params())
+            cache_key.update({
                 "tau": tau,
                 "alpha": alpha,
                 "rule": rule,
                 "min_samples": min_samples,
                 "direction": direction,
-            }
+                "drop": drop,
+                "prune": prune,
+            })
             if features is not None:
                 cache_key["features"] = tuple(features)
             key = _analyze_key(cache_key)
@@ -719,18 +939,22 @@ class VSFRequestHandler(http.server.BaseHTTPRequestHandler):
                             center_spec=center_spec,
                             n_permutations_centers=DEFAULT_N_PERMUTATIONS,
                             direction=direction,
+                            prune_dependent=prune,
                         )
                     response_payload = _build_analyze_response(
-                        self.server, target_col, criterion, center_spec, branches,
+                        self.server, target, center_spec, branches,
                         direction=direction, features=features,
+                        drop=drop, prune=prune,
                     )
                     body = json.dumps(response_payload).encode("utf-8")
                     self.server.cache_put(key, cache_key, response_payload, body)
                 finally:
                     self.server.release(key, event)
-                if criterion is not None and features is None:
+                # Sibling prefetch is per column value; a composite target has
+                # no siblings in that sense.
+                if criterion is not None and features is None and not target.also:
                     self.server.start_prefetch(
-                        target_col, str(criterion), center_spec, direction
+                        target_col, str(criterion), center_spec, direction, drop, prune
                     )
 
             self._send_json_bytes(200, body)
@@ -748,14 +972,16 @@ class VSFRequestHandler(http.server.BaseHTTPRequestHandler):
         """
         The (params, center_spec, d) of a landscape-family request, or None
         after a 400 has been sent. `params` is the analyze key's material:
-        target, criterion, tau, alpha, rule, min_samples, direction.
+        target, criterion, also (composite targets), tau, alpha, rule,
+        min_samples, direction - plus the resolved `_Target` under
+        `"_target"`, which `_analyze_key` ignores.
         """
         df = self.server.df
-        target_col = req.get("target", self.server.default_target)
-        criterion = req.get("criterion", None)
-        if target_col not in df.columns:
-            self._send_json_response(400, {"error": f"target {target_col!r} is not a column of this dataset"})
+        target, err = _resolve_target(df, req, self.server.default_target)
+        if target is None:
+            self._send_json_response(400, {"error": err})
             return None
+        target_col, criterion = target.target_col, target.criterion
         try:
             tau = float(req.get("tau", 0.90))
             alpha = float(req.get("alpha", 0.05))
@@ -786,11 +1012,16 @@ class VSFRequestHandler(http.server.BaseHTTPRequestHandler):
             if d < 1 or d > _MAX_D:
                 self._send_json_response(400, {"error": f"d must be in [1, {_MAX_D}]"})
                 return None
-        params = {
-            "target_col": target_col, "criterion": criterion, "tau": tau,
-            "alpha": alpha, "rule": rule, "min_samples": min_samples,
-            "direction": direction,
-        }
+        drop, prune, err = _parse_screen_options(df, req, target)
+        if drop is None:
+            self._send_json_response(400, {"error": err})
+            return None
+        params = dict(target.params())
+        params.update({
+            "tau": tau, "alpha": alpha, "rule": rule, "min_samples": min_samples,
+            "direction": direction, "drop": drop, "prune": prune,
+        })
+        params["_target"] = target  # not part of the key (see `_analyze_key`)
         return params, center_spec, d
 
     def _handle_landscape_api(self, cell: bool) -> None:
@@ -809,11 +1040,12 @@ class VSFRequestHandler(http.server.BaseHTTPRequestHandler):
                 return
             params, center_spec, d = parsed
             target_col, criterion, direction = params["target_col"], params["criterion"], params["direction"]
-            landscape = self.server.get_landscape(params, center_spec)
+            landscape = self.server.get_landscape(params, center_spec, params["_target"])
             if not cell:
                 out = landscape.bins(d)
                 out.update({
                     "target": target_col, "criterion": criterion, "direction": direction,
+                    "also": [list(p) for p in params["_target"].also],
                     "n_candidates": len(landscape),
                     "feature_names": landscape.feature_names,
                 })
@@ -835,6 +1067,204 @@ class VSFRequestHandler(http.server.BaseHTTPRequestHandler):
             self._send_json_response(200, out)
         except ValueError as exc:
             self._send_json_response(400, {"error": str(exc)})
+        except Exception as e:
+            self._send_json_response(500, {"error": str(e)})
+
+    def _handle_screen_api(self) -> None:
+        """
+        `/api/screen`: the dataset screen of Section 4.12 - one profile per
+        column (categories, largest category, singleton categories, missing
+        rows, flags) and every pair of columns one of which (nearly)
+        determines the other, with the exact number of exception rows.
+        Computed on the FEATURE columns alone and cached per server, so it
+        can be read before any target is chosen; `min_strength` moves the
+        reporting floor of the inexact pairs.
+
+        With a resolvable target in the request the response also carries
+        `target_report` - how well each remaining column determines the
+        target indicator - which is the leakage check and is the only part
+        that depends on the target. `drop` is echoed back and removes the
+        named columns from BOTH parts, so the reader sees the screen of the
+        feature space the search will actually run on.
+        """
+        try:
+            req = self._read_json_body()
+            df = self.server.df
+            try:
+                min_strength = float(req.get("min_strength", DEFAULT_MIN_STRENGTH))
+            except (TypeError, ValueError):
+                self._send_json_response(400, {"error": "min_strength must be a number"})
+                return
+            if not (0.0 <= min_strength <= 1.0):
+                self._send_json_response(400, {"error": "min_strength must be in [0, 1]"})
+                return
+            target: Optional[_Target] = None
+            if req.get("target") is not None:
+                target, err = _resolve_target(df, req, self.server.default_target)
+                if target is None:
+                    self._send_json_response(400, {"error": err})
+                    return
+            drop, prune, err = _parse_screen_options(df, req, target)
+            if drop is None:
+                self._send_json_response(400, {"error": err})
+                return
+            target_columns = list(target.columns) if target is not None else []
+            keep = [c for c in df.columns if c not in set(target_columns) and c not in set(drop)]
+            screen = self.server.get_screen(tuple(keep), min_strength)
+            out = screen.to_dict()
+            out.update({
+                "columns_screened": keep,
+                "dropped_columns": list(drop),
+                "target_columns": target_columns,
+                "target": None if target is None else target.target_col,
+                "criterion": None if target is None else target.criterion,
+                "prune": prune,
+                "target_report": None,
+            })
+            if target is not None and target.criterion is not None and keep:
+                X_df, Z, _ = _target_arrays(df, target, drop)
+                out["target_report"] = target_report(X_df.values, Z, list(X_df.columns))
+            self._send_json_response(200, out)
+        except ValueError as exc:
+            self._send_json_response(400, {"error": str(exc)})
+        except Exception as e:
+            self._send_json_response(500, {"error": str(e)})
+
+    def _handle_centers_api(self, detail: bool, branch: bool = False) -> None:
+        """
+        `/api/centers/groups`: the centres of every schema the search scored
+        at the request's certificate, grouped by mutual containment at
+        `threshold` (default 0.8, range [0.5, 1]); `min_rows` (default 1)
+        drops centres with fewer rows before grouping; `sort` is
+        "coverage" (default) or "members"; `filter_d` keeps groups with a
+        member of that dimensionality; `cell` = {d, ix, iy} keeps groups
+        with a member in that landscape lattice cell (d null: the
+        all-d lattice); `limit`/`offset` page the representatives.
+        `/api/centers/group`: the members of the group whose representative
+        is `group` (a distinct-set id from the list), paged.
+        `/api/centers/branch`: the centres of ONE schema (`features`, the
+        selected branch or an opened schema) and, per centre, every centre
+        of another schema with mutual containment >= `threshold` to it;
+        `anchor` (a cell code) pages one centre's list with
+        `limit`/`offset` (`CenterCatalog.branch_view`).
+        """
+        try:
+            req = self._read_json_body()
+            parsed = self._parse_landscape_request(req)
+            if parsed is None:
+                return
+            params, center_spec, _ = parsed
+            try:
+                threshold = float(req.get("threshold", DEFAULT_GROUP_THRESHOLD))
+                min_rows = int(req.get("min_rows", 1))
+                limit = int(req.get("limit", 20 if not detail else 50))
+                offset = int(req.get("offset", 0))
+            except (TypeError, ValueError):
+                self._send_json_response(400, {"error": "threshold must be a number; min_rows, limit, offset integers"})
+                return
+            if min_rows < 1 or limit < 1 or offset < 0:
+                self._send_json_response(400, {"error": "min_rows >= 1, limit >= 1, offset >= 0 are required"})
+                return
+            limit = min(limit, _CENTERS_MAX_LIMIT)
+            catalog = self.server.get_center_catalog(params, center_spec, params["_target"], min_rows)
+            echo = {
+                "target": params["target_col"], "criterion": params["criterion"],
+                "direction": params["direction"], "tau": params["tau"], "rule": params["rule"],
+                "alpha": params["alpha"], "min_samples": params["min_samples"],
+                "also": [list(p) for p in params["_target"].also],
+            }
+            if branch:
+                feats = req.get("features")
+                if not isinstance(feats, list) or not feats:
+                    self._send_json_response(400, {"error": "features must be a non-empty list of column indices"})
+                    return
+                try:
+                    feats_i = [int(j) for j in feats]
+                    anchor = req.get("anchor", None)
+                    anchor = None if anchor is None else int(anchor)
+                except (TypeError, ValueError):
+                    self._send_json_response(400, {"error": "features and anchor must be integers"})
+                    return
+                out = catalog.branch_view(feats_i, threshold, limit=limit, offset=offset, anchor=anchor)
+            elif detail:
+                try:
+                    group = int(req["group"])
+                except (KeyError, TypeError, ValueError):
+                    self._send_json_response(400, {"error": "group is a required integer"})
+                    return
+                out = catalog.group_detail(threshold, group, limit=limit, offset=offset)
+            else:
+                sort = req.get("sort", "coverage")
+                filter_d = req.get("filter_d", None)
+                if filter_d is not None:
+                    try:
+                        filter_d = int(filter_d)
+                    except (TypeError, ValueError):
+                        filter_d = 0
+                    if not (1 <= filter_d <= _MAX_D):
+                        self._send_json_response(400, {"error": f"filter_d must be an integer in [1, {_MAX_D}]"})
+                        return
+                cell_req = req.get("cell", None)
+                cell = None
+                if cell_req is not None:
+                    n_bins = catalog.landscape.N_BINS
+                    try:
+                        cd = cell_req.get("d", None)
+                        cell = (None if cd is None else int(cd), int(cell_req["ix"]), int(cell_req["iy"]))
+                    except (AttributeError, KeyError, TypeError, ValueError):
+                        cell = None
+                    if cell is None or not (0 <= cell[1] < n_bins and 0 <= cell[2] < n_bins) or (
+                        cell[0] is not None and not (1 <= cell[0] <= _MAX_D)
+                    ):
+                        self._send_json_response(400, {"error": f"cell must be {{d: 1..{_MAX_D} or null, ix: 0..{n_bins - 1}, iy: 0..{n_bins - 1}}}"})
+                        return
+                out = catalog.groups_page(
+                    threshold, sort=sort, d=filter_d, cell=cell, limit=limit, offset=offset,
+                )
+                out["filter_d"] = filter_d
+                out["cell"] = None if cell is None else {"d": cell[0], "ix": cell[1], "iy": cell[2]}
+            out.update(echo)
+            self._send_json_response(200, out)
+        except ValueError as exc:
+            self._send_json_response(400, {"error": str(exc)})
+        except Exception as e:
+            self._send_json_response(500, {"error": str(e)})
+
+    def _handle_target_api(self) -> None:
+        """
+        `/api/target`: what a (possibly composite) target IS before any
+        search runs - its display name, the number and share of rows it
+        selects (the base rate the certificate scale is anchored to), the
+        columns it removes from the feature space and how many features
+        remain. Cheap (one boolean mask), so the frontend can call it on
+        every change of the conjunction.
+        """
+        try:
+            req = self._read_json_body()
+            df = self.server.df
+            target, err = _resolve_target(df, req, self.server.default_target)
+            if target is None:
+                self._send_json_response(400, {"error": err})
+                return
+            drop, _prune, drop_err = _parse_screen_options(df, req, target)
+            if drop is None:
+                self._send_json_response(400, {"error": drop_err})
+                return
+            X_df, Z, _ = _target_arrays(df, target, drop)
+            n = int(len(df))
+            n_pos = int((Z == 1).sum()) if target.criterion is not None else None
+            self._send_json_response(200, {
+                "target": target.target_col, "criterion": target.criterion,
+                "also": [list(p) for p in target.also],
+                "target_display": _target_display(target, self.server.translations),
+                "target_columns": target.columns,
+                "n_samples": n,
+                "n_positive": n_pos,
+                "share": (n_pos / n) if (n_pos is not None and n) else None,
+                "n_features": int(X_df.shape[1]),
+                "feature_names": list(X_df.columns),
+                "dropped_columns": list(drop),
+            })
         except Exception as e:
             self._send_json_response(500, {"error": str(e)})
 
@@ -860,10 +1290,10 @@ class VSFRequestHandler(http.server.BaseHTTPRequestHandler):
             params, center_spec, d = parsed
             target_col, criterion, direction = params["target_col"], params["criterion"], params["direction"]
             if not at:
-                curves = self.server.get_tau_curves(params, center_spec)
+                curves = self.server.get_tau_curves(params, center_spec, params["_target"])
                 out = dict(curves)
                 out.update({"target": target_col, "criterion": criterion, "direction": direction,
-                            "rule": params["rule"]})
+                            "also": [list(p) for p in params["_target"].also], "rule": params["rule"]})
                 self._send_json_response(200, out)
                 return
             if d is None:
@@ -876,7 +1306,7 @@ class VSFRequestHandler(http.server.BaseHTTPRequestHandler):
             except (KeyError, TypeError, ValueError):
                 self._send_json_response(400, {"error": "ix is a required integer; limit/offset optional integers"})
                 return
-            landscape = self.server.get_landscape(params, center_spec)
+            landscape = self.server.get_landscape(params, center_spec, params["_target"])
             n = landscape.N_BINS
             if not (0 <= ix < n) or limit < 1 or offset < 0:
                 self._send_json_response(400, {"error": f"ix must be in [0, {n}); limit >= 1; offset >= 0"})
@@ -1026,11 +1456,15 @@ class VSFRequestHandler(http.server.BaseHTTPRequestHandler):
                     "error": None,
                 }
 
+            scan_drop, scan_prune, drop_err = _parse_screen_options(self.server.df, req)
+            if scan_drop is None:
+                self._send_json_response(400, {"error": drop_err})
+                return
             thread = threading.Thread(
                 target=_run_dataset_scan,
                 args=(
                     self.server, threshold_pct, fdr_q, n_perm, n_perm_fw,
-                    cancel_event, scan_spec, scan_direction,
+                    cancel_event, scan_spec, scan_direction, scan_drop, scan_prune,
                 ),
                 daemon=True,
             )
@@ -1074,18 +1508,23 @@ class VSFRequestHandler(http.server.BaseHTTPRequestHandler):
 
 
 def _analyze_key(params: Dict[str, Any]) -> Tuple[Any, ...]:
-    """Hashable cache key of an `/api/analyze` request's parameters."""
-    return tuple(sorted((str(k), repr(v)) for k, v in params.items()))
+    """
+    Hashable cache key of an `/api/analyze` request's parameters. Keys
+    starting with an underscore are carriers (the resolved `_Target`), not
+    key material.
+    """
+    return tuple(sorted((str(k), repr(v)) for k, v in params.items() if not str(k).startswith("_")))
 
 
 def _build_analyze_response(
     server: "_VSFServer",
-    target_col: str,
-    criterion: Optional[object],
+    target: _Target,
     center_spec: CenterSpec,
     branches: Dict[int, Any],
     direction: str = "presence",
     features: Optional[List[int]] = None,
+    drop: Sequence[str] = (),
+    prune: bool = False,
 ) -> Dict[str, Any]:
     """
     The `/api/analyze` response body for discovered `branches`: one
@@ -1095,28 +1534,25 @@ def _build_analyze_response(
     """
     df = server.df
     translations = server.translations
-    sort_Z = df[target_col].values
+    target_col, criterion = target.target_col, target.criterion
+    X_df, Z, sort_Z = _target_arrays(df, target, drop)
     indicator_labels = None
-    if criterion is not None:
-        Z = (df[target_col].astype(str) == str(criterion)).astype(int).values
-        human_criterion = _vis.humanize_val(target_col, str(criterion), translations)
-        human_col = _vis.humanize_col(target_col, translations)
-        display_target_name = f"{human_col} = {human_criterion}"
-        if direction == "absence":
-            # The renderer's "positive" indicator is the complement: every
-            # cell purity, bound and certificate it computes must refer to
-            # rows WITHOUT the value, exactly as the search did. The class
-            # labels keep naming the value, so a point's hover still reads
-            # "Column = value" / "not Column = value".
-            Z = 1 - Z
-            indicator_labels = (display_target_name, f"not {display_target_name}")
-            display_target_name = f"{human_col} \u2260 {human_criterion}"
-    else:
-        Z = df[target_col].values
-        display_target_name = target_col
-    X_df = df.drop(columns=[target_col])
+    display_target_name = _target_display(target, translations)
+    if criterion is not None and direction == "absence":
+        # The renderer's "positive" indicator is the complement: every
+        # cell purity, bound and certificate it computes must refer to
+        # rows WITHOUT the value, exactly as the search did. The class
+        # labels keep naming the value, so a point's hover still reads
+        # "Column = value" / "not Column = value".
+        Z = 1 - Z
+        indicator_labels = (display_target_name, f"not {display_target_name}")
+        display_target_name = (
+            f"not ({display_target_name})" if target.also
+            else f"{_vis.humanize_col(target_col, translations)} \u2260 {_vis.humanize_val(target_col, criterion, translations)}"
+        )
     feature_names = list(X_df.columns)
     X = X_df.values
+    n_positive = int((Z == 1).sum()) if criterion is not None else None
 
     branches_data: Dict[str, Any] = {}
     for d, branch in branches.items():
@@ -1143,6 +1579,22 @@ def _build_analyze_response(
     return {
         "target": target_col,
         "criterion": criterion,
+        # The extra (column, value) conjuncts of a composite target (empty
+        # for a plain one), the display name of the whole conjunction, the
+        # columns removed from the feature space, and the size of the
+        # indicator searched (after the absence inversion, if any).
+        "also": [list(p) for p in target.also],
+        "target_display": display_target_name,
+        "target_columns": target.columns,
+        # The reader's exclusions from the dataset screen (Section 4.12) and
+        # whether renaming candidates were pruned: both change the candidate
+        # family, so both are part of the analysis identity and are echoed
+        # here for the legend and the export.
+        "dropped_columns": [str(c) for c in drop],
+        "prune_dependent": bool(prune),
+        "n_features": len(feature_names),
+        "n_positive": n_positive,
+        "n_samples": int(len(df)),
         # "presence" or "absence" (see `vsf.avr.Direction`). Under
         # "absence" every coverage/purity/centre figure in `branches`
         # refers to the complement of the criterion, and the frontend
@@ -1197,6 +1649,8 @@ def _prefetch_sibling_values(
     center_spec: CenterSpec,
     direction: str,
     cancel: threading.Event,
+    drop: Sequence[str] = (),
+    prune: bool = False,
 ) -> None:
     """
     Background worker of `_VSFServer.start_prefetch`: computes and caches
@@ -1228,7 +1682,7 @@ def _prefetch_sibling_values(
                 "target_col": target_col, "criterion": v,
                 "tau": center_spec.tau, "alpha": center_spec.alpha,
                 "rule": center_spec.rule, "min_samples": center_spec.min_samples,
-                "direction": direction,
+                "direction": direction, "drop": tuple(drop), "prune": bool(prune),
             }
             key = _analyze_key(params)
             if server.cache_get(key) is not None:
@@ -1239,6 +1693,9 @@ def _prefetch_sibling_values(
         if not todo or cancel.is_set():
             return
         X_df = df.drop(columns=[target_col])
+        extra = [c for c in dict.fromkeys(drop) if c in X_df.columns]
+        if extra:
+            X_df = X_df.drop(columns=extra)
         feature_names = list(X_df.columns)
         X = X_df.values
         for v, branches in iter_branches_by_value(
@@ -1251,6 +1708,7 @@ def _prefetch_sibling_values(
             center_spec=center_spec,
             n_permutations_centers=DEFAULT_N_PERMUTATIONS,
             direction=direction,
+            prune_dependent=prune,
         ):
             if cancel.is_set():
                 return
@@ -1262,7 +1720,8 @@ def _prefetch_sibling_values(
             try:
                 if branches:
                     payload = _build_analyze_response(
-                        server, target_col, v, center_spec, branches, direction=direction
+                        server, _Target(target_col, v), center_spec, branches,
+                        direction=direction, drop=drop, prune=prune,
                     )
                     server.cache_put(key, params_of[v], payload, json.dumps(payload).encode("utf-8"))
             finally:
@@ -1340,6 +1799,8 @@ def _run_dataset_scan(
     cancel_event: threading.Event,
     spec: CenterSpec,
     direction: str = "presence",
+    drop: Sequence[str] = (),
+    prune: bool = False,
 ) -> None:
     """
     Global Pattern Scan background worker (see module docstring). For every
@@ -1389,6 +1850,10 @@ def _run_dataset_scan(
     are covered, at roughly `n_permutations_familywise` times the per-pair
     search cost. Any published scan result must set it.
 
+    The reader's column exclusions (`drop`, Section 4.12) are removed from
+    every pair's feature space, and `prune` skips renaming candidates, so a
+    scan searches the same feature space as the analyses beside it.
+
     Runs entirely in a background thread started by `_handle_scan_start_api`;
     progress is written to `server.scan_job` under `server.scan_lock` before
     every column so `/api/scan/status` always reflects the latest state.
@@ -1436,6 +1901,9 @@ def _run_dataset_scan(
                 }
 
             X_df = df.drop(columns=[col])
+            extra = [c for c in dict.fromkeys(drop) if c in X_df.columns]
+            if extra:
+                X_df = X_df.drop(columns=extra)
             feature_names = list(X_df.columns)
             X = X_df.values
 
@@ -1457,6 +1925,7 @@ def _run_dataset_scan(
                 cell_bounds=False,
                 direction=direction,
                 skipped=col_skipped,
+                prune_dependent=prune,
             )
             done += len(vals)
             for val in vals:

@@ -77,6 +77,9 @@ async function init() {
             // first real render does not pay for it (see
             // warmUpPlotlyTextCache()).
             warmUpPlotlyTextCache(allColumnsData);
+            // The dataset screen (Section 4.12) belongs on the guide screen:
+            // it is read before a target is chosen.
+            refreshScreen(false);
         } else {
             showAnalysisError(`Failed to load dataset catalog (HTTP ${colRes.status}).`);
         }
@@ -295,7 +298,7 @@ async function startDatasetScan() {
             // The scan is certified with the same tau/alpha the viewport is
             // showing, so a pair that survives the scan is a pair whose
             // centres the user will actually see when they click it.
-            body: JSON.stringify({
+            body: JSON.stringify(screenRequestOptions({
                 coverage_threshold: threshold,
                 fdr_q: SCAN_FDR_Q_DISABLED,
                 tau: readCertTau(),
@@ -310,7 +313,7 @@ async function startDatasetScan() {
                 // to be looking at.
                 min_samples: minSamples,
                 n_permutations_familywise: SCAN_N_PERMUTATIONS_FAMILYWISE_DISABLED,
-            }),
+            })),
         });
         if (!res.ok) {
             let detail = `HTTP ${res.status}`;
@@ -491,17 +494,19 @@ function populateCatalog(cols, defaultTarget) {
             const critHeader = document.createElement('div');
             critHeader.className = 'crit-header';
             const share = (typeof crit.share === 'number') ? crit.share : null;
+            critItem.dataset.col = String(col.id);
+            critItem.dataset.val = String(crit.id);
             critHeader.innerHTML = `<span class="crit-label">${crit.label}</span>`
-                + (share === null ? '' : `<span class="crit-share" title="${crit.count.toLocaleString()} rows — ${(share * 100).toFixed(1)}% of all rows">${shareDonutSVG(share)}<span class="crit-share-pct">${formatSharePct(share)}</span></span>`);
+                + (share === null ? '' : `<span class="crit-share" title="${crit.count.toLocaleString()} rows — ${(share * 100).toFixed(1)}% of all rows">${shareDonutSVG(share)}<span class="crit-share-pct">${formatSharePct(share)}</span></span>`)
+                + `<button type="button" class="crit-add" title="Add to the target: objects must have this value AND the target's other values (the column leaves the feature space)">+</button>`;
 
             critHeader.onclick = async (e) => {
                 e.stopPropagation();
-                if (activeCritItem && activeCritItem !== critItem) {
-                    activeCritItem.classList.remove('active');
-                }
-                critItem.classList.add('active');
-                activeCritItem = critItem;
-                await runAnalysis(col.id, crit.id);
+                await pickPrimaryTarget(col.id, crit.id);
+            };
+            critHeader.querySelector('.crit-add').onclick = async (e) => {
+                e.stopPropagation();
+                await addTargetConjunct(col.id, crit.id);
             };
 
             critItem.appendChild(critHeader);
@@ -517,6 +522,137 @@ function populateCatalog(cols, defaultTarget) {
         }
     });
     updateCatalogTauDividers();
+    markCatalogTarget();
+}
+
+// ---------------------------------------------------------------------------
+// Composite target: a conjunction of (column, value) pairs (Section 4.10)
+// ---------------------------------------------------------------------------
+// The primary pair is (lastTargetCol, lastCriterion); `targetAlso` holds
+// the further conjuncts. The indicator searched is the AND of all pairs -
+// one more 0/1 column to the search - and every column of the target is
+// removed from the feature space by the server (its own columns would
+// otherwise be "found" as the schema). At most three pairs: base rates
+// fall multiplicatively, and beyond that certified cells are single
+// objects. No automatic enumeration of conjunctions exists, by design: the
+// user names the target, the search finds where it concentrates.
+let targetAlso = [];          // [{col, val}] beyond the primary pair
+let targetInfoCache = null;   // last /api/target response for the current conjunction
+const MAX_TARGET_CONJUNCTS = 3;
+
+function targetAlsoPairs() {
+    return targetAlso.map(p => [p.col, p.val]);
+}
+
+function catalogLabelOf(colId, critId) {
+    const col = (allColumnsData || []).find(c => c.id === colId);
+    const crit = col && (col.criteria || []).find(c => String(c.id) === String(critId));
+    return { col: col ? col.label : String(colId), val: crit ? crit.label : String(critId) };
+}
+
+async function pickPrimaryTarget(colId, critId) {
+    // A column can appear once in the target: picking a value of a column
+    // that is currently a conjunct replaces that conjunct.
+    targetAlso = targetAlso.filter(p => p.col !== colId);
+    await runAnalysis(colId, critId);
+}
+
+async function addTargetConjunct(colId, critId) {
+    if (lastTargetCol === null || lastCriterion === null) {
+        await pickPrimaryTarget(colId, critId);   // the first pick is the primary
+        return;
+    }
+    if (colId === lastTargetCol) {
+        showAnalysisError(`${catalogLabelOf(colId, critId).col} is already the target's column: pick a value of it to replace the primary pair.`);
+        return;
+    }
+    const existing = targetAlso.find(p => p.col === colId);
+    if (existing && String(existing.val) === String(critId)) {
+        showAnalysisError('This pair is already part of the target.');
+        return;
+    }
+    if (!existing && targetAlso.length + 1 >= MAX_TARGET_CONJUNCTS) {
+        showAnalysisError(`A target may have at most ${MAX_TARGET_CONJUNCTS} (column, value) pairs.`);
+        return;
+    }
+    targetAlso = targetAlso.filter(p => p.col !== colId).concat([{ col: colId, val: String(critId) }]);
+    await runAnalysis(lastTargetCol, lastCriterion);
+}
+
+async function removeTargetConjunct(colId) {
+    targetAlso = targetAlso.filter(p => p.col !== colId);
+    if (lastTargetCol !== null) await runAnalysis(lastTargetCol, lastCriterion);
+}
+
+async function removePrimaryTarget() {
+    // The first conjunct becomes the primary; with none left, the target is
+    // cleared and the catalog waits for a pick.
+    if (targetAlso.length === 0) return;
+    const next = targetAlso.shift();
+    await runAnalysis(next.col, next.val);
+}
+
+// The catalog's highlighting: the primary pair is `active`, the further
+// conjuncts are `conjunct`.
+function markCatalogTarget() {
+    document.querySelectorAll('#catalogAccordion .crit-item').forEach(item => {
+        const isPrimary = lastTargetCol !== null && item.dataset.col === String(lastTargetCol)
+            && String(item.dataset.val) === String(lastCriterion);
+        const isConjunct = targetAlso.some(p => p.col === item.dataset.col && String(p.val) === String(item.dataset.val));
+        item.classList.toggle('active', isPrimary);
+        item.classList.toggle('conjunct', isConjunct);
+    });
+}
+
+// What the conjunction IS before the search: rows, share, features left.
+// Cheap on the server (one boolean mask); called on every change.
+async function fetchTargetInfo(targetCol, criterion) {
+    const body = screenRequestOptions({ target: targetCol, criterion });
+    if (targetAlso.length) body.also = targetAlsoPairs();
+    const res = await fetch('/api/target', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || String(res.status));
+    return data;
+}
+
+function renderTargetPanel(info) {
+    const panel = document.getElementById('targetPanel');
+    const chips = document.getElementById('targetChips');
+    const infoEl = document.getElementById('targetInfo');
+    if (!panel || !chips || !infoEl) return;
+    if (lastTargetCol === null || lastCriterion === null) { panel.style.display = 'none'; return; }
+    panel.style.display = '';
+    chips.innerHTML = '';
+    const pairs = [{ col: lastTargetCol, val: lastCriterion, primary: true }].concat(targetAlso.map(p => Object.assign({}, p, { primary: false })));
+    pairs.forEach((p, i) => {
+        if (i > 0) {
+            const and = document.createElement('span'); and.className = 'target-and'; and.textContent = '∧'; chips.appendChild(and);
+        }
+        const lab = catalogLabelOf(p.col, p.val);
+        const chip = document.createElement('span');
+        chip.className = 'target-chip';
+        chip.innerHTML = `<span class="chip-col">${lab.col}</span> = <span class="chip-val">${lab.val}</span>`;
+        if (pairs.length > 1) {
+            const b = document.createElement('button');
+            b.type = 'button'; b.textContent = '✕';
+            b.title = p.primary ? 'Remove this pair (the next one becomes the primary)' : 'Remove this pair from the target';
+            b.onclick = () => (p.primary ? removePrimaryTarget() : removeTargetConjunct(p.col));
+            chip.appendChild(b);
+        }
+        chips.appendChild(chip);
+    });
+    if (!info) { infoEl.textContent = '…'; return; }
+    const pct = info.share === null ? '—' : `${(info.share * 100).toFixed(1)}%`;
+    let text = `${info.n_positive === null ? '—' : info.n_positive.toLocaleString()} of ${info.n_samples.toLocaleString()} rows (${pct}). `
+        + `${info.n_features} feature${info.n_features === 1 ? '' : 's'}`
+        + (info.target_columns.length > 1 ? ` — ${info.target_columns.join(', ')} are the target and leave the feature space.` : '.');
+    let warn = '';
+    if (info.n_positive !== null && info.n_positive < 30) {
+        warn = ` Only ${info.n_positive} objects match: any certified cell will be a handful of objects — raise Min. objects before trusting a centre.`;
+    }
+    infoEl.innerHTML = text + (warn ? `<span class="warn">${warn}</span>` : '');
 }
 
 // A 14 px donut showing a value's share of all rows. Neutral indigo: the
@@ -662,7 +798,12 @@ async function applyCertificate() {
         return;
     }
     if (lastTargetCol === null) return;
-    await runAnalysis(lastTargetCol, lastCriterion, lastFeatures);
+    // In the landscape the user is reading how the chosen branch's
+    // dimensionality moves along the Coverage-vs-purity-floor curves, so a
+    // tau change must NOT jump to the server's default branch. Same target,
+    // same criterion, same schema: keep the active d if it still exists.
+    await runAnalysis(lastTargetCol, lastCriterion, lastFeatures,
+        { preserveBranch: viewMode === 'landscape' || viewMode === 'duplicates' });
 }
 
 function renderCertificateSummary(response) {
@@ -684,7 +825,14 @@ function renderCertificateSummary(response) {
     }
 }
 
-async function runAnalysis(targetCol, criterion = null, features = null) {
+// Monotone id of the latest /api/analyze request. Arrow-key nudges and
+// repeated drags fire overlapping requests; a response that is not the
+// latest is dropped so an earlier tau can never overwrite a later one.
+let _analysisRequestSeq = 0;
+
+async function runAnalysis(targetCol, criterion = null, features = null, options = {}) {
+    const preserveBranch = Boolean(options && options.preserveBranch);
+    const requestId = ++_analysisRequestSeq;
     _plotlyWarmupCancelled = true; // the real render triangulates what it needs
     showWelcomeState(false);
     showLoader(true);
@@ -692,27 +840,47 @@ async function runAnalysis(targetCol, criterion = null, features = null) {
     lastTargetCol = targetCol;
     lastCriterion = criterion;
     lastFeatures = features; // an explicit schema opened from the landscape, or null
-    // Re-anchor the colour scale to this value's base rate BEFORE asking,
-    // so the certified boundary is always admissible (the server refuses a
-    // boundary on the wrong side of the base rate); a forced move is shown.
-    if (criterion !== null) {
-        const share = catalogShareOf(targetCol, criterion);
-        if (share !== null) {
-            const moved = setScaleAnchor(share);
-            showBaseRateMove(moved);
-        }
-    }
+    if (criterion === null) targetAlso = [];   // a raw-column target has no conjuncts
+    markCatalogTarget();
+    renderTargetPanel(null);
     try {
-        const reqBody = {
+        // Re-anchor the colour scale to the target's base rate BEFORE asking,
+        // so the certified boundary is always admissible (the server refuses a
+        // boundary on the wrong side of the base rate); a forced move is shown.
+        // The share comes from /api/target (one boolean mask on the server),
+        // which also fills the target panel; the catalog's share is the
+        // fallback for a plain value.
+        if (criterion !== null) {
+            let share = catalogShareOf(targetCol, criterion);
+            try {
+                targetInfoCache = await fetchTargetInfo(targetCol, criterion);
+                if (requestId !== _analysisRequestSeq) return; // superseded
+                share = targetInfoCache.share;
+            } catch (err) {
+                // The catalog's share still anchors a plain value; a
+                // conjunction without its share cannot be anchored honestly.
+                targetInfoCache = null;
+                if (targetAlso.length) throw err;
+            }
+            renderTargetPanel(targetInfoCache);
+            if (share !== null) {
+                const moved = setScaleAnchor(share);
+                showBaseRateMove(moved);
+            }
+        }
+        const reqBody = screenRequestOptions({
             target: targetCol,
             tau: readCertTau(),
             alpha: readCertAlpha(),
             rule: readCertRule(),
             min_samples: readCertMinSamples(),
             direction: readDirection(),
-        };
+        });
         if (criterion !== null) {
             reqBody.criterion = criterion;
+        }
+        if (targetAlso.length) {
+            reqBody.also = targetAlsoPairs();
         }
         if (features !== null) {
             reqBody.features = features;
@@ -724,9 +892,11 @@ async function runAnalysis(targetCol, criterion = null, features = null) {
             body: JSON.stringify(reqBody)
         });
 
+        if (requestId !== _analysisRequestSeq) return; // superseded
         if (response.ok) {
             const data = await response.json();
-            loadBranchesResponse(data);
+            if (requestId !== _analysisRequestSeq) return; // superseded while parsing
+            loadBranchesResponse(data, preserveBranch);
         } else {
             let detail = `HTTP ${response.status}`;
             try {
@@ -740,7 +910,9 @@ async function runAnalysis(targetCol, criterion = null, features = null) {
         console.error("API POST failed:", err);
         showAnalysisError('Analysis request failed: ' + err.message);
     } finally {
-        showLoader(false);
+        // Only the latest request owns the loader; a superseded one must not
+        // hide it while the newer request is still in flight.
+        if (requestId === _analysisRequestSeq) showLoader(false);
     }
 }
 
@@ -750,7 +922,13 @@ async function runAnalysis(targetCol, criterion = null, features = null) {
 // (preserveActiveIfPossible=false — always pick the server's own default)
 // — there is no client-side branch filter, every discovered branch is
 // always shown.
-function selectDefaultBranchAndRender(preserveActiveIfPossible) {
+//
+// `carryOverDim` (a fresh response only): the branch key that was active
+// before this response arrived. If the new response still has a branch of
+// that dimensionality it is re-selected against the NEW payload (the old
+// currentPayload belongs to the previous response and must be replaced);
+// otherwise the server default is used as usual.
+function selectDefaultBranchAndRender(preserveActiveIfPossible, carryOverDim = null) {
     if (!currentBranchesResponse) return;
     const data = currentBranchesResponse;
     const allDims = (data.branch_dims || []).map(String);
@@ -758,6 +936,11 @@ function selectDefaultBranchAndRender(preserveActiveIfPossible) {
 
     renderBranchSelector(data);
     showAnalysisError(null);
+
+    if (carryOverDim !== null && allDims.includes(carryOverDim)) {
+        selectBranch(carryOverDim, /* fromInitialLoad */ true);
+        return;
+    }
 
     if (preserveActiveIfPossible && activeBranchDim && allDims.includes(activeBranchDim)) {
         return; // still valid — leave the current view exactly as-is
@@ -775,7 +958,11 @@ function selectDefaultBranchAndRender(preserveActiveIfPossible) {
 // Loads a fresh /api/analyze response: resets ALL per-analysis state (branch
 // selection, within-branch dimensionality, 4D slice), then renders the
 // branch list and selects the server's default branch.
-function loadBranchesResponse(data) {
+//
+// preserveBranch: keep the previously active branch dimensionality when the
+// new response still offers it (used for tau changes in the landscape).
+function loadBranchesResponse(data, preserveBranch = false) {
+    const carryOverDim = (preserveBranch && activeBranchDim !== null) ? String(activeBranchDim) : null;
     currentBranchesResponse = data;
     renderCertificateSummary(data);
     onAnalysisLoadedForLandscape(data);
@@ -792,7 +979,7 @@ function loadBranchesResponse(data) {
         return;
     }
 
-    selectDefaultBranchAndRender(/* preserveActiveIfPossible */ false);
+    selectDefaultBranchAndRender(/* preserveActiveIfPossible */ false, carryOverDim);
 }
 
 // v2.3: `discover_branches` always ranks by coverage now (see
@@ -883,6 +1070,7 @@ function selectBranch(dKey, fromInitialLoad = false) {
 
     updateDashboard(currentPayload);
     if (viewMode === 'landscape') refreshLandscape();
+    if (viewMode === 'duplicates') refreshCenterGroups(0);
 }
 
 function showLoader(show) {
@@ -1201,7 +1389,11 @@ function currentValueLabel() {
     if (lastTargetCol === null || lastCriterion === null) return null;
     const col = (allColumnsData || []).find(c => c.id === lastTargetCol);
     const crit = col && (col.criteria || []).find(c => String(c.id) === String(lastCriterion));
-    return crit ? crit.label : String(lastCriterion);
+    const primary = crit ? crit.label : String(lastCriterion);
+    if (!targetAlso.length) return primary;
+    // A conjunction is named in full: "yes ∧ sex = female" would be ambiguous.
+    const pl = catalogLabelOf(lastTargetCol, lastCriterion);
+    return [`${pl.col} = ${pl.val}`].concat(targetAlso.map(p => { const l = catalogLabelOf(p.col, p.val); return `${l.col} = ${l.val}`; })).join(' ∧ ');
 }
 
 // Reads the two number inputs, clamps them to the admissible ranges (writing
@@ -2276,16 +2468,18 @@ let landscapeState = {
     dSelection: null,   // the d requested (number) or null for all
     cell: null,         // {ix, iy} of the open cell
     cellData: null,     // /api/landscape/cell response
+    highlight: null,    // lattice cells of the expanded duplicate-centre group
 };
 
 function landscapeParams() {
     if (!currentBranchesResponse) return null;
-    const p = {
+    const p = screenRequestOptions({
         target: currentBranchesResponse.target,
         criterion: currentBranchesResponse.criterion,
         tau: readCertTau(), alpha: readCertAlpha(), rule: readCertRule(),
         min_samples: readCertMinSamples(), direction: readDirection(),
-    };
+    });
+    if (currentBranchesResponse.also && currentBranchesResponse.also.length) p.also = currentBranchesResponse.also;
     return p;
 }
 
@@ -2296,7 +2490,8 @@ function onAnalysisLoadedForLandscape(data) {
     const p = landscapeParams();
     const key = p ? JSON.stringify(p) : null;
     if (key !== landscapeState.key) {
-        landscapeState = { key, bins: null, dSelection: null, cell: null, cellData: null };
+        landscapeState = { key, bins: null, dSelection: null, cell: null, cellData: null, highlight: null };
+        resetCenterGroupsState();
     }
     const ck = curvesKey();
     if (ck !== curvesState.key) {
@@ -2307,31 +2502,46 @@ function onAnalysisLoadedForLandscape(data) {
     } else if (viewMode === 'landscape') {
         refreshLandscape();
         refreshTauCurves();
+    } else if (viewMode === 'duplicates') {
+        refreshCenterGroups(0);
+    } else if (viewMode === 'screen') {
+        refreshScreen(false);
     }
 }
 
 function setViewMode(mode) {
-    viewMode = mode === 'landscape' ? 'landscape' : 'lattice';
+    viewMode = (mode === 'landscape' || mode === 'duplicates' || mode === 'screen') ? mode : 'lattice';
     document.querySelectorAll('.view-mode-btn').forEach(btn => {
         btn.classList.toggle('active', btn.dataset.mode === viewMode);
     });
+    const lattice = viewMode === 'lattice';
     const plot = document.getElementById('plot-container');
     const area = document.getElementById('landscapeArea');
+    const dup = document.getElementById('duplicatesArea');
+    const scr = document.getElementById('screenArea');
     const slices = document.getElementById('slice-controller');
-    if (plot) plot.style.display = viewMode === 'landscape' ? 'none' : '';
+    if (plot) plot.style.display = lattice ? '' : 'none';
     if (area) area.style.display = viewMode === 'landscape' ? 'flex' : 'none';
-    if (slices && viewMode === 'landscape') slices.style.display = 'none';
+    if (dup) dup.style.display = viewMode === 'duplicates' ? 'flex' : 'none';
+    if (scr) scr.style.display = viewMode === 'screen' ? 'flex' : 'none';
+    if (slices && !lattice) slices.style.display = 'none';
     // Display Settings: the scan rows and the contour panel belong to the
-    // lattice; the landscape shows the tau-curves in their place.
+    // lattice; the landscape shows the tau-curves in their place; the
+    // Duplicates tab keeps only the certificate controls.
     const scanRows = document.getElementById('scanOnlyRows');
     const contour = document.getElementById('contourPanel');
     const curvesPanel = document.getElementById('tauCurvePanel');
-    if (scanRows) scanRows.style.display = viewMode === 'landscape' ? 'none' : 'contents';
-    if (contour) contour.style.display = viewMode === 'landscape' ? 'none' : '';
+    if (scanRows) scanRows.style.display = lattice ? 'contents' : 'none';
+    if (contour) contour.style.display = lattice ? '' : 'none';
     if (curvesPanel) curvesPanel.style.display = viewMode === 'landscape' ? '' : 'none';
     if (viewMode === 'landscape') {
         refreshLandscape();
         refreshTauCurves();
+    } else if (viewMode === 'duplicates') {
+        refreshCenterGroups(0);
+    } else if (viewMode === 'screen') {
+        refreshScreen(false);
+        renderScreen();
     } else if (currentPayload) {
         currentRenderedDim = null;
         renderPlot(currentPayload);
@@ -2451,10 +2661,17 @@ function renderLandscape() {
         }
     }
     const isBright = colors.map(col => col === DENSITY_COLORS[2]);
+    // Now that the grid lines are cell boundaries, a circle must fit INSIDE
+    // its cell: diameter = 80 % of the smaller cell side in pixels (margins
+    // l+r = 110, t+b = 90), capped at the previous fixed 34 px.
+    const plotW = Math.max(1, (container.clientWidth || 800) - 110);
+    const plotH = Math.max(1, (container.clientHeight || 420) - 90);
+    const cellPx = Math.min(plotW, plotH) / n;
+    const markerPx = Math.max(16, Math.min(34, Math.floor(0.8 * cellPx)));
     const traces = [{
         type: 'scatter', mode: 'markers+text', x: xs, y: ys, text: texts, textposition: 'middle center',
         textfont: { size: 11, color: isBright.map(b => b ? '#0f172a' : '#f8fafc') },
-        marker: { size: 34, color: colors, line: { width: 1, color: 'rgba(255,255,255,0.25)' } },
+        marker: { size: markerPx, color: colors, line: { width: 1, color: 'rgba(255,255,255,0.25)' } },
         hovertext: hovers, hoverinfo: 'text', customdata: customs, name: 'schemas',
     }];
     // Winner of the selected branch, from the SEARCH partition's exact
@@ -2469,7 +2686,7 @@ function renderLandscape() {
         const opened = !!(currentBranchesResponse && currentBranchesResponse.schema);
         traces.push({
             type: 'scatter', mode: 'markers', x: [wx], y: [wy],
-            marker: { symbol: opened ? 'diamond' : 'star', size: 16, color: '#facc15', line: { width: 1, color: '#0f172a' } },
+            marker: { symbol: opened ? 'diamond' : 'star', size: Math.min(16, markerPx), color: '#facc15', line: { width: 1, color: '#0f172a' } },
             hovertext: [`${opened ? 'opened schema' : 'search winner'} (${currentPayload.metrics.d}D): ${(currentPayload.selected_features || []).join(' + ')}<br>${bins.x} ${(xFrac * 100).toFixed(1)}% · ${cc.n_centers} centres (search partition)`],
             hoverinfo: 'text', name: opened ? 'opened' : 'winner',
         });
@@ -2477,30 +2694,69 @@ function renderLandscape() {
     if (landscapeState.cell) {
         traces.push({
             type: 'scatter', mode: 'markers', x: [landscapeState.cell.ix], y: [landscapeState.cell.iy],
-            marker: { symbol: 'circle-open', size: 44, color: '#f8fafc', line: { width: 2 } },
+            marker: { symbol: 'circle-open', size: markerPx + 8, color: '#f8fafc', line: { width: 2 } },
             hoverinfo: 'skip', name: 'selected',
         });
     }
+    const hl = landscapeHighlightPoints(bins);
+    if (hl && hl.xs.length) {
+        traces.push({
+            type: 'scatter', mode: 'markers', x: hl.xs, y: hl.ys,
+            marker: { symbol: 'circle-open', size: markerPx + 8, color: '#f59e0b', line: { width: 3 } },
+            hovertext: hl.hov, hoverinfo: 'text', name: 'group',
+            customdata: hl.xs.map((x, i) => [x, hl.ys[i]]),
+        });
+    }
+    // Cell boundaries, as in the main lattice (buildPlotData draws its grid at
+    // k - 0.5): a category is the open interval BETWEEN two lines, so its
+    // label and its circle sit at the integer centre and the lines at the
+    // half-integers. Plotly's own grid is drawn at the tick values, i.e.
+    // through the centres, which read as if the lines were the categories.
+    const gridShapes = [];
+    for (let k = 0; k <= n; k++) {
+        const b = k - 0.5;
+        const line = { color: 'rgba(255,255,255,0.10)', width: 1 };
+        gridShapes.push({ type: 'line', layer: 'below', xref: 'x', yref: 'y', x0: b, x1: b, y0: -0.5, y1: n - 0.5, line });
+        gridShapes.push({ type: 'line', layer: 'below', xref: 'x', yref: 'y', x0: -0.5, x1: n - 0.5, y0: b, y1: b, line });
+    }
     const layout = {
         paper_bgcolor: '#070a13', plot_bgcolor: '#090d1a', showlegend: false,
+        shapes: gridShapes,
         margin: { l: 90, r: 20, t: 20, b: 70 }, font: { family: 'Inter', color: '#94a3b8' },
         xaxis: {
             title: { text: bins.x === 'mass' ? 'Mass of certified value-free cells' : 'Coverage of the value', font: { color: '#c084fc', size: 13 } },
-            tickvals: xLabels.map((_, i) => i), ticktext: xLabels, range: [-0.6, n - 0.4],
-            tickfont: { size: 10 }, showgrid: true, gridcolor: 'rgba(255,255,255,0.06)', zeroline: false, fixedrange: true,
+            tickvals: xLabels.map((_, i) => i), ticktext: xLabels, range: [-0.5, n - 0.5],
+            tickfont: { size: 10 }, showgrid: false, ticks: '', zeroline: false, fixedrange: true,
         },
         yaxis: {
             title: { text: `Certified centres (of K max = ${bins.k_max})`, font: { color: '#c084fc', size: 13 } },
-            tickvals: yLabels.map((_, i) => i), ticktext: yLabels, range: [-0.6, n - 0.4],
-            tickfont: { size: 10 }, showgrid: true, gridcolor: 'rgba(255,255,255,0.06)', zeroline: false, fixedrange: true,
+            tickvals: yLabels.map((_, i) => i), ticktext: yLabels, range: [-0.5, n - 0.5],
+            tickfont: { size: 10 }, showgrid: false, ticks: '', zeroline: false, fixedrange: true,
         },
     };
     Plotly.react(container, traces, layout, { responsive: true, displayModeBar: false });
+    // Plotly.react() keeps the size autosize measured on the FIRST draw; it
+    // does not re-measure the container. Opening/closing the cell panel
+    // below changes this div's flex height, so without a resize the SVG kept
+    // its old height, overflowed the div and painted over the top of the
+    // panel (the title and the first schema row were hidden).
+    fitLandscapePlot();
     container.removeAllListeners && container.removeAllListeners('plotly_click');
     container.on('plotly_click', (ev) => {
         const pt = ev.points && ev.points[0];
         if (!pt || !pt.customdata) return;
         openLandscapeCell(pt.customdata[0], pt.customdata[1], 0);
+    });
+}
+
+// Re-measures #landscape-plot after layout has settled (next frame), so the
+// Plotly SVG always matches the div's current flex height.
+function fitLandscapePlot() {
+    const container = document.getElementById('landscape-plot');
+    if (!container || typeof Plotly === 'undefined' || !Plotly.Plots) return;
+    requestAnimationFrame(() => {
+        if (container.offsetParent === null || !container._fullLayout) return; // hidden or not drawn
+        Plotly.Plots.resize(container);
     });
 }
 
@@ -2583,6 +2839,761 @@ async function openSchemaFromLandscape(features) {
     if (lastTargetCol === null) return;
     await runAnalysis(lastTargetCol, lastCriterion, features.slice());
 }
+
+// ---------------------------------------------------------------------------
+// Dataset screen (Project_Master_Document.md Section 4.12)
+// ---------------------------------------------------------------------------
+// What the framework will do with each column, and which columns (nearly)
+// determine each other - computed from the columns alone, so the reader can
+// read it and exclude a column BEFORE choosing a target and before seeing a
+// single result. Exclusions travel as `drop` on every request, are part of
+// the analysis identity and are echoed in the response; `prune` additionally
+// skips candidates that an exact dependency makes renamings of a smaller
+// schema (`/api/screen`, `vsf.screen`).
+let screenState = { data: null, key: null, pending: false, error: null };
+let excludedColumns = [];      // column names the reader excluded
+let pruneDependent = false;    // skip candidates that are renamings
+let screenDirty = false;       // exclusions changed after the current analysis
+
+function screenRequestOptions(body) {
+    // `drop`/`prune` on every analysis request: the feature space and the
+    // candidate family are part of what a cached response is keyed by.
+    body.drop = excludedColumns.slice();
+    body.prune = pruneDependent;
+    return body;
+}
+
+function screenMinStrength() {
+    const el = document.getElementById('screenStrength');
+    let v = el ? Number(el.value) : 90;
+    if (!Number.isFinite(v)) v = 90;
+    return Math.max(0, Math.min(100, Math.round(v))) / 100;
+}
+
+// Exactly one container is filled at a time - the guide screen's panel
+// before the first analysis, the Data tab's panel after it - so the controls
+// inside it keep unique ids.
+function screenContainers() {
+    const welcome = document.getElementById('welcomeState');
+    const inWelcome = !!(welcome && welcome.style.display !== 'none');
+    const el = document.getElementById(inWelcome ? 'screenWelcome' : 'screenPanel');
+    const other = document.getElementById(inWelcome ? 'screenPanel' : 'screenWelcome');
+    if (other) other.innerHTML = '';
+    return el ? [el] : [];
+}
+
+async function refreshScreen(force) {
+    const body = { min_strength: screenMinStrength() };
+    if (lastTargetCol !== null && lastCriterion !== null) {
+        body.target = lastTargetCol;
+        body.criterion = lastCriterion;
+        if (targetAlso.length) body.also = targetAlsoPairs();
+    }
+    const key = JSON.stringify(body);
+    if (!force && screenState.key === key && screenState.data) { renderScreen(); return; }
+    screenState.pending = true;
+    screenState.error = null;
+    renderScreen();
+    try {
+        const res = await fetch('/api/screen', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+        });
+        // A running server older than these assets has no /api/screen route
+        // and answers the POST with its HTML 404 page: the static files are
+        // read from disk per request, the routes are not.
+        const ctype = res.headers.get('content-type') || '';
+        if (!ctype.includes('json')) {
+            screenState.pending = false;
+            screenState.error = 'this page is newer than the server process: /api/screen answered with '
+                + (res.status === 404 ? 'a 404 page' : `content-type ${ctype || 'unknown'}`)
+                + '. Restart run.py (the assets reload from disk, the routes do not).';
+            renderScreen();
+            return;
+        }
+        const data = await res.json();
+        screenState.pending = false;
+        if (!res.ok) { screenState.error = data.error || String(res.status); renderScreen(); return; }
+        screenState.key = key;
+        screenState.data = data;
+        renderScreen();
+    } catch (err) {
+        screenState.pending = false;
+        screenState.error = err.message;
+        renderScreen();
+    }
+}
+
+function toggleExcludedColumn(name) {
+    const i = excludedColumns.indexOf(name);
+    if (i >= 0) excludedColumns.splice(i, 1);
+    else excludedColumns.push(name);
+    screenDirty = currentBranchesResponse !== null;
+    renderScreen();
+}
+
+function onPruneToggle(el) {
+    pruneDependent = !!(el && el.checked);
+    screenDirty = currentBranchesResponse !== null;
+    renderScreen();
+}
+
+async function applyScreenChanges() {
+    if (lastTargetCol === null) return;
+    screenDirty = false;
+    await runAnalysis(lastTargetCol, lastCriterion, null, { preserveBranch: true });
+    refreshScreen(true);
+}
+
+const SCREEN_FLAG_TEXT = {
+    constant: 'one category only — every schema holding it has the partition of the schema without it',
+    exceeds_capacity: 'more categories than the grid capacity — even its own 1D grid is coarsened',
+    dominant_level: 'one category covers almost everything — every other cell is small',
+    mostly_missing: 'more than half the rows are missing',
+    placeholder_level: 'a category whose NAME reads as “no value recorded” covers a large share of the rows; a centre built on it describes how the data were collected, unless that name means a real value here',
+};
+
+function screenPairHtml(p, dataTarget) {
+    const cls = { equivalent: 'cg-tag', exact: 'cg-tag cg-tag-ref', approximate: 'cg-tag cg-tag-warn' }[p.kind] || 'cg-tag';
+    const dir = (a, b, delta, strength, exceptions) => `
+        <div class="sc-dir"><strong>${escHtml(a)}</strong> → ${escHtml(b)}:
+            <span class="sc-num">${pct(delta, 1)}</span> of rows
+            <span class="cg-feat">(${exceptions} exception${exceptions === 1 ? '' : 's'}; ${pct(strength, 0)} above the majority rule)</span></div>`;
+    const meaning = {
+        equivalent: 'The two columns split the rows identically — one is a renaming of the other. Excluding either changes nothing except the size of the search.',
+        exact: 'One column fixes the other. A schema holding both has exactly the partition of the schema without the determined one; those candidates are renamings (switch on “skip renaming schemas” below). Excluding the determined column is NOT free: on its own it is a coarser grid the other cannot reproduce.',
+        approximate: 'Nothing is proved: the exception rows below break the dependency. Decide yourself whether the two columns say the same thing.',
+    }[p.kind];
+    return `<div class="sc-pair">
+        <div class="sc-pair-head"><span class="${cls}">${escHtml(p.kind)}</span>
+            <strong>${escHtml(p.a)}</strong> ↔ <strong>${escHtml(p.b)}</strong></div>
+        ${dir(p.a, p.b, p.delta_ab, p.strength_ab, p.exceptions_ab)}
+        ${dir(p.b, p.a, p.delta_ba, p.strength_ba, p.exceptions_ba)}
+        <div class="sc-meaning">${meaning}</div>
+        <div class="sc-actions">
+            <button type="button" class="landscape-open" data-exclude="${escHtml(p.a)}">${excludedColumns.includes(p.a) ? 'keep' : 'exclude'} ${escHtml(p.a)}</button>
+            <button type="button" class="landscape-open" data-exclude="${escHtml(p.b)}">${excludedColumns.includes(p.b) ? 'keep' : 'exclude'} ${escHtml(p.b)}</button>
+        </div></div>`;
+}
+
+function renderScreen() {
+    const els = screenContainers();
+    if (!els.length) return;
+    const d = screenState.data;
+    let html;
+    if (screenState.error) {
+        html = `<div class="cg-warn">Data screen: ${escHtml(screenState.error)}</div>`;
+    } else if (!d) {
+        html = `<div class="cg-busy">${screenState.pending ? 'Screening the columns…' : 'Not screened yet.'}</div>`;
+    } else {
+        const targetCols = new Set(d.target_columns || []);
+        const flagged = d.columns.filter(c => c.flags.length && !targetCols.has(c.name));
+        const pairs = d.pairs || [];
+        const rows = d.columns.map(c => {
+            const isTarget = targetCols.has(c.name);
+            const excluded = excludedColumns.includes(c.name);
+            const flags = c.flags.map(f => `<span class="cg-tag cg-tag-warn" title="${escHtml(SCREEN_FLAG_TEXT[f] || '')}">${escHtml(f.replace(/_/g, ' '))}</span>`).join(' ');
+            return `<tr class="${excluded ? 'sc-excluded' : ''}">
+                <td>${isTarget
+                    ? '<span class="cg-feat" title="A column of the target is out of the feature space already">target</span>'
+                    : `<input type="checkbox" data-exclude-box="${escHtml(c.name)}" ${excluded ? '' : 'checked'} title="Unchecked columns are excluded from the feature space of every search">`}</td>
+                <td class="sc-name">${escHtml(c.name)}</td>
+                <td class="sc-num">${c.n_levels}</td>
+                <td>${escHtml(c.largest_level)} <span class="cg-feat">${pct(c.largest_level_share, 0)}</span></td>
+                <td>${c.placeholder_level ? `<span class="cg-warn" title="Its name reads as a placeholder for a missing value">${escHtml(c.placeholder_level)}</span> <span class="cg-feat">${pct(c.placeholder_share, 0)}</span>` : ''}</td>
+                <td class="sc-num">${c.n_missing || 0}</td>
+                <td class="sc-num">${c.n_singleton_levels}</td>
+                <td>${flags}</td></tr>`;
+        }).join('');
+        const leak = (d.target_report || []).slice(0, 3).map(e =>
+            `<li><strong>${escHtml(e.feature)}</strong>: fixes the target on ${pct(e.delta, 1)} of rows
+              <span class="cg-feat">(${e.exceptions} exceptions; ${pct(e.strength, 0)} above the majority rule)</span>${e.exact ? ' — <span class="cg-warn">exact: this column IS the target under another name</span>' : ''}</li>`).join('');
+        html = `
+            <div class="sc-head">
+                <div class="sc-title">Data screen</div>
+                <div class="sc-summary"><strong>${d.n_rows}</strong> rows · <strong>${d.n_columns}</strong> columns ·
+                    grid capacity <strong>${d.grid_capacity}</strong> occupied cells per schema ·
+                    <strong>${pairs.length}</strong> dependent column pair${pairs.length === 1 ? '' : 's'} ·
+                    <strong>${flagged.length}</strong> flagged column${flagged.length === 1 ? '' : 's'}</div>
+            </div>
+            <div class="cg-explain">
+                Everything here is computed from the columns alone, before any target and any search, so excluding a
+                column cannot be a reaction to a result. Exclusions are part of the analysis: they change the candidate
+                family and the multiplicity correction, and they are reported with every number.
+                ${d.pairs_skipped ? `<span class="cg-warn">${escHtml(d.pairs_skipped)}</span>` : ''}
+            </div>
+            <div class="sc-controls">
+                <label title="An inexact pair is listed when the determination is at least this far above what the majority rule alone achieves.">Report pairs from
+                    <input type="number" id="screenStrength" min="0" max="100" step="1" value="${Math.round(d.min_strength * 100)}" onchange="refreshScreen(true)"> % above chance</label>
+                <label title="Skip candidate schemas that an exact dependency makes a renaming of a smaller schema: the partition, the coverage and the centre count are identical, only the dimensionality is higher. Never applied where the grid-capacity rule would coarsen the two differently.">
+                    <input type="checkbox" id="screenPrune" ${pruneDependent ? 'checked' : ''} onchange="onPruneToggle(this)"> skip renaming schemas in the search</label>
+                <span class="sc-excluded-list">Excluded: ${excludedColumns.length ? excludedColumns.map(escHtml).join(', ') : 'none'}</span>
+                ${screenDirty ? '<button type="button" class="landscape-open sc-apply" onclick="applyScreenChanges()">re-run the analysis</button>' : ''}
+            </div>
+            ${leak ? `<div class="sc-section"><div class="sc-sub">How well a single column fixes the target (leakage)</div><ul class="sc-list">${leak}</ul></div>` : ''}
+            <div class="sc-section">
+                <div class="sc-sub">Columns that (nearly) determine each other</div>
+                ${pairs.length ? `<div class="sc-pairs">${pairs.map(screenPairHtml).join('')}</div>`
+                    : '<div class="cg-busy">No pair reaches the reporting floor.</div>'}
+            </div>
+            <div class="sc-section">
+                <div class="sc-sub">Columns</div>
+                <div class="cg-table-wrap"><table class="cg-table sc-table">
+                    <thead><tr><th title="Unchecked columns are excluded from every search">use</th><th>column</th>
+                        <th title="Distinct categories, missing values counted as one">categories</th>
+                        <th>largest category</th>
+                        <th title="A category whose name reads as a placeholder for a missing value, and its share">placeholder?</th>
+                        <th title="Rows with a missing value">missing</th>
+                        <th title="Categories holding exactly one row: they can only ever be single-object cells">singletons</th>
+                        <th>flags</th></tr></thead>
+                    <tbody>${rows}</tbody></table></div>
+            </div>`;
+    }
+    els.forEach(el => {
+        el.innerHTML = html;
+        el.querySelectorAll('[data-exclude]').forEach(b => {
+            b.onclick = () => toggleExcludedColumn(b.dataset.exclude);
+        });
+        el.querySelectorAll('[data-exclude-box]').forEach(b => {
+            b.onchange = () => toggleExcludedColumn(b.dataset.excludeBox);
+        });
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Duplicates tab (Project_Master_Document.md Section 4.11)
+// ---------------------------------------------------------------------------
+// Different characteristics can describe the same objects. Two centres are
+// "the same" at threshold t when EACH holds at least t of the other's rows
+// (mutual containment, |A ∩ B| / max(|A|, |B|) >= t).
+//
+// Two scopes:
+//   * Selected branch (default): the centres of the branch (or opened
+//     schema) on screen; for each, every centre of every other scored schema
+//     that is t-similar to IT directly (`/api/centers/branch`).
+//   * All centres: every centre of every scored schema, grouped by leader
+//     clustering around a representative - fewest characteristics, then the
+//     highest certified purity bound (`/api/centers/groups`, `/group`).
+// The server builds the centre catalogue once per (certificate, min rows);
+// moving the threshold only regroups. Descriptive only: no centre, coverage
+// or p-value changes.
+let centerGroupsState = {
+    key: null,          // JSON of the request that produced the data (without paging)
+    data: null,         // /api/centers/groups or /api/centers/branch response
+    openGroup: null,    // all-scope: representative set id of the expanded card
+    openAnchor: null,   // branch-scope: cell code of the expanded branch centre
+    detail: null,       // the expanded card's member list (either scope)
+    seq: 0,             // request counter: stale responses are dropped
+    timer: null,        // debounce of the threshold input
+};
+const CG_PAGE = 12;
+const CG_MEMBER_PAGE = 50;
+
+function escHtml(value) {
+    return String(value).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+}
+
+function pct(x, digits = 1) {
+    return (x === null || x === undefined || !Number.isFinite(x)) ? '—' : `${(x * 100).toFixed(digits)}%`;
+}
+
+function resetCenterGroupsState() {
+    centerGroupsState.data = null;
+    centerGroupsState.key = null;
+    centerGroupsState.openGroup = null;
+    centerGroupsState.openAnchor = null;
+    centerGroupsState.detail = null;
+}
+
+function centerGroupsScope() {
+    const active = document.querySelector('.cg-scope-btn.active');
+    return active && active.dataset.scope === 'all' ? 'all' : 'branch';
+}
+
+function setCenterGroupsScope(scope) {
+    document.querySelectorAll('.cg-scope-btn').forEach(b => b.classList.toggle('active', b.dataset.scope === scope));
+    const allOnly = document.getElementById('cgAllOnly');
+    if (allOnly) allOnly.style.display = scope === 'all' ? 'contents' : 'none';
+    resetCenterGroupsState();
+    setCenterGroupHighlight(null);
+    refreshCenterGroups(0);
+}
+
+function centerGroupsControls() {
+    const tEl = document.getElementById('cgThreshold');
+    const mEl = document.getElementById('cgMinRows');
+    const sEl = document.getElementById('cgSort');
+    const fEl = document.getElementById('cgFilter');
+    let t = tEl ? Number(tEl.value) : 80;
+    if (!Number.isFinite(t)) t = 80;
+    t = Math.max(50, Math.min(100, t));
+    let m = mEl ? Math.round(Number(mEl.value)) : 10;
+    if (!Number.isFinite(m) || m < 1) m = 1;
+    return {
+        threshold: Math.round(t) / 100,
+        min_rows: m,
+        sort: sEl && sEl.value === 'members' ? 'members' : 'coverage',
+        filter: fEl ? fEl.value : 'all',
+        scope: centerGroupsScope(),
+    };
+}
+
+// The value the counts refer to: the chosen value under presence, its
+// complement under absence (the indicator the search certified).
+function centerGroupsValueLabel() {
+    const crit = currentBranchesResponse ? currentBranchesResponse.criterion : null;
+    const name = crit === null || crit === undefined ? 'value' : `«${crit}»`;
+    return readDirection() === 'absence' ? `not ${name}` : name;
+}
+
+// Feature indices of the schema on screen: the selected branch, or the
+// schema opened from the landscape / this tab.
+function centerGroupsBranchFeatures() {
+    if (currentBranchesResponse && currentBranchesResponse.schema) return currentBranchesResponse.schema.features.slice();
+    if (currentPayload && currentPayload.selected_feature_indices) return currentPayload.selected_feature_indices.slice();
+    return null;
+}
+
+function centerGroupsRequest() {
+    const p = landscapeParams();
+    if (!p) return null;
+    const c = centerGroupsControls();
+    const body = Object.assign({}, p, { threshold: c.threshold, min_rows: c.min_rows });
+    if (c.scope === 'branch') {
+        const feats = centerGroupsBranchFeatures();
+        if (!feats || !feats.length) return null;
+        body.features = feats;
+        return { url: '/api/centers/branch', body, scope: 'branch' };
+    }
+    body.sort = c.sort;
+    if (c.filter === 'd') {
+        const d = currentPayload && currentPayload.metrics ? Number(currentPayload.metrics.d) : null;
+        if (Number.isFinite(d)) body.filter_d = d;
+    }
+    return { url: '/api/centers/groups', body, scope: 'all' };
+}
+
+function onCenterGroupsControl(debounce) {
+    if (centerGroupsState.timer) clearTimeout(centerGroupsState.timer);
+    if (debounce) {
+        centerGroupsState.timer = setTimeout(() => refreshCenterGroups(0), 300);
+    } else {
+        refreshCenterGroups(0);
+    }
+}
+
+async function refreshCenterGroups(offset) {
+    if (viewMode !== 'duplicates') return;
+    const list = document.getElementById('cgList');
+    const summary = document.getElementById('cgSummary');
+    const req = centerGroupsRequest();
+    if (!req || !list) return;
+    const body = Object.assign({ limit: req.scope === 'all' ? CG_PAGE : CG_MEMBER_PAGE, offset: req.scope === 'all' ? (offset || 0) : 0 }, req.body);
+    const key = JSON.stringify([req.url, req.body]);
+    const seq = ++centerGroupsState.seq;
+    if (!centerGroupsState.data || centerGroupsState.key !== key) {
+        list.innerHTML = '<div class="cg-busy">Comparing the centres of every schema… (computed once for these settings)</div>';
+        if (summary) summary.textContent = '';
+    }
+    try {
+        const res = await fetch(req.url, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+        });
+        const data = await res.json();
+        if (seq !== centerGroupsState.seq) return;
+        if (!res.ok) {
+            list.innerHTML = `<div class="cg-warn">${escHtml(data.error || res.status)}</div>`;
+            return;
+        }
+        const same = centerGroupsState.key === key;
+        centerGroupsState.key = key;
+        centerGroupsState.data = data;
+        data._scope = req.scope;
+        if (req.scope === 'all') {
+            const stillThere = same && data.groups.some(g => g.group === centerGroupsState.openGroup);
+            if (!stillThere) { centerGroupsState.openGroup = null; centerGroupsState.detail = null; setCenterGroupHighlight(null); }
+            renderCenterGroups();
+        } else {
+            const a = same && data.anchors.find(x => x.cell === centerGroupsState.openAnchor);
+            if (!a) { centerGroupsState.openAnchor = null; centerGroupsState.detail = null; setCenterGroupHighlight(null); }
+            else centerGroupsState.detail = { anchor: a };
+            renderBranchDuplicates();
+        }
+    } catch (err) {
+        if (seq === centerGroupsState.seq) list.innerHTML = `<div class="cg-warn">Request failed: ${escHtml(err.message)}</div>`;
+    }
+}
+
+// A centre's conjunction as a two-column list, one characteristic per line,
+// characteristics in alphabetical order so that two centres built on the
+// same characteristics line up the same way wherever they are shown. A
+// characteristic whose categories the grid-capacity rule merged in this
+// schema lists all of them (the cell holds any of them).
+//
+// `ref` (optional): the conjunction this one is compared with. Lines that the
+// reference does not have - another characteristic, or the same one with
+// other categories - are highlighted, so a table of alternatives shows at a
+// glance what each one describes differently.
+function conditionsHtml(conditions, ref) {
+    const sorted = conditions.slice().sort((a, b) =>
+        String(a.feature).localeCompare(String(b.feature), undefined, { sensitivity: 'base', numeric: true }));
+    const refKey = ref ? new Map(ref.map(c => [c.feature, c.values.join('\u0000')])) : null;
+    const rows = sorted.map(c => {
+        const merged = c.values.length > 1;
+        const vals = c.values.map(escHtml).join(', ');
+        const differs = refKey !== null && refKey.get(c.feature) !== c.values.join('\u0000');
+        const cls = [merged ? 'cg-merged' : '', differs ? 'cg-diff' : ''].filter(Boolean).join(' ');
+        const tip = [
+            merged ? 'Any of these categories: the grid-capacity rule merged them in this schema.' : '',
+            differs ? 'Not in the centre this one is compared with.' : '',
+        ].filter(Boolean).join(' ');
+        return `<dt${differs ? ' class="cg-diff"' : ''}>${escHtml(c.feature)}</dt><dd${cls ? ` class="${cls}"` : ''}${tip ? ` title="${escHtml(tip)}"` : ''}>${vals}</dd>`;
+    }).join('');
+    return `<dl class="cg-conds">${rows}</dl>`;
+}
+
+// Dimensionality badge + conjunction (+ optional tags under it).
+function centreHtml(d, conditions, tags, ref) {
+    return `<div class="cg-centre"><span class="cg-d">${d}D</span><div class="cg-centre-body">${conditionsHtml(conditions, ref)}${tags ? `<div class="cg-tags">${tags}</div>` : ''}</div></div>`;
+}
+
+function renderCenterGroupsHistogram(data) {
+    const el = document.getElementById('cgHistogram');
+    if (!el) return;
+    const h = data.histogram;
+    const t = data.threshold;
+    const bars = h.counts.map((c, i) => ({ lo: h.edges[i], hi: h.edges[i + 1], c }));
+    bars.push({ lo: 1, hi: 1, c: h.identical, identical: true });
+    const maxC = Math.max(1, ...bars.map(b => b.c));
+    const bw = 16, gap = 3, H = 54, padB = 16;
+    const W = bars.length * (bw + gap);
+    let svg = `<svg width="${W + 4}" height="${H + padB}" role="img" aria-label="Closest other centre, per centre">`;
+    bars.forEach((b, i) => {
+        const x = i * (bw + gap);
+        const hgt = b.c > 0 ? Math.max(2, Math.round(H * b.c / maxC)) : 0;
+        const on = b.identical || b.lo >= t - 1e-9;
+        const fill = b.identical ? '#10b981' : (on ? '#f59e0b' : '#475569');
+        const label = b.identical ? 'identical rows (similarity = 1)' : `similarity ${b.lo.toFixed(2)}–${b.hi.toFixed(2)}`;
+        svg += `<rect x="${x}" y="${H - hgt}" width="${bw}" height="${hgt}" rx="2" fill="${fill}"><title>${b.c} centres: closest other centre at ${label}</title></rect>`;
+    });
+    const tx = Math.max(0, Math.min(h.counts.length, (t - h.floor) / h.step)) * (bw + gap) - gap / 2;
+    svg += `<line x1="${tx}" x2="${tx}" y1="0" y2="${H}" stroke="#f8fafc" stroke-dasharray="3,2" stroke-width="1"/>`;
+    svg += `<text x="0" y="${H + 12}" font-size="9" fill="#64748b">${h.floor.toFixed(1)}</text>`;
+    svg += `<text x="${h.counts.length * (bw + gap) - 14}" y="${H + 12}" font-size="9" fill="#64748b">1.0</text>`;
+    svg += `<text x="${h.counts.length * (bw + gap) + 4}" y="${H + 12}" font-size="9" fill="#10b981">=</text>`;
+    svg += '</svg>';
+    let atOrAbove = h.identical;
+    bars.forEach(b => { if (!b.identical && b.lo >= t - 1e-9) atOrAbove += b.c; });
+    el.innerHTML = svg + `<div class="cg-hist-note">All centres of all scored schemas: how close each one's nearest other centre is.
+        <strong>${h.identical}</strong> of ${h.n_centers} have another centre with exactly the same rows;
+        <strong>${atOrAbove}</strong> have one at or above ${pct(t, 0)} (dashed line); <strong>${h.below_floor}</strong>
+        have none above ${pct(h.floor, 0)}. A gap between the tall bars is a natural place for the threshold;
+        no gap means there is no clear line between “the same” and “different”.</div>`;
+}
+
+function pagerInto(el, info, go) {
+    if (!el) return;
+    el.innerHTML = '';
+    if (!info.total) return;
+    const shown = info.offset + info.count;
+    el.textContent = `${info.offset + 1}–${shown} of ${info.total}${info.noun ? ' ' + info.noun : ''}`;
+    if (info.offset > 0) {
+        const b = document.createElement('button'); b.className = 'landscape-open'; b.textContent = '← previous';
+        b.onclick = (ev) => { ev.stopPropagation(); go(Math.max(0, info.offset - info.limit)); }; el.appendChild(b);
+    }
+    if (shown < info.total) {
+        const b = document.createElement('button'); b.className = 'landscape-open'; b.textContent = 'next →';
+        b.onclick = (ev) => { ev.stopPropagation(); go(info.offset + info.limit); }; el.appendChild(b);
+    }
+}
+
+// ---- Selected-branch scope ------------------------------------------------
+function renderBranchDuplicates() {
+    const data = centerGroupsState.data;
+    const list = document.getElementById('cgList');
+    const summary = document.getElementById('cgSummary');
+    const more = document.getElementById('cgMore');
+    if (!data || !list) return;
+    const value = centerGroupsValueLabel();
+    const compared = data.anchors.filter(a => a.compared);
+    const withAlt = compared.filter(a => a.total > 0);
+    const simpler = compared.filter(a => a.simplest && a.simplest.d < data.d);
+    if (summary) {
+        summary.innerHTML = `Branch <strong>${escHtml(data.feature_names.join(' + '))}</strong> (${data.d}D):
+            <strong>${data.n_centers}</strong> centres, coverage ${pct(data.coverage)}.
+            <strong>${withAlt.length}</strong> of them are also described by other characteristics at ≥ ${pct(data.threshold, 0)};
+            <strong>${simpler.length}</strong> can be described with fewer characteristics.`;
+    }
+    renderCenterGroupsHistogram(data);
+    const note = document.getElementById('cgNote');
+    if (note) {
+        const sc = currentPayload && currentPayload.search_centers, cc = currentPayload && currentPayload.centers;
+        const differs = sc && cc && (sc.n_centers !== cc.n_centers);
+        note.innerHTML = differs
+            ? `<span class="cg-warn">The search scored this schema on a capacity-coarsened partition (${sc.n_centers} centres); the lattice shows the full-resolution one (${cc.n_centers}). This tab compares the search partition's centres — the ones the landscape counts.</span>`
+            : '';
+    }
+    list.innerHTML = '';
+    if (!data.anchors.length) list.innerHTML = '<div class="cg-busy">This schema has no certified centre at this purity floor.</div>';
+    data.anchors.forEach(a => {
+        const card = document.createElement('button');
+        card.type = 'button';
+        const open = centerGroupsState.openAnchor === a.cell;
+        card.className = 'cg-card' + (open ? ' open' : '') + (a.compared ? '' : ' cg-card-muted');
+        let body;
+        if (!a.compared) {
+            body = `<div class="cg-single">Fewer than ${data.min_rows} rows — not compared (lower “Min rows” to include it).</div>`;
+        } else if (a.total === 0) {
+            body = `<div class="cg-single">No other centre holds ≥ ${pct(data.threshold, 0)} of the same rows. Only this description finds this group.</div>`;
+        } else {
+            const byD = a.schemas_by_d.map((c, i) => c ? `${i + 1}D×${c}` : null).filter(Boolean).join(' ');
+            const featList = a.features.map(f => `${escHtml(f.feature)} (${f.schemas})`).join(' · ');
+            const s = a.simplest;
+            const simplerLine = s && s.d < data.d
+                ? `<div class="cg-simpler"><div>${s.identical || s.similarity >= 1 ? 'The same rows' : `${pct(s.similarity, 0)} the same rows`} with ${s.d} characteristic${s.d === 1 ? '' : 's'} <span class="cg-feat">(${s.n} rows, ${value} ${pct(s.purity)})</span>:</div>${conditionsHtml(s.conditions)}</div>`
+                : '';
+            body = `<div class="cg-dup">${a.total} other description${a.total === 1 ? '' : 's'}${a.n_identical ? ` (${a.n_identical} with exactly the same rows)` : ''} · ${a.n_schemas} schemas (${byD})</div>
+                ${simplerLine}
+                <div class="cg-num">Characteristics used: ${featList}</div>
+                <div class="cg-num">All descriptions together: <strong>${a.union.n}</strong> rows, ${value} ${pct(a.union.purity)}</div>`;
+        }
+        card.innerHTML = `
+            <div class="cg-desc">${centreHtml(data.d, a.conditions)}</div>
+            <div class="cg-num"><strong>${a.n}</strong> rows · ${value} <strong>${pct(a.purity)}</strong>
+                <span title="One-sided Clopper–Pearson lower bound at the schema's Bonferroni level α/C = ${a.alpha_eff.toExponential(2)}">(≥ ${pct(a.purity_lower)})</span>
+                · holds <strong>${pct(a.share_of_value)}</strong> of ${value}</div>
+            ${body}`;
+        if (a.compared && a.total > 0) card.onclick = () => toggleBranchAnchor(a);
+        list.appendChild(card);
+        if (open) {
+            const det = document.createElement('div');
+            det.className = 'cg-detail';
+            det.id = 'cgDetail';
+            list.appendChild(det);
+            renderOverlapTable(det, {
+                title: `${a.total} other centre${a.total === 1 ? '' : 's'} with ≥ ${pct(data.threshold, 0)} of the same rows`,
+                subtitle: 'compared with this branch centre, both ways',
+                refLabel: 'this branch',
+                ref: Object.assign({ d: data.d, schema_features: data.features }, a),
+                members: a.alternatives,
+                page: { total: a.total, offset: a.offset, limit: a.limit, count: a.alternatives.length },
+                go: (off) => loadBranchAnchorPage(a.cell, off),
+                close: () => toggleBranchAnchor(a),
+            });
+        }
+    });
+    if (more) more.innerHTML = '';
+}
+
+function toggleBranchAnchor(a) {
+    if (centerGroupsState.openAnchor === a.cell) {
+        centerGroupsState.openAnchor = null;
+        centerGroupsState.detail = null;
+        setCenterGroupHighlight(null);
+    } else {
+        centerGroupsState.openAnchor = a.cell;
+        centerGroupsState.detail = { anchor: a };
+        setCenterGroupHighlight(a.landscape_cells);
+    }
+    renderBranchDuplicates();
+}
+
+async function loadBranchAnchorPage(cell, offset) {
+    const req = centerGroupsRequest();
+    if (!req || req.scope !== 'branch') return;
+    const body = Object.assign({}, req.body, { anchor: cell, limit: CG_MEMBER_PAGE, offset });
+    try {
+        const res = await fetch('/api/centers/branch', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+        });
+        const data = await res.json();
+        if (!res.ok || centerGroupsState.openAnchor !== cell || !centerGroupsState.data) return;
+        const i = centerGroupsState.data.anchors.findIndex(x => x.cell === cell);
+        if (i >= 0) centerGroupsState.data.anchors[i] = data.anchors[0];
+        renderBranchDuplicates();
+    } catch (err) {
+        const el = document.getElementById('cgDetail');
+        if (el) el.innerHTML = `<div class="cg-warn">Request failed: ${escHtml(err.message)}</div>`;
+    }
+}
+
+// ---- All-centres scope ----------------------------------------------------
+function renderCenterGroups() {
+    const data = centerGroupsState.data;
+    const list = document.getElementById('cgList');
+    const more = document.getElementById('cgMore');
+    const summary = document.getElementById('cgSummary');
+    const note = document.getElementById('cgNote');
+    if (note) note.innerHTML = '';
+    if (!data || !list) return;
+    if (summary) {
+        summary.innerHTML = `<strong>${data.n_centers}</strong> centres (≥ ${data.min_rows} rows) in all scored schemas
+            → <strong>${data.n_distinct}</strong> distinct row sets → <strong>${data.n_groups}</strong> groups at ${pct(data.threshold, 0)};
+            <strong>${data.n_groups_with_duplicates}</strong> groups are described by more than one centre
+            (${data.n_centers_in_duplicate_groups} centres).`;
+    }
+    renderCenterGroupsHistogram(data);
+    const value = centerGroupsValueLabel();
+    list.innerHTML = '';
+    if (!data.groups.length) list.innerHTML = '<div class="cg-busy">No group matches this filter.</div>';
+    data.groups.forEach(g => {
+        const r = g.representative;
+        const card = document.createElement('button');
+        card.type = 'button';
+        card.className = 'cg-card' + (centerGroupsState.openGroup === g.group ? ' open' : '');
+        const others = g.n_members - 1;
+        const featList = g.features.map(f => `${escHtml(f.feature)} (${f.schemas})`).join(' · ');
+        const byD = g.schemas_by_d.map((c, i) => c ? `${i + 1}D×${c}` : null).filter(Boolean).join(' ');
+        card.innerHTML = `
+            <div class="cg-desc">${centreHtml(r.d, r.conditions)}</div>
+            <div class="cg-num"><strong>${r.n}</strong> rows · ${value} <strong>${pct(r.purity)}</strong>
+                <span title="One-sided Clopper–Pearson lower bound at the schema's Bonferroni level α/C = ${r.alpha_eff.toExponential(2)}">(≥ ${pct(r.purity_lower)})</span>
+                · holds <strong>${pct(r.share_of_value)}</strong> of ${value}</div>
+            ${others > 0
+                ? `<div class="cg-dup">+${others} more centre${others === 1 ? '' : 's'} with ≥ ${pct(data.threshold, 0)} the same rows · ${g.n_schemas} schemas (${byD})</div>
+                   <div class="cg-num">Characteristics used: ${featList}</div>
+                   <div class="cg-num">All descriptions together: <strong>${g.union.n}</strong> rows, ${value} ${pct(g.union.purity)} · weakest link ${pct(g.min_similarity, 0)}</div>`
+                : '<div class="cg-single">No other centre describes this group.</div>'}`;
+        if (others > 0) card.onclick = () => toggleCenterGroup(g);
+        list.appendChild(card);
+        if (centerGroupsState.openGroup === g.group) {
+            const det = document.createElement('div');
+            det.className = 'cg-detail';
+            det.id = 'cgDetail';
+            list.appendChild(det);
+            const d = centerGroupsState.detail;
+            if (!d) { det.innerHTML = '<div class="cg-busy">Loading the centres of this group…</div>'; return; }
+            renderOverlapTable(det, {
+                title: `${d.total} other centre${d.total === 1 ? '' : 's'} in this group`,
+                subtitle: `at least ${pct(d.threshold, 0)} of rows shared with the representative, both ways`,
+                refLabel: 'representative',
+                ref: d.representative,
+                members: d.members,
+                page: { total: d.total, offset: d.offset, limit: d.limit, count: d.members.length },
+                go: (off) => loadCenterGroupDetail(off),
+                close: () => toggleCenterGroup({ group: d.group }),
+            });
+        }
+    });
+    pagerInto(more, { total: data.total, offset: data.offset, limit: data.limit, count: data.groups.length, noun: 'groups' },
+        (off) => refreshCenterGroups(off));
+}
+
+async function toggleCenterGroup(g) {
+    if (centerGroupsState.openGroup === g.group) {
+        centerGroupsState.openGroup = null;
+        centerGroupsState.detail = null;
+        setCenterGroupHighlight(null);
+        renderCenterGroups();
+        return;
+    }
+    centerGroupsState.openGroup = g.group;
+    centerGroupsState.detail = null;
+    setCenterGroupHighlight(g.landscape_cells);
+    renderCenterGroups();
+    await loadCenterGroupDetail(0);
+}
+
+async function loadCenterGroupDetail(offset) {
+    const req = centerGroupsRequest();
+    const gid = centerGroupsState.openGroup;
+    if (!req || req.scope !== 'all' || gid === null) return;
+    const body = Object.assign({}, req.body, { group: gid, limit: CG_MEMBER_PAGE, offset: offset || 0 });
+    delete body.filter_d; delete body.sort;
+    try {
+        const res = await fetch('/api/centers/group', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+        });
+        const data = await res.json();
+        if (centerGroupsState.openGroup !== gid) return;
+        if (!res.ok) {
+            const el = document.getElementById('cgDetail');
+            if (el) el.innerHTML = `<div class="cg-warn">${escHtml(data.error || res.status)}</div>`;
+            return;
+        }
+        centerGroupsState.detail = data;
+        renderCenterGroups();
+    } catch (err) {
+        const el = document.getElementById('cgDetail');
+        if (el) el.innerHTML = `<div class="cg-warn">Request failed: ${escHtml(err.message)}</div>`;
+    }
+}
+
+// ---- The overlap table (both scopes) ----------------------------------------
+function sideText(side, value) {
+    if (!side || side.n === 0) return '0';
+    return `${side.n} <span class="cg-feat">(${value} ${pct(side.purity, 0)})</span>`;
+}
+
+function renderOverlapTable(el, spec) {
+    const value = centerGroupsValueLabel();
+    const r = spec.ref;
+    const refShort = spec.refLabel === 'representative' ? 'rep.' : 'branch';
+    const rows = [];
+    rows.push(`<tr class="cg-rep">
+        <td class="cg-desc-cell">${centreHtml(r.d, r.conditions, `<span class="cg-tag cg-tag-ref">${escHtml(spec.refLabel)}</span>`)}</td>
+        <td>${r.n}</td><td>${pct(r.purity)} <span class="cg-feat">≥ ${pct(r.purity_lower)}</span></td>
+        <td>—</td><td>—</td><td>—</td><td>—</td><td>—</td>
+        <td><button type="button" class="landscape-open" data-feats="${r.schema_features.join(',')}">open</button></td></tr>`);
+    spec.members.forEach(m => {
+        rows.push(`<tr>
+            <td class="cg-desc-cell">${centreHtml(m.d, m.conditions, m.identical ? '<span class="cg-tag">same rows</span>' : '', r.conditions)}</td>
+            <td>${m.n}</td>
+            <td>${pct(m.purity)} <span class="cg-feat">≥ ${pct(m.purity_lower)}</span></td>
+            <td><strong>${pct(m.similarity, 0)}</strong></td>
+            <td>${pct(m.share_in_representative, 0)} / ${pct(m.share_of_representative, 0)}</td>
+            <td>${pct(m.chance_similarity, 0)} <span class="cg-feat">→ ${pct(m.similarity_above_chance, 0)}</span></td>
+            <td>${sideText(m.only_here, value)}</td>
+            <td>${sideText(m.only_in_representative, value)}</td>
+            <td><button type="button" class="landscape-open" data-feats="${m.schema_features.join(',')}">open</button></td></tr>`);
+    });
+    el.innerHTML = `
+        <div class="cg-detail-head"><span>${escHtml(spec.title)}
+            <span class="cg-sub">· ${escHtml(spec.subtitle)} · <span class="cg-diff-key">highlighted</span> = not in the ${spec.refLabel === 'representative' ? 'representative' : 'branch centre'}</span></span>
+            <button type="button" class="landscape-close" title="Close">✕</button></div>
+        <div class="cg-table-wrap"><table class="cg-table">
+            <thead><tr>
+                <th>Centre</th><th>Rows</th><th>${escHtml(value)}</th>
+                <th title="Mutual containment: the smaller of the two shares to the right. The threshold is compared with this number.">Similarity</th>
+                <th title="Share of this centre's rows inside the ${escHtml(spec.refLabel)} / share of the ${escHtml(spec.refLabel)}'s rows inside this centre.">In ${refShort} / ${refShort} in it</th>
+                <th title="Left: the similarity two unrelated centres of these sizes would reach by chance, min(size) / all rows. Right: the observed similarity rescaled against it, (s − chance) / (1 − chance): 100% means identical rows, 0% means no more overlap than chance. Large centres overlap a lot by chance, so read the right number for them.">Chance → above it</th>
+                <th title="Rows of this centre that the ${escHtml(spec.refLabel)} does not hold, and the share of the value among them. A share near the base rate means the extra rows are noise.">Only here</th>
+                <th title="Rows of the ${escHtml(spec.refLabel)} that this centre does not hold, and the share of the value among them.">Only in ${refShort}</th>
+                <th></th></tr></thead>
+            <tbody>${rows.join('')}</tbody></table></div>
+        <div class="landscape-cell-more" id="cgDetailMore"></div>`;
+    el.querySelector('.landscape-close').onclick = (ev) => { ev.stopPropagation(); spec.close(); };
+    el.querySelectorAll('button[data-feats]').forEach(b => {
+        b.onclick = (ev) => { ev.stopPropagation(); openSchemaFromLandscape(b.dataset.feats.split(',').map(Number)); };
+    });
+    pagerInto(document.getElementById('cgDetailMore'), spec.page, spec.go);
+}
+
+// Rings on the landscape around the lattice cells holding the schemas of the
+// expanded card (drawn by renderLandscape for the lattice shown there).
+function setCenterGroupHighlight(cells) {
+    landscapeState.highlight = cells && cells.length ? cells : null;
+    if (viewMode === 'landscape' && landscapeState.bins) renderLandscape();
+}
+
+function landscapeHighlightPoints(bins) {
+    const cells = landscapeState.highlight;
+    if (!cells) return null;
+    const all = bins.d === null || bins.d === undefined;
+    const seen = new Map();
+    cells.forEach(c => {
+        if (!all && Number(c.d) !== Number(bins.d)) return;
+        const iy = all ? c.iy_all : c.iy;
+        const k = `${c.ix},${iy}`;
+        seen.set(k, (seen.get(k) || 0) + c.schemas);
+    });
+    const xs = [], ys = [], hov = [];
+    seen.forEach((n, k) => {
+        const [ix, iy] = k.split(',').map(Number);
+        xs.push(ix); ys.push(iy); hov.push(`${n} schema${n === 1 ? '' : 's'} of the card opened in Duplicates`);
+    });
+    return { xs, ys, hov };
+}
+
 
 // ---------------------------------------------------------------------------
 // Tau-curves: the landscape's envelope over the purity floor (Section 4.9)

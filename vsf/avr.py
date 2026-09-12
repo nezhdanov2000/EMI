@@ -65,6 +65,7 @@ from .centers import (
 )
 from .centers import select_dimensionality as _select_dimensionality
 from .metrics import cell_codes, dense_codes_from_flat
+from .screen import exact_dependencies
 from .pmd import (
     coarsen_column,
     discretize_dataset,
@@ -80,6 +81,11 @@ from .pmd import (
 # channel to search for, unlike v1.0's d_max=7 (which searched further than
 # the display could ever show).
 MAX_BRANCH_D = 4
+
+#: Largest number of combinations whose pre-coarsening occupancy is kept
+#: while pruning dependent candidates (`_CandidateFactory._is_redundant`).
+#: Beyond it the rule prunes less, never more.
+_OCCUPANCY_CACHE_MAX: int = 1_000_000
 
 #: Default number of permutation replicates for a branch's familywise
 #: coverage p-value (`coverage_p_value_familywise`). 999 gives a resolution
@@ -270,6 +276,7 @@ class _CandidateFactory:
         bin_counts: Sequence[int],
         n_samples: int,
         ordered: Optional[Sequence[bool]] = None,
+        determined_by: Optional[Dict[int, Sequence[int]]] = None,
     ) -> None:
         X = np.asarray(X_discrete)
         if X.ndim != 2:
@@ -300,6 +307,18 @@ class _CandidateFactory:
             self._orders.append(order)
             self._levels.append(int(order.shape[0]))
         self._coarse: Dict[Tuple[int, int], Tuple[np.ndarray, int]] = {}
+        # Exact functional dependencies between columns (`vsf.screen.
+        # exact_dependencies`): `determined_by[y]` are the columns that fix
+        # y's value. When given, `iter_candidates` skips the candidates they
+        # make redundant - see that method.
+        self.determined_by: Dict[int, Tuple[int, ...]] = {
+            int(j): tuple(int(i) for i in v) for j, v in (determined_by or {}).items()
+        }
+        # Occupancy of already-enumerated combinations BEFORE any capacity
+        # coarsening, the quantity the pruning rule needs. Bounded; beyond
+        # the bound the rule simply prunes less (never more).
+        self._occupancy: Dict[Tuple[int, ...], int] = {}
+        self.n_pruned = 0
 
     # -- coarsening ---------------------------------------------------------
     def _coarse_column(self, j: int, k: int) -> Tuple[np.ndarray, int]:
@@ -379,6 +398,39 @@ class _CandidateFactory:
             return dense, n_cells
         return self._coarsened_codes(tuple(combo))
 
+    def _is_redundant(self, combo: Tuple[int, ...], max_d: int) -> bool:
+        """
+        True when this combination is a RENAMING of a smaller one, provably:
+        it holds a column y and a column x that determines y exactly, and the
+        combination without y was enumerated with an occupancy (before
+        coarsening) within the grid capacity.
+
+        Why that second condition is needed. Because y = f(x), refining by y
+        splits no cell, so the joint partition of S and of S u {y} are the
+        same SET of cells - but only before the capacity rule runs. Both have
+        the same occupancy, so if it fits the capacity neither is coarsened
+        and the two partitions are identical; if it does not, the two are
+        coarsened from different nominal level counts and can differ, so the
+        candidate is kept and scored.
+
+        When the smaller combination's occupancy is not in the cache (it was
+        itself pruned, or the cache is full), the rule declines to prune. The
+        error is therefore one-sided: a pruned candidate is always an exact
+        duplicate of one that is scored.
+        """
+        if not self.determined_by or len(combo) < 2:
+            return False
+        members = set(combo)
+        for y in combo:
+            for x in self.determined_by.get(y, ()):  # x -> y exactly
+                if x == y or x not in members:
+                    continue
+                base = tuple(q for q in combo if q != y)
+                occ = self._occupancy.get(base)
+                if occ is not None and occ <= self.capacity:
+                    return True
+        return False
+
     def iter_candidates(
         self, max_d: int
     ) -> Iterator[Tuple[Tuple[int, ...], np.ndarray, int]]:
@@ -386,6 +438,11 @@ class _CandidateFactory:
         Every (combo, cell codes, n_cells) of the exhaustive family, in
         `itertools.combinations` order for d = 1, ..., max_d - the order the
         search's first-wins tie rule is defined against.
+
+        With `determined_by` given, combinations that `_is_redundant` proves
+        to be renamings of a smaller one are skipped (counted in
+        `n_pruned`): they carry the identical partition, hence the identical
+        coverage, K and mass, at a higher dimensionality.
         """
         m = self.n_features
         if self.n_samples == 0:
@@ -393,6 +450,7 @@ class _CandidateFactory:
                 for combo in itertools.combinations(range(m), d):
                     yield combo, np.zeros(0, dtype=np.int64), 0
             return
+        cache = bool(self.determined_by)
         for d in range(1, max_d + 1):
             for prefix in itertools.combinations(range(m), d - 1):
                 base: Optional[Tuple[np.ndarray, int]] = (
@@ -402,12 +460,17 @@ class _CandidateFactory:
                 start = prefix[-1] + 1 if prefix else 0
                 for j in range(start, m):
                     combo = prefix + (j,)
+                    if self._is_redundant(combo, max_d):
+                        self.n_pruned += 1
+                        continue
                     col, radix = self._raw_shifted[j], self._raw_radix[j]
                     if base is None:
                         flat, total = col, radix
                     else:
                         flat, total = base[0] * radix + col, base[1] * radix
                     dense, n_cells = self._dense(flat, total)
+                    if cache and d < max_d and len(self._occupancy) < _OCCUPANCY_CACHE_MAX:
+                        self._occupancy[combo] = n_cells
                     if n_cells <= self.capacity:
                         yield combo, dense, n_cells
                     else:
@@ -884,6 +947,7 @@ def discover_branches(
     cv_repeats: int = 5,
     direction: Direction = "presence",
     landscape: Optional[Landscape] = None,
+    prune_dependent: bool = False,
 ) -> Dict[int, BranchResult]:
     """
     Independent Branch Discovery (Project_Master_Document.md Section 4.3).
@@ -892,7 +956,9 @@ def discover_branches(
 
         S*_d = argmax_{S subset of {1,...,M}, |S| = d}  coverage_score(Z_pos; X_S)
 
-    by exhaustively enumerating every C(M, d) combination - never a greedy
+    by exhaustively enumerating every C(M, d) combination (minus the ones
+    `prune_dependent` proves to be renamings of a smaller one, Section 4.12)
+    - never a greedy
     approximation, never a prefiltered candidate pool. `coverage_score`
     (`vsf.centers.coverage_score`) ranks lexicographically by (coverage,
     -n_centres, -mass, best per-cell lower bound); see its docstring for the
@@ -983,7 +1049,7 @@ def discover_branches(
         raise ValueError("permutation counts must be non-negative")
     spec = center_spec if center_spec is not None else CenterSpec()
 
-    prepared = _prepare_search(X, Z, feature_names, positive_class, spec, direction)
+    prepared = _prepare_search(X, Z, feature_names, positive_class, spec, direction, prune_dependent)
     branches: Dict[int, BranchResult] = {}
     if prepared is None:
         return branches
@@ -1026,6 +1092,7 @@ def _prepare_search(
     positive_class: Optional[object],
     spec: CenterSpec,
     direction: Direction,
+    prune_dependent: bool = False,
 ) -> Optional[Tuple[_CandidateFactory, np.ndarray, List[str]]]:
     """
     Everything a search needs before enumerating: the discretised feature
@@ -1062,8 +1129,12 @@ def _prepare_search(
     reason = base_rate_reason(spec, prevalence, direction)
     if reason is not None:
         raise ValueError(reason)
+    determined_by = exact_dependencies(X_arr, names) if prune_dependent else None
     return (
-        _CandidateFactory(X_discrete, bin_counts, n_samples, ordered=ordered_columns(X_arr)),
+        _CandidateFactory(
+            X_discrete, bin_counts, n_samples, ordered=ordered_columns(X_arr),
+            determined_by=determined_by,
+        ),
         z_binary,
         names,
     )
@@ -1077,6 +1148,7 @@ def compute_landscape(
     positive_class: Optional[object] = None,
     center_spec: Optional[CenterSpec] = None,
     direction: Direction = "presence",
+    prune_dependent: bool = False,
 ) -> Landscape:
     """
     The `Landscape` of the search `discover_branches` would run with these
@@ -1086,7 +1158,7 @@ def compute_landscape(
     if max_d < 1 or max_d > MAX_BRANCH_D:
         raise ValueError(f"max_d must be in [1, {MAX_BRANCH_D}], got {max_d}")
     spec = center_spec if center_spec is not None else CenterSpec()
-    prepared = _prepare_search(X, Z, feature_names, positive_class, spec, direction)
+    prepared = _prepare_search(X, Z, feature_names, positive_class, spec, direction, prune_dependent)
     if prepared is None:
         return Landscape(int(np.asarray(X).shape[0]), 0, direction, []).freeze()
     factory, z_binary, names = prepared
@@ -1125,6 +1197,7 @@ def compute_tau_curves(
     center_spec: Optional[CenterSpec] = None,
     direction: Direction = "presence",
     step_pct: float = 1.0,
+    prune_dependent: bool = False,
 ) -> Dict[str, object]:
     """
     The per-dimensionality ENVELOPE of the solution landscape over the
@@ -1166,6 +1239,7 @@ def compute_tau_curves(
                    rule=spec.rule, min_samples=spec.min_samples, method=spec.method,
                    multiplicity=spec.multiplicity),
         direction,
+        prune_dependent,
     )
     if prepared is None:
         return {"taus": [], "curves": {}, "anchor": 0.0, "step_pct": step_pct,
@@ -1424,6 +1498,7 @@ def iter_branches_by_value(
     cell_bounds: bool = True,
     direction: Direction = "presence",
     skipped: Optional[Dict[str, str]] = None,
+    prune_dependent: bool = False,
 ) -> Iterator[Tuple[str, Dict[int, BranchResult]]]:
     """
     Lazy form of `discover_branches_by_value`: the shared exhaustive search
@@ -1463,7 +1538,10 @@ def iter_branches_by_value(
 
     X_discrete, bin_counts = discretize_dataset(X_arr)
     effective_max_d = min(max_d, n_features)
-    factory = _CandidateFactory(X_discrete, bin_counts, n_samples, ordered=ordered_columns(X_arr))
+    factory = _CandidateFactory(
+        X_discrete, bin_counts, n_samples, ordered=ordered_columns(X_arr),
+        determined_by=(exact_dependencies(X_arr, feature_names) if prune_dependent else None),
+    )
 
     uniq, z_codes = np.unique(Z_str, return_inverse=True)
     z_codes = z_codes.astype(np.int64).ravel()
@@ -1533,6 +1611,7 @@ def discover_branches_by_value(
     cell_bounds: bool = True,
     direction: Direction = "presence",
     skipped: Optional[Dict[str, str]] = None,
+    prune_dependent: bool = False,
 ) -> Dict[str, Dict[int, BranchResult]]:
     """
     `discover_branches` for SEVERAL one-vs-rest positive classes of the same
@@ -1579,6 +1658,7 @@ def discover_branches_by_value(
             cell_bounds=cell_bounds,
             direction=direction,
             skipped=skipped,
+            prune_dependent=prune_dependent,
         )
     )
 
