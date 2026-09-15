@@ -16,8 +16,8 @@
     <!-- Plotly.js -->
     <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
 
-    <link rel="stylesheet" href="/static/css/styles.css?v=5014">
-    <script src="/static/js/app.js?v=5014" defer></script>
+    <link rel="stylesheet" href="/static/css/styles.css?v=5031">
+    <script src="/static/js/app.js?v=5031" defer></script>
 </head>
 
 <body>
@@ -139,12 +139,12 @@
                          of (coverage, centres) categories coloured by how many
                          schemas fall in each. -->
                     <div style="display: flex; align-items: center; gap: 8px; border-left: 1px solid var(--border-color); padding-left: 1rem;"
-                        title="Lattice: the cells of the selected branch. Landscape: every schema the search scored, as a lattice of (coverage, centres) categories coloured by how many schemas reach each — the winner is one point of it. Duplicates: centres of different schemas that hold (almost) the same rows.">
+                        title="Lattice: the cells of the selected branch. Landscape: every schema the search scored, as a lattice of (coverage, centres) categories coloured by how many schemas reach each — the winner is one point of it. Redundancy: centres of different schemas that hold (almost) the same rows.">
                         <div class="view-toggle-group" style="padding: 2px;">
                             <button type="button" class="view-mode-btn active" data-mode="lattice" onclick="setViewMode('lattice')">Lattice</button>
                             <button type="button" class="view-mode-btn" data-mode="landscape" onclick="setViewMode('landscape')">Landscape</button>
                             <button type="button" class="view-mode-btn" data-mode="screen" onclick="setViewMode('screen')" title="The dataset screen: what each column is, which columns (nearly) determine each other, and which columns are excluded from the search.">Data</button>
-                            <button type="button" class="view-mode-btn" data-mode="duplicates" onclick="setViewMode('duplicates')" title="Which centres of other schemas hold (almost) the same rows as the centres of the selected branch - or, on request, of every scored schema.">Duplicates</button>
+                            <button type="button" class="view-mode-btn" data-mode="redundancy" onclick="setViewMode('redundancy')" title="Which centres of other schemas hold (almost) the same rows as the centres of the selected branch - or, on request, of every scored schema.">Redundancy</button>
                         </div>
                     </div>
                     <div style="font-size: 0.85rem; color: var(--text-dim);"
@@ -189,14 +189,14 @@
                 </div>
             </div>
 
-            <!-- Duplicates (Project_Master_Document.md Section 4.11; hidden unless
-                 the Duplicates view mode is on). Two centres are "the same" when
+            <!-- Redundancy (Project_Master_Document.md Section 4.11; hidden unless
+                 the Redundancy view mode is on). Two centres are "the same" when
                  EACH holds at least t of the other's rows. Default scope: the
                  centres of the selected branch, each with every centre of another
                  schema that is t-similar to it. "All centres" groups every centre
                  of every scored schema around a representative. Descriptive only:
                  no centre, coverage or p-value changes. -->
-            <div id="duplicatesArea" style="display: none;">
+            <div id="redundancyArea" style="display: none;">
                 <div id="centerGroupsPanel" class="cg-panel">
                     <div class="cg-head">
                         <div class="cg-title-row">
@@ -204,7 +204,6 @@
                                 <button type="button" class="cg-scope-btn active" data-scope="branch" onclick="setCenterGroupsScope('branch')">Selected branch</button>
                                 <button type="button" class="cg-scope-btn" data-scope="all" onclick="setCenterGroupsScope('all')">All centres</button>
                             </div>
-                            <span id="cgSummary" class="cg-summary">—</span>
                         </div>
                         <div class="cg-controls">
                             <label title="Two centres count as the same group when EACH of them holds at least this share of the other's rows: |A ∩ B| / max(|A|, |B|) ≥ t. A small centre inside a large one is therefore not a duplicate of it. Range 50–100 %.">
@@ -215,6 +214,14 @@
                             <label title="Centres with fewer rows are not compared. Their purity estimate is too uncertain to call two of them 'the same group'. The landscape and the coverage are not affected.">
                                 Min rows
                                 <input type="number" id="cgMinRows" min="1" step="1" value="10" onchange="onCenterGroupsControl(false)">
+                            </label>
+                            <label title="Which alternatives are listed, by how their characteristics stand to the reference's. Related: one set of characteristics contains the other — the same lineage of the search, so the alternative is an extension or a shortening of the reference description. Unrelated: neither contains the other — a description built on other characteristics. Two schemas of the same dimensionality are always unrelated. Whether the rows really nest is measured separately and shown per row; a related pair whose rows do not nest is marked ⚠ (level coarsening).">
+                                Descriptions
+                                <select id="cgKinship" onchange="onCenterGroupsControl(false)">
+                                    <option value="all">all</option>
+                                    <option value="related">related only</option>
+                                    <option value="unrelated">unrelated only</option>
+                                </select>
                             </label>
                             <span id="cgAllOnly" style="display: none;">
                                 <label title="Order of the cards: by the share of the value the representative holds, or by how many centres describe the same group.">
@@ -234,16 +241,15 @@
                             </span>
                         </div>
                     </div>
-                    <div class="cg-explain">
-                        Different characteristics can describe the same people. Each card is a centre of the selected branch;
-                        it lists the centres of other schemas that hold at least the chosen share of the same rows, and says when
-                        the same rows can be found with fewer characteristics. Switch to <strong>All centres</strong> to see every
-                        group in the search, each shown by its <strong>representative</strong> (fewest characteristics, then the
-                        highest certified purity bound). “Open” shows any listed schema as a lattice; the Landscape tab rings the
-                        schemas of the card you opened here.
-                    </div>
                     <div id="cgNote" class="cg-explain"></div>
-                    <div id="cgHistogram" class="cg-histogram"></div>
+                    <!-- Three panels across the width: what the tab is looking
+                         at (the branch's coverage is not repeated - the toolbar
+                         above carries it), then the two pictures the threshold
+                         is chosen on, each with its own counts. -->
+                    <div class="cg-boards">
+                        <div id="cgSummary" class="cg-summary cg-board"></div>
+                        <div id="cgHistogram" class="cg-histogram"></div>
+                    </div>
                     <div id="cgList" class="cg-list"></div>
                     <div id="cgMore" class="landscape-cell-more"></div>
                 </div>

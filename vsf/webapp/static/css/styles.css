@@ -1038,7 +1038,7 @@ body.absence-mode .color-scale-handle--red { --handle-color: #64748b; }
 .cg-tag-warn { background: rgba(245, 158, 11, 0.18); color: #fbbf24; }
 
 /* ---- Duplicates tab ----------------------------------------------------- */
-#duplicatesArea { flex: 1; display: flex; flex-direction: column; min-height: 560px; }
+#redundancyArea { flex: 1; display: flex; flex-direction: column; min-height: 560px; }
 .cg-panel {
     flex: none; padding: 12px 14px 16px;
     font-size: 0.78rem; color: var(--text-muted); display: flex; flex-direction: column; gap: 8px;
@@ -1048,6 +1048,22 @@ body.absence-mode .color-scale-handle--red { --handle-color: #64748b; }
 .cg-title { color: #f8fafc; font-weight: 600; font-size: 0.88rem; }
 .cg-summary { color: var(--text-dim); }
 .cg-summary strong { color: #f8fafc; font-variant-numeric: tabular-nums; }
+/* The three panels across the width of the tab: what it is looking at, and the
+   two pictures. Each is a card of its own so the numbers stop hugging the left
+   edge and the empty right half is used. */
+/* ONE card, divided into sections by hairlines: what the tab is looking at,
+   then the pictures the threshold is chosen on. */
+.cg-boards {
+    display: flex; align-items: stretch; flex-wrap: wrap; gap: 0;
+    padding: 12px 16px; border-radius: 12px;
+    background: rgba(255, 255, 255, 0.022); border: 1px solid rgba(255, 255, 255, 0.06);
+}
+.cg-board { flex: 1.4 1 320px; min-width: 0; padding-right: 20px; }
+/* The tab's own key-value table: one fact per line, values right of the label.
+   Labels may wrap; values are names and must not be broken mid-word. */
+.cg-sum { margin: 0; grid-template-columns: minmax(0, max-content) minmax(0, 1fr); column-gap: 16px; }
+.cg-stats.cg-sum dd { overflow-wrap: normal; }
+.cg-sum .cg-d { margin-right: 4px; }
 .cg-controls { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; }
 .cg-controls label { display: inline-flex; align-items: center; gap: 6px; }
 .cg-controls input, .cg-controls select {
@@ -1057,8 +1073,24 @@ body.absence-mode .color-scale-handle--red { --handle-color: #64748b; }
 .cg-controls input[type="number"] { width: 58px; }
 .cg-explain { color: var(--text-dim); line-height: 1.45; }
 .cg-explain strong { color: var(--text-muted); }
-.cg-histogram { display: flex; align-items: flex-end; gap: 14px; flex-wrap: wrap; }
-.cg-histogram svg { display: block; overflow: visible; }
+/* Two of the three panels, so they share the row with the summary. */
+.cg-histogram { display: contents; }
+.cg-histogram svg { display: block; overflow: visible; margin: 0 auto 2px; }
+/* One picture, with its caption and counts under it: a section of that card,
+   set off by a hairline rather than a fill of its own. */
+.cg-hist-block {
+    display: flex; flex-direction: column; gap: 4px;
+    flex: 1 1 240px; min-width: 0;
+    border-left: 1px solid var(--border-color); padding: 0 20px;
+}
+.cg-hist-block:last-child { padding-right: 0; }
+.cg-hist-cap { line-height: 1.35; color: var(--text-dim); }
+.cg-hist-cap strong { color: #e2e8f0; font-weight: 600; }
+/* Counts right-aligned against the panel edge, labels left. */
+.cg-hist-tab { margin-top: 3px; grid-template-columns: minmax(0, 1fr) max-content; column-gap: 14px; row-gap: 1px; }
+.cg-hist-tab dd { text-align: right; }
+.cg-hist-solid { color: var(--text-muted); }
+.cg-hist-faded { color: var(--text-dim); opacity: 0.75; }
 .cg-hist-note { color: var(--text-dim); line-height: 1.45; max-width: 420px; }
 .cg-hist-note strong { color: #f8fafc; font-variant-numeric: tabular-nums; }
 .cg-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 8px; }
@@ -1087,6 +1119,29 @@ body.absence-mode .color-scale-handle--red { --handle-color: #64748b; }
 .cg-conds dd.cg-merged { color: #fcd34d; }
 .cg-conds dt.cg-diff, .cg-conds dd.cg-diff, .cg-diff-key { color: #c4b5fd; font-weight: 600; }
 .cg-table tr:not(.cg-rep) .cg-conds dt:not(.cg-diff), .cg-table tr:not(.cg-rep) .cg-conds dd:not(.cg-diff) { color: var(--text-dim); }
+/* A card's numbers, one fact per line, aligned with the conjunction above. */
+.cg-stats {
+    display: grid; grid-template-columns: max-content minmax(0, 1fr); column-gap: 14px; row-gap: 2px;
+    margin: 6px 0 0; line-height: 1.35; font-variant-numeric: tabular-nums;
+}
+.cg-stats dt { color: var(--text-dim); font-weight: 400; }
+.cg-stats dd { margin: 0; color: var(--text-muted); overflow-wrap: anywhere; }
+.cg-stats dd strong { color: #f8fafc; }
+/* Kinship: how an alternative stands to the reference — characteristics
+   (the word) and rows (the symbol), with the disagreement between the two
+   marked. */
+.cg-kin-cell { min-width: 96px; }
+.cg-kin { color: var(--text-muted); white-space: nowrap; }
+.cg-kin .cg-sign { color: #c4b5fd; font-weight: 700; }
+.cg-kin.cg-off { opacity: 0.4; }
+.cg-kin-warn { color: #fbbf24; white-space: nowrap; }
+.cg-kin-warn .cg-sign { color: #fbbf24; }
+/* The per-card similarity strip: this centre against every other centre. */
+.cg-hist-mini { display: flex; align-items: flex-end; gap: 8px; margin-top: 7px; }
+.cg-hist-mini svg { display: block; flex: none; overflow: visible; }
+.cg-hist-mini-note { color: var(--text-dim); line-height: 1.3; font-variant-numeric: tabular-nums; }
+.cg-hist-mini-note strong { color: #f8fafc; }
+.cg-card .cg-simpler { margin-top: 6px; }
 .cg-simpler .cg-conds { margin-top: 3px; }
 .cg-simpler .cg-conds dt { color: rgba(110, 231, 183, 0.75); }
 .cg-simpler .cg-conds dd { color: #a7f3d0; }
@@ -1118,6 +1173,9 @@ body.absence-mode .color-scale-handle--red { --handle-color: #64748b; }
 .cg-table td { padding: 4px 6px; border-bottom: 1px solid rgba(255,255,255,0.04); vertical-align: top; }
 .cg-table td.cg-desc-cell { color: #e2e8f0; min-width: 260px; }
 .cg-table tr.cg-rep td { background: rgba(245, 158, 11, 0.08); }
+.cg-diff-cell { min-width: 150px; }
+.cg-diffline { white-space: nowrap; line-height: 1.35; }
+.cg-sign { color: #e2e8f0; font-weight: 600; }
 .cg-tag { display: inline-block; margin-left: 6px; padding: 0 5px; border-radius: 4px; font-size: 0.68rem; background: rgba(16, 185, 129, 0.2); color: #6ee7b7; }
 .cg-warn { color: #fbbf24; }
 .cg-busy { color: var(--text-dim); font-style: italic; }

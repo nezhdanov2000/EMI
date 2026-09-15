@@ -803,7 +803,7 @@ async function applyCertificate() {
     // tau change must NOT jump to the server's default branch. Same target,
     // same criterion, same schema: keep the active d if it still exists.
     await runAnalysis(lastTargetCol, lastCriterion, lastFeatures,
-        { preserveBranch: viewMode === 'landscape' || viewMode === 'duplicates' });
+        { preserveBranch: viewMode === 'landscape' || viewMode === 'redundancy' });
 }
 
 function renderCertificateSummary(response) {
@@ -1070,7 +1070,7 @@ function selectBranch(dKey, fromInitialLoad = false) {
 
     updateDashboard(currentPayload);
     if (viewMode === 'landscape') refreshLandscape();
-    if (viewMode === 'duplicates') refreshCenterGroups(0);
+    if (viewMode === 'redundancy') refreshCenterGroups(0);
 }
 
 function showLoader(show) {
@@ -2502,7 +2502,7 @@ function onAnalysisLoadedForLandscape(data) {
     } else if (viewMode === 'landscape') {
         refreshLandscape();
         refreshTauCurves();
-    } else if (viewMode === 'duplicates') {
+    } else if (viewMode === 'redundancy') {
         refreshCenterGroups(0);
     } else if (viewMode === 'screen') {
         refreshScreen(false);
@@ -2510,24 +2510,24 @@ function onAnalysisLoadedForLandscape(data) {
 }
 
 function setViewMode(mode) {
-    viewMode = (mode === 'landscape' || mode === 'duplicates' || mode === 'screen') ? mode : 'lattice';
+    viewMode = (mode === 'landscape' || mode === 'redundancy' || mode === 'screen') ? mode : 'lattice';
     document.querySelectorAll('.view-mode-btn').forEach(btn => {
         btn.classList.toggle('active', btn.dataset.mode === viewMode);
     });
     const lattice = viewMode === 'lattice';
     const plot = document.getElementById('plot-container');
     const area = document.getElementById('landscapeArea');
-    const dup = document.getElementById('duplicatesArea');
+    const dup = document.getElementById('redundancyArea');
     const scr = document.getElementById('screenArea');
     const slices = document.getElementById('slice-controller');
     if (plot) plot.style.display = lattice ? '' : 'none';
     if (area) area.style.display = viewMode === 'landscape' ? 'flex' : 'none';
-    if (dup) dup.style.display = viewMode === 'duplicates' ? 'flex' : 'none';
+    if (dup) dup.style.display = viewMode === 'redundancy' ? 'flex' : 'none';
     if (scr) scr.style.display = viewMode === 'screen' ? 'flex' : 'none';
     if (slices && !lattice) slices.style.display = 'none';
     // Display Settings: the scan rows and the contour panel belong to the
     // lattice; the landscape shows the tau-curves in their place; the
-    // Duplicates tab keeps only the certificate controls.
+    // Redundancy tab keeps only the certificate controls.
     const scanRows = document.getElementById('scanOnlyRows');
     const contour = document.getElementById('contourPanel');
     const curvesPanel = document.getElementById('tauCurvePanel');
@@ -2537,7 +2537,7 @@ function setViewMode(mode) {
     if (viewMode === 'landscape') {
         refreshLandscape();
         refreshTauCurves();
-    } else if (viewMode === 'duplicates') {
+    } else if (viewMode === 'redundancy') {
         refreshCenterGroups(0);
     } else if (viewMode === 'screen') {
         refreshScreen(false);
@@ -3060,7 +3060,7 @@ function renderScreen() {
 }
 
 // ---------------------------------------------------------------------------
-// Duplicates tab (Project_Master_Document.md Section 4.11)
+// Redundancy tab (Project_Master_Document.md Section 4.11)
 // ---------------------------------------------------------------------------
 // Different characteristics can describe the same objects. Two centres are
 // "the same" at threshold t when EACH holds at least t of the other's rows
@@ -3123,16 +3123,19 @@ function centerGroupsControls() {
     const mEl = document.getElementById('cgMinRows');
     const sEl = document.getElementById('cgSort');
     const fEl = document.getElementById('cgFilter');
+    const kEl = document.getElementById('cgKinship');
     let t = tEl ? Number(tEl.value) : 80;
     if (!Number.isFinite(t)) t = 80;
     t = Math.max(50, Math.min(100, t));
     let m = mEl ? Math.round(Number(mEl.value)) : 10;
     if (!Number.isFinite(m) || m < 1) m = 1;
+    const k = kEl ? kEl.value : 'all';
     return {
         threshold: Math.round(t) / 100,
         min_rows: m,
         sort: sEl && sEl.value === 'members' ? 'members' : 'coverage',
         filter: fEl ? fEl.value : 'all',
+        kinship: (k === 'related' || k === 'unrelated') ? k : 'all',
         scope: centerGroupsScope(),
     };
 }
@@ -3157,7 +3160,7 @@ function centerGroupsRequest() {
     const p = landscapeParams();
     if (!p) return null;
     const c = centerGroupsControls();
-    const body = Object.assign({}, p, { threshold: c.threshold, min_rows: c.min_rows });
+    const body = Object.assign({}, p, { threshold: c.threshold, min_rows: c.min_rows, kinship: c.kinship });
     if (c.scope === 'branch') {
         const feats = centerGroupsBranchFeatures();
         if (!feats || !feats.length) return null;
@@ -3182,7 +3185,7 @@ function onCenterGroupsControl(debounce) {
 }
 
 async function refreshCenterGroups(offset) {
-    if (viewMode !== 'duplicates') return;
+    if (viewMode !== 'redundancy') return;
     const list = document.getElementById('cgList');
     const summary = document.getElementById('cgSummary');
     const req = centerGroupsRequest();
@@ -3216,7 +3219,7 @@ async function refreshCenterGroups(offset) {
             const a = same && data.anchors.find(x => x.cell === centerGroupsState.openAnchor);
             if (!a) { centerGroupsState.openAnchor = null; centerGroupsState.detail = null; setCenterGroupHighlight(null); }
             else centerGroupsState.detail = { anchor: a };
-            renderBranchDuplicates();
+            renderBranchRedundancy();
         }
     } catch (err) {
         if (seq === centerGroupsState.seq) list.innerHTML = `<div class="cg-warn">Request failed: ${escHtml(err.message)}</div>`;
@@ -3251,43 +3254,201 @@ function conditionsHtml(conditions, ref) {
     return `<dl class="cg-conds">${rows}</dl>`;
 }
 
+// A card's numbers as a two-column list, one fact per line: label left,
+// value right, aligned with the conjunction above it. Entries whose value is
+// null are dropped, so a card never shows an empty row.
+function statsHtml(entries) {
+    const rows = entries.filter(e => e && e[1] !== null && e[1] !== undefined).map(e => {
+        const [label, value, title] = e;
+        return `<dt${title ? ` title="${escHtml(title)}"` : ''}>${escHtml(label)}</dt><dd>${value}</dd>`;
+    }).join('');
+    return rows ? `<dl class="cg-stats">${rows}</dl>` : '';
+}
+
 // Dimensionality badge + conjunction (+ optional tags under it).
 function centreHtml(d, conditions, tags, ref) {
     return `<div class="cg-centre"><span class="cg-d">${d}D</span><div class="cg-centre-body">${conditionsHtml(conditions, ref)}${tags ? `<div class="cg-tags">${tags}</div>` : ''}</div></div>`;
 }
 
-function renderCenterGroupsHistogram(data) {
-    const el = document.getElementById('cgHistogram');
-    if (!el) return;
-    const h = data.histogram;
-    const t = data.threshold;
+// ---- Similarity histograms -------------------------------------------------
+// Three scopes, all drawn by the same routine and all reading the same axis
+// (mutual containment, from the pair-store floor to 1, identity on its own
+// bar at the right):
+//   "all"    — every centre of every scored schema, one value each: how close
+//              its nearest other centre is. Shown in the All-centres scope.
+//   "branch" — the same value, but only for the centres of the selected
+//              branch. Shown above the cards of the Selected-branch scope.
+//   "center" — ONE centre against every other centre of the run (not just its
+//              nearest). Shown inside that centre's card: the bars at or above
+//              the dashed line are exactly its "other descriptions".
+function histogramBars(h, t) {
     const bars = h.counts.map((c, i) => ({ lo: h.edges[i], hi: h.edges[i + 1], c }));
     bars.push({ lo: 1, hi: 1, c: h.identical, identical: true });
+    let atOrAbove = h.identical;
+    bars.forEach(b => { if (!b.identical && b.lo >= t - 1e-9) atOrAbove += b.c; });
+    return { bars, atOrAbove };
+}
+
+// `cfg`: bar width, gap, height, and whether the floor/1.0 axis labels are
+// drawn. `noun` names what one bar counts in the tooltips. `cfg.part` is a
+// second histogram on the same bins, a subset of `h`: it is drawn solid at the
+// foot of each bar and the remainder — what `h` has and `part` does not —
+// faded above it, so a stacked bar reads as "this much is on screen, this much
+// is hidden" without changing the totals.
+function histogramSvg(h, t, cfg) {
+    const { bars } = histogramBars(h, t);
+    const part = cfg.part ? histogramBars(cfg.part, t).bars : null;
+    const bw = cfg.bw, gap = cfg.gap, H = cfg.h, padB = cfg.labels ? 16 : 2;
+    const noun = cfg.noun || 'centres';
     const maxC = Math.max(1, ...bars.map(b => b.c));
-    const bw = 16, gap = 3, H = 54, padB = 16;
     const W = bars.length * (bw + gap);
-    let svg = `<svg width="${W + 4}" height="${H + padB}" role="img" aria-label="Closest other centre, per centre">`;
+    const rx = bw >= 10 ? 2 : 1;
+    let svg = `<svg width="${W + 4}" height="${H + padB}" role="img" aria-label="${escHtml(cfg.aria || 'Similarity histogram')}">`;
     bars.forEach((b, i) => {
         const x = i * (bw + gap);
         const hgt = b.c > 0 ? Math.max(2, Math.round(H * b.c / maxC)) : 0;
         const on = b.identical || b.lo >= t - 1e-9;
         const fill = b.identical ? '#10b981' : (on ? '#f59e0b' : '#475569');
         const label = b.identical ? 'identical rows (similarity = 1)' : `similarity ${b.lo.toFixed(2)}–${b.hi.toFixed(2)}`;
-        svg += `<rect x="${x}" y="${H - hgt}" width="${bw}" height="${hgt}" rx="2" fill="${fill}"><title>${b.c} centres: closest other centre at ${label}</title></rect>`;
+        const solid = part ? part[i].c : b.c;
+        const tip = part && solid !== b.c
+            ? `${b.c} ${noun} at ${label} — ${solid} in the cards shown, ${b.c - solid} in the centres the filter hides`
+            : `${b.c} ${noun} at ${label}`;
+        // whole bar faded, then the listed part solid on top of it
+        svg += `<rect x="${x}" y="${H - hgt}" width="${bw}" height="${hgt}" rx="${rx}" fill="${fill}"`
+            + `${part ? ' opacity="0.32"' : ''}><title>${escHtml(tip)}</title></rect>`;
+        if (part && solid > 0) {
+            const sh = Math.max(2, Math.round(H * solid / maxC));
+            svg += `<rect x="${x}" y="${H - sh}" width="${bw}" height="${sh}" rx="${rx}" fill="${fill}">`
+                + `<title>${escHtml(tip)}</title></rect>`;
+        }
     });
     const tx = Math.max(0, Math.min(h.counts.length, (t - h.floor) / h.step)) * (bw + gap) - gap / 2;
     svg += `<line x1="${tx}" x2="${tx}" y1="0" y2="${H}" stroke="#f8fafc" stroke-dasharray="3,2" stroke-width="1"/>`;
-    svg += `<text x="0" y="${H + 12}" font-size="9" fill="#64748b">${h.floor.toFixed(1)}</text>`;
-    svg += `<text x="${h.counts.length * (bw + gap) - 14}" y="${H + 12}" font-size="9" fill="#64748b">1.0</text>`;
-    svg += `<text x="${h.counts.length * (bw + gap) + 4}" y="${H + 12}" font-size="9" fill="#10b981">=</text>`;
-    svg += '</svg>';
-    let atOrAbove = h.identical;
-    bars.forEach(b => { if (!b.identical && b.lo >= t - 1e-9) atOrAbove += b.c; });
-    el.innerHTML = svg + `<div class="cg-hist-note">All centres of all scored schemas: how close each one's nearest other centre is.
-        <strong>${h.identical}</strong> of ${h.n_centers} have another centre with exactly the same rows;
-        <strong>${atOrAbove}</strong> have one at or above ${pct(t, 0)} (dashed line); <strong>${h.below_floor}</strong>
-        have none above ${pct(h.floor, 0)}. A gap between the tall bars is a natural place for the threshold;
-        no gap means there is no clear line between “the same” and “different”.</div>`;
+    if (cfg.labels) {
+        svg += `<text x="0" y="${H + 12}" font-size="9" fill="#64748b">${h.floor.toFixed(1)}</text>`;
+        svg += `<text x="${h.counts.length * (bw + gap) - 14}" y="${H + 12}" font-size="9" fill="#64748b">1.0</text>`;
+        svg += `<text x="${h.counts.length * (bw + gap) + 4}" y="${H + 12}" font-size="9" fill="#10b981">=</text>`;
+    }
+    return svg + '</svg>';
+}
+
+// What each centre of a picture is compared against, under the active filter.
+function kinshipAgainst(kinship) {
+    return kinship === 'related'
+        ? 'every centre whose characteristics extend or shorten its own'
+        : kinship === 'unrelated'
+            ? 'every centre built on characteristics that neither contain nor are contained in its own'
+            : 'every centre of every scored schema';
+}
+
+// One of the two pictures above the cards, as a block: the drawing, a bold
+// caption naming what one observation is, and the counts either side of the
+// threshold. The long reading of it lives in the block's hover.
+function histogramBlock(h, t, spec) {
+    const { atOrAbove } = histogramBars(h, t);
+    const middle = h.n_centers - atOrAbove - h.below_floor;
+    const svg = histogramSvg(h, t, {
+        bw: 13, gap: 3, h: 48, labels: true, noun: spec.noun, aria: spec.aria, part: spec.part,
+    });
+    const hidden = spec.part ? h.n_centers - spec.part.n_centers : 0;
+    const rows = [
+        [`At or above ${pct(t, 0)}`, `<strong>${atOrAbove}</strong>`,
+            `${escHtml(spec.noun)} at or above the threshold — the ones the lists call the same`],
+        h.identical
+            ? ['— of them, identical rows', `<strong>${h.identical}</strong>`,
+                'Mutual containment exactly 1: the two hold the same rows, not almost the same']
+            : null,
+        t > h.floor + 1e-9
+            ? [`${pct(h.floor, 0)} to ${pct(t, 0)}`, `<strong>${middle}</strong>`,
+                `Below the threshold but still drawn: what raising or lowering it would move`]
+            : null,
+        [`Below ${pct(h.floor, 0)}`, `<strong>${h.below_floor}</strong>`,
+            `Not drawn at all: the pair store keeps nothing below ${pct(h.floor, 0)}, where two centres share less than half of the larger one`],
+        hidden > 0 ? ['In the cards shown', `<strong>${spec.part.n_centers}</strong>`,
+            'The solid part of each bar: the sum of the strips the reader can see'] : null,
+        hidden > 0 ? ['In the centres the filter hides', `<strong>${hidden}</strong>`,
+            'The faded part above it'] : null,
+        ['Total', `<span class="cg-feat">${h.n_centers} ${escHtml(spec.noun)}</span>`, null],
+    ];
+    return `<div class="cg-hist-block" title="${escHtml(spec.title)}">${svg}
+        <div class="cg-hist-cap"><strong>${escHtml(spec.caption)}</strong></div>
+        ${statsHtml(rows).replace('cg-stats', 'cg-stats cg-hist-tab')}</div>`;
+}
+
+// The pictures above the cards. Both read the same axis (mutual containment,
+// floor to 1, identity on the green bar, the threshold dashed), and they
+// differ in what ONE observation is: the left one takes each centre's nearest
+// other centre — one value per centre, so it sits at the right edge by
+// construction; the right one takes every pair, which is exactly the sum of
+// the strips inside the cards below. The branch scope draws both; the
+// All-centres scope has no pair-wise counterpart it could afford.
+function renderCenterGroupsHistogram(data) {
+    const el = document.getElementById('cgHistogram');
+    if (!el) return;
+    const h = data.histogram;
+    const t = data.threshold;
+    if (!h || !h.n_centers) {
+        el.innerHTML = h
+            ? `<div class="cg-hist-note">No centre of this branch reaches ${data.min_rows} rows, so there is nothing to compare here.</div>`
+            : '';
+        return;
+    }
+    const against = kinshipAgainst(data.kinship);
+    const branch = h.scope === 'branch';
+    const who = branch
+        ? `the ${h.n_centers} compared centre${h.n_centers === 1 ? '' : 's'} of this branch`
+        : `all ${h.n_centers} centres of all scored schemas`;
+    let out = histogramBlock(h, t, {
+        caption: 'Per centre: its nearest other centre',
+        noun: 'centres',
+        aria: 'Closest other centre, per centre',
+        title: `One bar counts CENTRES: for each of ${who}, the mutual containment with its single closest other centre, `
+            + `taken over ${against}. Every centre contributes its best match only, so this picture is pressed against `
+            + `the right edge by construction and a bar left of the dashed line is a centre with no alternative at the `
+            + `current threshold — including centres the Descriptions filter hides from the list below. Pairs below `
+            + `${pct(h.floor, 0)} are counted in the text, not drawn.`,
+    });
+    const hp = data.histogram_pairs;
+    const hl = data.histogram_pairs_listed;
+    if (hp && hp.n_centers) {
+        const hidden = hl ? hp.n_centers - hl.n_centers : 0;
+        out += histogramBlock(hp, t, {
+            caption: hidden > 0 ? 'All pairs: solid = the sum of the cards' : 'All pairs: this is the sum of the cards',
+            noun: 'pairs',
+            aria: 'Similarity of every pair',
+            part: hidden > 0 ? hl : null,
+            title: `One bar counts PAIRS: every (centre of this branch, other centre) pair, over ${against}. `
+                + (hidden > 0
+                    ? `The solid part of each bar is the elementwise sum of the strips inside the cards on screen; the `
+                      + `faded part above it belongs to the ${h.n_centers - (data.n_centers_listed || 0)} centres the `
+                      + `Descriptions filter drops from the list, which have no alternative of that kind at the current `
+                      + `threshold but do have nearer ones below it. Solid + faded is every pair of the branch.`
+                    : `This is exactly the elementwise sum of the strips inside the cards below, so the bars at or above `
+                      + `the dashed line are the alternatives those cards list, added up.`)
+                + ` Unlike the picture on the left it keeps the whole left tail, which is where a gap — if the data had `
+                + `one — would show. Pairs below ${pct(hp.floor, 0)} are counted in the text, not drawn.`,
+        });
+    }
+    el.innerHTML = out;
+}
+
+// The strip inside one card: this centre against every other centre of the
+// run. Everything at or above the dashed line is listed when the card is
+// opened, so the strip shows what moving the threshold would add or drop.
+function cardHistogramHtml(h, t) {
+    if (!h || !h.n_centers) return '';
+    const { atOrAbove } = histogramBars(h, t);
+    const svg = histogramSvg(h, t, { bw: 7, gap: 1, h: 20, labels: false, noun: 'other centres', aria: 'Similarity to every other centre' });
+    const middle = h.n_centers - atOrAbove - h.below_floor;
+    const title = `This centre against each of the ${h.n_centers} other centres it is compared with, by mutual containment `
+        + `(${pct(h.floor, 0)} to 100%, exactly the same rows on the green bar; pairs below ${pct(h.floor, 0)} are not drawn). `
+        + `Dashed line: the current threshold — everything at or above it is listed when the card is opened.`;
+    const parts = [`<strong>${atOrAbove}</strong> ≥ ${pct(t, 0)}`];
+    if (t > h.floor + 1e-9) parts.push(`${middle} in ${pct(h.floor, 0)}–${pct(t, 0)}`);
+    parts.push(`${h.below_floor} below ${pct(h.floor, 0)}`);
+    return `<div class="cg-hist-mini" title="${escHtml(title)}">${svg}`
+        + `<span class="cg-hist-mini-note">${parts.join(' · ')}</span></div>`;
 }
 
 function pagerInto(el, info, go) {
@@ -3307,7 +3468,7 @@ function pagerInto(el, info, go) {
 }
 
 // ---- Selected-branch scope ------------------------------------------------
-function renderBranchDuplicates() {
+function renderBranchRedundancy() {
     const data = centerGroupsState.data;
     const list = document.getElementById('cgList');
     const summary = document.getElementById('cgSummary');
@@ -3317,11 +3478,44 @@ function renderBranchDuplicates() {
     const compared = data.anchors.filter(a => a.compared);
     const withAlt = compared.filter(a => a.total > 0);
     const simpler = compared.filter(a => a.simplest && a.simplest.d < data.d);
+    // Under a Descriptions filter the list is an answer to "which centres have
+    // a description of this kind", so centres that have none are dropped rather
+    // than shown empty. The branch's own totals above stay whole-branch.
+    const filtered = data.kinship && data.kinship !== 'all';
+    const shown = filtered ? withAlt : data.anchors;
     if (summary) {
-        summary.innerHTML = `Branch <strong>${escHtml(data.feature_names.join(' + '))}</strong> (${data.d}D):
-            <strong>${data.n_centers}</strong> centres, coverage ${pct(data.coverage)}.
-            <strong>${withAlt.length}</strong> of them are also described by other characteristics at ≥ ${pct(data.threshold, 0)};
-            <strong>${simpler.length}</strong> can be described with fewer characteristics.`;
+        const tot = compared.reduce((s, a) => {
+            const k = a.kinship_counts;
+            return k ? { r: s.r + k.related, u: s.u + k.unrelated, w: s.w + k.inconsistent } : s;
+        }, { r: 0, u: 0, w: 0 });
+        const small = data.anchors.length - compared.length;
+        const rows = [
+            ['Branch', `<span class="cg-d">${data.d}D</span> <strong>${escHtml(data.feature_names.join(' + '))}</strong>`],
+            ['Centres compared', `<strong>${compared.length}</strong> of ${data.anchors.length}`
+                + (small ? ` <span class="cg-feat">· ${small} under Min rows</span>` : ''),
+                'Centres with fewer rows than Min rows are listed but not compared'],
+            [`Also described elsewhere`, `<strong>${withAlt.length}</strong>`,
+                `Compared centres with at least one other centre holding ≥ ${pct(data.threshold, 0)} of the same rows, both ways`],
+            ['Described with fewer characteristics', `<strong>${simpler.length}</strong>`,
+                'Compared centres whose rows are also held by a centre of a lower-dimensional schema'],
+            (tot.r + tot.u) > 0
+                ? ['Alternatives found', `<strong>${tot.r + tot.u}</strong> <span class="cg-feat">·</span> `
+                    + `<span class="cg-kin">${tot.r} related</span> <span class="cg-feat">·</span> `
+                    + `<span class="cg-kin">${tot.u} unrelated</span>`
+                    + (tot.w ? ` <span class="cg-feat">·</span> <span class="cg-kin-warn">${tot.w} ⚠</span>` : ''),
+                    'Every listed pair, over all compared centres. Related: one set of characteristics contains the other. '
+                    + '⚠: they nest by characteristics but not by rows. This count ignores the Descriptions filter.']
+                : null,
+            filtered
+                ? ['Showing', `<strong>${shown.length}</strong> centre${shown.length === 1 ? '' : 's'} `
+                    + `<span class="cg-feat">· ${compared.length - shown.length} with no such description`
+                    + `${small ? ` · ${small} under Min rows` : ''}</span>`,
+                    data.kinship === 'related'
+                        ? 'Only centres that have a description extending or shortening these characteristics'
+                        : 'Only centres that have a description built on other characteristics']
+                : null,
+        ];
+        summary.innerHTML = statsHtml(rows).replace('cg-stats', 'cg-stats cg-sum');
     }
     renderCenterGroupsHistogram(data);
     const note = document.getElementById('cgNote');
@@ -3332,36 +3526,54 @@ function renderBranchDuplicates() {
             ? `<span class="cg-warn">The search scored this schema on a capacity-coarsened partition (${sc.n_centers} centres); the lattice shows the full-resolution one (${cc.n_centers}). This tab compares the search partition's centres — the ones the landscape counts.</span>`
             : '';
     }
+    // A card the filter has just hidden cannot stay expanded.
+    if (centerGroupsState.openAnchor !== null && !shown.some(a => a.cell === centerGroupsState.openAnchor)) {
+        centerGroupsState.openAnchor = null;
+        centerGroupsState.detail = null;
+        setCenterGroupHighlight(null);
+    }
     list.innerHTML = '';
-    if (!data.anchors.length) list.innerHTML = '<div class="cg-busy">This schema has no certified centre at this purity floor.</div>';
-    data.anchors.forEach(a => {
+    if (!data.anchors.length) {
+        list.innerHTML = '<div class="cg-busy">This schema has no certified centre at this purity floor.</div>';
+    } else if (!shown.length) {
+        list.innerHTML = `<div class="cg-busy">No centre of this branch has a description built on
+            ${data.kinship === 'related' ? 'an extension or a shortening of these characteristics' : 'other characteristics'}
+            at ≥ ${pct(data.threshold, 0)}. Switch Descriptions back to “all” to see the ${data.anchors.length} centres.</div>`;
+    }
+    shown.forEach(a => {
         const card = document.createElement('button');
         card.type = 'button';
         const open = centerGroupsState.openAnchor === a.cell;
         card.className = 'cg-card' + (open ? ' open' : '') + (a.compared ? '' : ' cg-card-muted');
+        const bound = `<span class="cg-feat" title="One-sided Clopper–Pearson lower bound at the schema's Bonferroni level α/C = ${a.alpha_eff.toExponential(2)}">at least ${pct(a.purity_lower)}</span>`;
+        const stats = [
+            ['Rows', `<strong>${a.n}</strong>`],
+            [value, `<strong>${pct(a.purity)}</strong> ${bound}`, 'Share of the value among this centre\u2019s rows, and its certified lower bound'],
+            [`Of all ${value}`, `<strong>${pct(a.share_of_value)}</strong>`,
+                'How much of the value this one centre holds. These shares add up to the branch\u2019s coverage.'],
+        ];
+        const hist = a.compared ? cardHistogramHtml(a.histogram, data.threshold) : '';
         let body;
         if (!a.compared) {
-            body = `<div class="cg-single">Fewer than ${data.min_rows} rows — not compared (lower “Min rows” to include it).</div>`;
+            body = statsHtml(stats) + `<div class="cg-single">Fewer than ${data.min_rows} rows — not compared (lower “Min rows” to include it).</div>`;
         } else if (a.total === 0) {
-            body = `<div class="cg-single">No other centre holds ≥ ${pct(data.threshold, 0)} of the same rows. Only this description finds this group.</div>`;
+            // Only reachable with Descriptions = all: a filter drops these cards.
+            body = statsHtml(stats.concat([
+                ['Other descriptions', '<span class="cg-single">none</span>',
+                    `No other centre holds at least ${pct(data.threshold, 0)} of the same rows, both ways`],
+            ])) + hist;
         } else {
-            const byD = a.schemas_by_d.map((c, i) => c ? `${i + 1}D×${c}` : null).filter(Boolean).join(' ');
-            const featList = a.features.map(f => `${escHtml(f.feature)} (${f.schemas})`).join(' · ');
             const s = a.simplest;
             const simplerLine = s && s.d < data.d
                 ? `<div class="cg-simpler"><div>${s.identical || s.similarity >= 1 ? 'The same rows' : `${pct(s.similarity, 0)} the same rows`} with ${s.d} characteristic${s.d === 1 ? '' : 's'} <span class="cg-feat">(${s.n} rows, ${value} ${pct(s.purity)})</span>:</div>${conditionsHtml(s.conditions)}</div>`
                 : '';
-            body = `<div class="cg-dup">${a.total} other description${a.total === 1 ? '' : 's'}${a.n_identical ? ` (${a.n_identical} with exactly the same rows)` : ''} · ${a.n_schemas} schemas (${byD})</div>
-                ${simplerLine}
-                <div class="cg-num">Characteristics used: ${featList}</div>
-                <div class="cg-num">All descriptions together: <strong>${a.union.n}</strong> rows, ${value} ${pct(a.union.purity)}</div>`;
+            body = statsHtml(stats.concat([
+                ['Other descriptions', `<span class="cg-dup"><strong>${a.total}</strong>${a.n_identical ? ` · ${a.n_identical} with exactly the same rows` : ''}</span>`,
+                    `Centres of other schemas holding at least ${pct(data.threshold, 0)} of the same rows, both ways. Click the card to see them.`],
+                kinshipSplitEntry(a.kinship_counts, data.kinship),
+            ])) + hist + simplerLine;
         }
-        card.innerHTML = `
-            <div class="cg-desc">${centreHtml(data.d, a.conditions)}</div>
-            <div class="cg-num"><strong>${a.n}</strong> rows · ${value} <strong>${pct(a.purity)}</strong>
-                <span title="One-sided Clopper–Pearson lower bound at the schema's Bonferroni level α/C = ${a.alpha_eff.toExponential(2)}">(≥ ${pct(a.purity_lower)})</span>
-                · holds <strong>${pct(a.share_of_value)}</strong> of ${value}</div>
-            ${body}`;
+        card.innerHTML = `<div class="cg-desc">${centreHtml(data.d, a.conditions)}</div>${body}`;
         if (a.compared && a.total > 0) card.onclick = () => toggleBranchAnchor(a);
         list.appendChild(card);
         if (open) {
@@ -3374,6 +3586,7 @@ function renderBranchDuplicates() {
                 subtitle: 'compared with this branch centre, both ways',
                 refLabel: 'this branch',
                 ref: Object.assign({ d: data.d, schema_features: data.features }, a),
+                union: a.union,
                 members: a.alternatives,
                 page: { total: a.total, offset: a.offset, limit: a.limit, count: a.alternatives.length },
                 go: (off) => loadBranchAnchorPage(a.cell, off),
@@ -3394,7 +3607,7 @@ function toggleBranchAnchor(a) {
         centerGroupsState.detail = { anchor: a };
         setCenterGroupHighlight(a.landscape_cells);
     }
-    renderBranchDuplicates();
+    renderBranchRedundancy();
 }
 
 async function loadBranchAnchorPage(cell, offset) {
@@ -3409,7 +3622,7 @@ async function loadBranchAnchorPage(cell, offset) {
         if (!res.ok || centerGroupsState.openAnchor !== cell || !centerGroupsState.data) return;
         const i = centerGroupsState.data.anchors.findIndex(x => x.cell === cell);
         if (i >= 0) centerGroupsState.data.anchors[i] = data.anchors[0];
-        renderBranchDuplicates();
+        renderBranchRedundancy();
     } catch (err) {
         const el = document.getElementById('cgDetail');
         if (el) el.innerHTML = `<div class="cg-warn">Request failed: ${escHtml(err.message)}</div>`;
@@ -3426,10 +3639,17 @@ function renderCenterGroups() {
     if (note) note.innerHTML = '';
     if (!data || !list) return;
     if (summary) {
-        summary.innerHTML = `<strong>${data.n_centers}</strong> centres (≥ ${data.min_rows} rows) in all scored schemas
-            → <strong>${data.n_distinct}</strong> distinct row sets → <strong>${data.n_groups}</strong> groups at ${pct(data.threshold, 0)};
-            <strong>${data.n_groups_with_duplicates}</strong> groups are described by more than one centre
-            (${data.n_centers_in_duplicate_groups} centres).`;
+        summary.innerHTML = statsHtml([
+            ['Centres compared', `<strong>${data.n_centers}</strong> <span class="cg-feat">· in all scored schemas, ≥ ${data.min_rows} rows</span>`,
+                'Every centre of every schema the search scored, minus those below Min rows'],
+            ['Distinct row sets', `<strong>${data.n_distinct}</strong>`,
+                'Centres holding exactly the same rows are one row set; the comparison runs on these'],
+            [`Groups at ${pct(data.threshold, 0)}`, `<strong>${data.n_groups}</strong>`,
+                'Leader clustering: every member holds at least the threshold of its representative’s rows, and the other way round'],
+            ['Described more than once', `<strong>${data.n_groups_with_duplicates}</strong> groups `
+                + `<span class="cg-feat">· ${data.n_centers_in_duplicate_groups} centres</span>`,
+                'Groups whose rows carry more than one description'],
+        ]).replace('cg-stats', 'cg-stats cg-sum');
     }
     renderCenterGroupsHistogram(data);
     const value = centerGroupsValueLabel();
@@ -3441,18 +3661,23 @@ function renderCenterGroups() {
         card.type = 'button';
         card.className = 'cg-card' + (centerGroupsState.openGroup === g.group ? ' open' : '');
         const others = g.n_members - 1;
-        const featList = g.features.map(f => `${escHtml(f.feature)} (${f.schemas})`).join(' · ');
-        const byD = g.schemas_by_d.map((c, i) => c ? `${i + 1}D×${c}` : null).filter(Boolean).join(' ');
-        card.innerHTML = `
-            <div class="cg-desc">${centreHtml(r.d, r.conditions)}</div>
-            <div class="cg-num"><strong>${r.n}</strong> rows · ${value} <strong>${pct(r.purity)}</strong>
-                <span title="One-sided Clopper–Pearson lower bound at the schema's Bonferroni level α/C = ${r.alpha_eff.toExponential(2)}">(≥ ${pct(r.purity_lower)})</span>
-                · holds <strong>${pct(r.share_of_value)}</strong> of ${value}</div>
-            ${others > 0
-                ? `<div class="cg-dup">+${others} more centre${others === 1 ? '' : 's'} with ≥ ${pct(data.threshold, 0)} the same rows · ${g.n_schemas} schemas (${byD})</div>
-                   <div class="cg-num">Characteristics used: ${featList}</div>
-                   <div class="cg-num">All descriptions together: <strong>${g.union.n}</strong> rows, ${value} ${pct(g.union.purity)} · weakest link ${pct(g.min_similarity, 0)}</div>`
-                : '<div class="cg-single">No other centre describes this group.</div>'}`;
+        const bound = `<span class="cg-feat" title="One-sided Clopper–Pearson lower bound at the schema's Bonferroni level α/C = ${r.alpha_eff.toExponential(2)}">at least ${pct(r.purity_lower)}</span>`;
+        const stats = [
+            ['Rows', `<strong>${r.n}</strong>`],
+            [value, `<strong>${pct(r.purity)}</strong> ${bound}`, 'Share of the value among this centre\u2019s rows, and its certified lower bound'],
+            [`Of all ${value}`, `<strong>${pct(r.share_of_value)}</strong>`,
+                'How much of the value this one centre holds'],
+            others > 0
+                ? ['Other centres', `<span class="cg-dup"><strong>${others}</strong></span>`,
+                    `Centres holding at least ${pct(data.threshold, 0)} of the representative\u2019s rows, both ways. Click the card to see them.`]
+                : ['Other centres', '<span class="cg-single">none</span>',
+                    'No other centre describes this group at the current threshold'],
+            // The grouping itself is never filtered — paging comes from the
+            // server — so the split is shown and the active side highlighted,
+            // and the filter takes effect in the expanded member list.
+            kinshipSplitEntry(g.kinship_counts, centerGroupsControls().kinship),
+        ];
+        card.innerHTML = `<div class="cg-desc">${centreHtml(r.d, r.conditions)}</div>` + statsHtml(stats);
         if (others > 0) card.onclick = () => toggleCenterGroup(g);
         list.appendChild(card);
         if (centerGroupsState.openGroup === g.group) {
@@ -3467,6 +3692,10 @@ function renderCenterGroups() {
                 subtitle: `at least ${pct(d.threshold, 0)} of rows shared with the representative, both ways`,
                 refLabel: 'representative',
                 ref: d.representative,
+                union: d.union,
+                minSimilarity: d.min_similarity,
+                kinshipCounts: d.kinship_counts,
+                kinship: d.kinship,
                 members: d.members,
                 page: { total: d.total, offset: d.offset, limit: d.limit, count: d.members.length },
                 go: (off) => loadCenterGroupDetail(off),
@@ -3519,9 +3748,87 @@ async function loadCenterGroupDetail(offset) {
 }
 
 // ---- The overlap table (both scopes) ----------------------------------------
-function sideText(side, value) {
-    if (!side || side.n === 0) return '0';
-    return `${side.n} <span class="cg-feat">(${value} ${pct(side.purity, 0)})</span>`;
+// The rows one side holds and the other does not, with the share of the value
+// among them - the column that decides between two similar descriptions. A
+// share near the base rate means the extra rows are noise; a share near the
+// centre's own purity means they are signal the other side is missing.
+function differenceHtml(m, value, refShort) {
+    const line = (sign, side, where) => {
+        if (!side || side.n === 0) return '';
+        const share = side.purity === null || side.purity === undefined
+            ? '' : ` <span class="cg-feat">${value} ${pct(side.purity, 0)}</span>`;
+        return `<div class="cg-diffline"><span class="cg-sign">${sign}${side.n}</span> ${where}${share}</div>`;
+    };
+    const here = line('+', m.only_here, 'here');
+    const there = line('−', m.only_in_representative, `in ${refShort}`);
+    return (here + there) || '<span class="cg-feat">same rows</span>';
+}
+
+// Similarity, with the chance level spelled out only when it is high enough
+// to change the reading: two big centres overlap a great deal by accident,
+// two small ones do not.
+function similarityHtml(m) {
+    const loud = m.chance_similarity >= 0.2;
+    const tip = `Mutual containment |A ∩ B| / max(|A|, |B|), compared with the threshold. `
+        + `Two unrelated centres of these sizes would reach ${pct(m.chance_similarity, 0)} by chance; `
+        + `rescaled against that, this is ${pct(m.similarity_above_chance, 0)}.`;
+    return `<span title="${escHtml(tip)}"><strong>${pct(m.similarity, 0)}</strong>`
+        + (loud ? ` <span class="cg-warn">(${pct(m.similarity_above_chance, 0)} above chance)</span>` : '')
+        + '</span>';
+}
+
+// How an alternative stands to the reference, as the two independent facts the
+// server reports: `lineage` compares the two sets of CHARACTERISTICS, `relation`
+// compares the two sets of ROWS. They normally agree — a description that adds
+// characteristics selects a subset of the rows — and when they do not, the pair
+// is an artefact of level coarsening (a "child" cell straddling two parent
+// cells), which is marked rather than presented as a sub-cell.
+const CG_RELATION_SIGN = { identical: '=', inside: '⊂', contains: '⊃', crossing: '✕' };
+const CG_LINEAGE_WORD = { child: 'extends', parent: 'shortens', same_schema: 'same schema', unrelated: 'other' };
+
+function kinshipHtml(m, refShort) {
+    const k = m.kinship;
+    if (!k || !k.lineage) return '';
+    const rows = {
+        identical: 'exactly the same rows',
+        inside: `its rows are inside the ${refShort}'s`,
+        contains: `its rows contain the ${refShort}'s`,
+        crossing: 'each side holds rows the other does not',
+    }[k.relation];
+    const chars = {
+        child: `adds characteristics to the ${refShort}'s`,
+        parent: `uses fewer characteristics than the ${refShort}`,
+        same_schema: 'uses the same characteristics',
+        unrelated: `neither set of characteristics contains the other`,
+    }[k.lineage];
+    const warn = !k.consistent;
+    const tip = `Characteristics: ${chars}. Rows: ${rows}.`
+        + (warn ? ' These two disagree: a description that only adds characteristics cannot leave its parent\'s rows.'
+            + ' This pair comes from two different level partitions (capacity coarsening), so it is not a sub-cell of the reference.' : '');
+    return `<span class="cg-kin${warn ? ' cg-kin-warn' : ''}" title="${escHtml(tip)}">`
+        + `${escHtml(CG_LINEAGE_WORD[k.lineage] || k.lineage)} <span class="cg-sign">${CG_RELATION_SIGN[k.relation] || '?'}</span>`
+        + (warn ? ' ⚠' : '') + '</span>';
+}
+
+// The related / unrelated split of a card's alternatives, ALWAYS over the
+// unfiltered set, so switching the filter never changes this line — it says
+// what is being hidden. Returns a `statsHtml` entry, or null when there is
+// nothing to split.
+function kinshipSplitEntry(counts, active) {
+    if (!counts || (counts.related + counts.unrelated) === 0) return null;
+    const on = (kind) => (active === kind || active === 'all' || !active) ? '' : ' cg-off';
+    const parts = [
+        `<span class="cg-kin${on('related')}"><strong>${counts.related}</strong> related</span>`,
+        `<span class="cg-kin${on('unrelated')}"><strong>${counts.unrelated}</strong> unrelated</span>`,
+    ];
+    if (counts.inconsistent) {
+        parts.push(`<span class="cg-kin-warn" title="Related pairs whose rows do not nest the way their characteristics do. `
+            + `The two schemas discretised a shared column differently (capacity coarsening), so neither cell is a sub-cell of the other.">`
+            + `${counts.inconsistent} ⚠</span>`);
+    }
+    return ['Of those', parts.join(' · '),
+        'Related: one set of characteristics contains the other. Unrelated: neither does — a description built on other characteristics. '
+        + 'This split is over all alternatives, whatever the Descriptions filter shows.'];
 }
 
 function renderOverlapTable(el, spec) {
@@ -3532,32 +3839,39 @@ function renderOverlapTable(el, spec) {
     rows.push(`<tr class="cg-rep">
         <td class="cg-desc-cell">${centreHtml(r.d, r.conditions, `<span class="cg-tag cg-tag-ref">${escHtml(spec.refLabel)}</span>`)}</td>
         <td>${r.n}</td><td>${pct(r.purity)} <span class="cg-feat">≥ ${pct(r.purity_lower)}</span></td>
-        <td>—</td><td>—</td><td>—</td><td>—</td><td>—</td>
+        <td>—</td><td>—</td><td>—</td>
         <td><button type="button" class="landscape-open" data-feats="${r.schema_features.join(',')}">open</button></td></tr>`);
     spec.members.forEach(m => {
         rows.push(`<tr>
             <td class="cg-desc-cell">${centreHtml(m.d, m.conditions, m.identical ? '<span class="cg-tag">same rows</span>' : '', r.conditions)}</td>
             <td>${m.n}</td>
             <td>${pct(m.purity)} <span class="cg-feat">≥ ${pct(m.purity_lower)}</span></td>
-            <td><strong>${pct(m.similarity, 0)}</strong></td>
-            <td>${pct(m.share_in_representative, 0)} / ${pct(m.share_of_representative, 0)}</td>
-            <td>${pct(m.chance_similarity, 0)} <span class="cg-feat">→ ${pct(m.similarity_above_chance, 0)}</span></td>
-            <td>${sideText(m.only_here, value)}</td>
-            <td>${sideText(m.only_in_representative, value)}</td>
+            <td>${similarityHtml(m)}</td>
+            <td class="cg-kin-cell">${kinshipHtml(m, refShort)}</td>
+            <td class="cg-diff-cell">${differenceHtml(m, value, refShort)}</td>
             <td><button type="button" class="landscape-open" data-feats="${m.schema_features.join(',')}">open</button></td></tr>`);
     });
+    const together = spec.union
+        ? ` · all of them together hold <strong>${spec.union.n}</strong> rows at ${value} ${pct(spec.union.purity)}`
+        : '';
+    const weakest = (spec.minSimilarity !== undefined && spec.minSimilarity !== null)
+        ? ` · weakest similarity in the group ${pct(spec.minSimilarity, 0)}` : '';
+    const kc = spec.kinshipCounts;
+    const split = kc && (kc.related + kc.unrelated) > 0
+        ? ` · <span class="cg-kin">${kc.related} related</span>, <span class="cg-kin">${kc.unrelated} unrelated</span>`
+            + (kc.inconsistent ? `, <span class="cg-kin-warn">${kc.inconsistent} ⚠</span>` : '')
+            + (spec.kinship && spec.kinship !== 'all' ? ` (showing ${escHtml(spec.kinship)} only)` : '')
+        : '';
     el.innerHTML = `
-        <div class="cg-detail-head"><span>${escHtml(spec.title)}
+        <div class="cg-detail-head"><span>${escHtml(spec.title)}${together}${weakest}${split}
             <span class="cg-sub">· ${escHtml(spec.subtitle)} · <span class="cg-diff-key">highlighted</span> = not in the ${spec.refLabel === 'representative' ? 'representative' : 'branch centre'}</span></span>
             <button type="button" class="landscape-close" title="Close">✕</button></div>
         <div class="cg-table-wrap"><table class="cg-table">
             <thead><tr>
                 <th>Centre</th><th>Rows</th><th>${escHtml(value)}</th>
-                <th title="Mutual containment: the smaller of the two shares to the right. The threshold is compared with this number.">Similarity</th>
-                <th title="Share of this centre's rows inside the ${escHtml(spec.refLabel)} / share of the ${escHtml(spec.refLabel)}'s rows inside this centre.">In ${refShort} / ${refShort} in it</th>
-                <th title="Left: the similarity two unrelated centres of these sizes would reach by chance, min(size) / all rows. Right: the observed similarity rescaled against it, (s − chance) / (1 − chance): 100% means identical rows, 0% means no more overlap than chance. Large centres overlap a lot by chance, so read the right number for them.">Chance → above it</th>
-                <th title="Rows of this centre that the ${escHtml(spec.refLabel)} does not hold, and the share of the value among them. A share near the base rate means the extra rows are noise.">Only here</th>
-                <th title="Rows of the ${escHtml(spec.refLabel)} that this centre does not hold, and the share of the value among them.">Only in ${refShort}</th>
+                <th title="Mutual containment: each centre holds at least this share of the other's rows. The threshold is compared with this number. The chance level is in the cell's hover, and is spelled out in the cell when it is high enough to matter.">Similarity</th>
+                <th title="Two facts. The word compares the CHARACTERISTICS with the ${escHtml(spec.refLabel)}'s: extends (adds some), shortens (uses fewer), other (neither set contains the other). The symbol compares the ROWS: = the same, ⊂ inside, ⊃ contains, ✕ each side has rows the other has not. ⚠ marks a pair where the two disagree, which only happens when the two schemas discretised a shared column differently.">Relation</th>
+                <th title="Rows one side holds and the other does not: +N rows only in this centre, −N rows only in the ${escHtml(spec.refLabel)}, with the share of the value among them. A share near the base rate means those rows are noise; a share near the centre's own purity means the other side is missing signal.">Rows not shared</th>
                 <th></th></tr></thead>
             <tbody>${rows.join('')}</tbody></table></div>
         <div class="landscape-cell-more" id="cgDetailMore"></div>`;
@@ -3589,7 +3903,7 @@ function landscapeHighlightPoints(bins) {
     const xs = [], ys = [], hov = [];
     seen.forEach((n, k) => {
         const [ix, iy] = k.split(',').map(Number);
-        xs.push(ix); ys.push(iy); hov.push(`${n} schema${n === 1 ? '' : 's'} of the card opened in Duplicates`);
+        xs.push(ix); ys.push(iy); hov.push(`${n} schema${n === 1 ? '' : 's'} of the card opened in Redundancy`);
     });
     return { xs, ys, hov };
 }

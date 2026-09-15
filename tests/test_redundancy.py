@@ -17,6 +17,7 @@ What is pinned here:
 
 from __future__ import annotations
 
+import itertools
 import json
 import threading
 import urllib.error
@@ -466,6 +467,238 @@ def test_branch_view_lists_every_direct_alternative_of_every_branch_centre(min_r
         cat.branch_view([99], 0.8)
     with pytest.raises(ValueError):
         cat.branch_view([2], 0.8, anchor=10_000)
+
+
+def test_histogram_scopes_count_the_right_centres():
+    """
+    Three scopes over the same axis. "all": every centre's nearest other
+    centre. "branch": the same value for the centres of one schema only.
+    "center": ONE centre against every other centre, whose bars at or above
+    the threshold must be exactly that centre's listed alternatives.
+    """
+    X, z, names = _titanic()
+    cat = collect_centers(X, z, names, positive_class=1, center_spec=CenterSpec(tau=0.7), min_rows=10)
+    S = _exact_similarity(cat)
+    per_set = np.where(cat.set_multiplicity > 1, 1.0, cat.set_nn_sim)
+
+    def parts(h):
+        return h["identical"] + h["below_floor"] + sum(h["counts"])
+
+    def at_or_above(h, t):
+        return h["identical"] + sum(c for c, e in zip(h["counts"], h["edges"]) if e >= t - 1e-12)
+
+    everything = cat.nearest_neighbour_histogram()
+    assert everything["scope"] == "all"
+    assert everything["n_centers"] == cat.n_centers == parts(everything)
+
+    combo = (2, 4)
+    q = cat.schema_of_features[combo]
+    branch_centers = np.nonzero(cat.center_schema == q)[0]
+    view = cat.branch_view(list(combo), 0.8, limit=10_000)
+    hb = view["histogram"]
+    assert hb["scope"] == "branch"
+    assert hb["n_centers"] == int(branch_centers.shape[0]) == parts(hb)
+    assert hb["n_centers"] < everything["n_centers"]
+    # the branch bars are the branch's slice of the global ones
+    assert at_or_above(hb, 0.8) == int(np.count_nonzero(per_set[cat.center_set[branch_centers]] >= 0.8 - 1e-12))
+    assert hb["identical"] == int(np.count_nonzero(per_set[cat.center_set[branch_centers]] >= 1.0 - 1e-12))
+
+    for a in view["anchors"]:
+        if not a["compared"]:
+            assert "histogram" not in a
+            continue
+        hc = a["histogram"]
+        assert hc["scope"] == "center"
+        assert hc["n_centers"] == cat.n_centers - 1 == parts(hc)
+        # the threshold on this card's own axis reproduces its alternatives
+        assert at_or_above(hc, view["threshold"]) == a["total"]
+        assert hc["identical"] == a["n_identical"]
+        own = int(np.nonzero((cat.center_schema == q) & (cat.center_cell == a["cell"]))[0][0])
+        sims = np.delete(S[cat.center_set, a["set"]], own)
+        assert hc["below_floor"] == int(np.count_nonzero(sims < PAIR_FLOOR - 1e-12))
+
+    with pytest.raises(ValueError):
+        cat.center_similarity_histogram(cat.n_centers)
+    with pytest.raises(ValueError):
+        cat.center_similarity_histogram(-1)
+
+
+def test_kinship_is_two_independent_facts_and_the_filter_partitions_the_alternatives():
+    """
+    `lineage` compares the two schemas' COLUMN sets, `relation` the two ROW
+    sets, and the second is measured rather than inferred from the first.
+    The "related"/"unrelated" filter must partition the unfiltered list
+    exactly, and its counts must not depend on which side is shown.
+    """
+    X, z, names = _titanic()
+    cat = collect_centers(X, z, names, positive_class=1, center_spec=CenterSpec(tau=0.7), min_rows=10)
+    R = _rows(cat)
+    combo = (2, 4)
+    full = cat.branch_view(list(combo), 0.8, limit=10_000)
+    rel = cat.branch_view(list(combo), 0.8, limit=10_000, kinship="related")
+    unrel = cat.branch_view(list(combo), 0.8, limit=10_000, kinship="unrelated")
+    assert full["kinship"] == "all" and rel["kinship"] == "related"
+    seen_lineage, seen_relation, inconsistent = set(), set(), 0
+    for a, ar, au in zip(full["anchors"], rel["anchors"], unrel["anchors"]):
+        assert a["cell"] == ar["cell"] == au["cell"]
+        if not a["compared"]:
+            continue
+        counts = a["kinship_counts"]
+        # the split is over the unfiltered list and is the same in all three
+        assert counts == ar["kinship_counts"] == au["kinship_counts"]
+        assert counts["related"] + counts["unrelated"] == a["total"]
+        assert ar["total"] == counts["related"] and au["total"] == counts["unrelated"]
+        ids = {m["center"] for m in a["alternatives"]}
+        assert {m["center"] for m in ar["alternatives"]} | {m["center"] for m in au["alternatives"]} == ids
+        assert not ({m["center"] for m in ar["alternatives"]} & {m["center"] for m in au["alternatives"]})
+        s_b = set(combo)
+        for m in a["alternatives"]:
+            k = m["kinship"]
+            s_a = set(m["schema_features"])
+            expect = ("same_schema" if s_a == s_b else "child" if s_b < s_a
+                      else "parent" if s_a < s_b else "unrelated")
+            assert k["lineage"] == expect
+            # the row relation is the measured one, not the inferred one
+            ra, rb = R[m["set"]], R[a["set"]]
+            inter = int((ra & rb).sum())
+            expect_rel = ("identical" if inter == ra.sum() == rb.sum()
+                          else "inside" if inter == ra.sum()
+                          else "contains" if inter == rb.sum() else "crossing")
+            assert k["relation"] == expect_rel
+            nested = k["lineage"] in ("child", "parent")
+            assert (m in ar["alternatives"]) is nested
+            ok = (k["relation"] in ("identical", "inside") if k["lineage"] == "child"
+                  else k["relation"] in ("identical", "contains") if k["lineage"] == "parent" else True)
+            assert k["consistent"] is ok
+            inconsistent += 0 if ok else 1
+            seen_lineage.add(k["lineage"])
+            seen_relation.add(k["relation"])
+    # the branch is compared against the whole family, so both sides occur
+    assert {"child", "unrelated"} <= seen_lineage
+    assert {"identical", "inside"} <= seen_relation
+    with pytest.raises(ValueError):
+        cat.branch_view(list(combo), 0.8, kinship="nested")
+
+
+def test_the_histograms_are_drawn_on_the_population_the_filter_leaves():
+    """
+    A picture beside a filtered list must count the same centres the list
+    does. Under a kinship filter both the per-centre strip and the
+    nearest-neighbour histogram drop the centres the filter excludes, and
+    the fast nearest-neighbour walk must agree with the dense computation.
+    """
+    X, z, names = _titanic()
+    cat = collect_centers(X, z, names, positive_class=1, center_spec=CenterSpec(tau=0.7), min_rows=10)
+    combo = (2, 4)
+    for kinship in ("all", "related", "unrelated"):
+        v = cat.branch_view(list(combo), 0.8, limit=10_000, kinship=kinship)
+        for a in v["anchors"]:
+            if not a["compared"]:
+                continue
+            h = a["histogram"]
+            # the strip counts exactly the centres this card may be compared with
+            expected = int(cat._comparison_mask(
+                int(np.nonzero((cat.center_schema == cat.schema_of_features[combo])
+                               & (cat.center_cell == a["cell"]))[0][0]), kinship).sum())
+            assert h["n_centers"] == expected
+            assert h["identical"] + h["below_floor"] + sum(h["counts"]) == expected
+            # and its bars at or above the threshold are this card's own list
+            at_or_above = h["identical"] + sum(
+                c for c, e in zip(h["counts"], h["edges"]) if e >= v["threshold"] - 1e-12)
+            assert at_or_above == a["total"]
+        # the branch histogram is the maximum of each card's strip
+        maxima = []
+        for a in v["anchors"]:
+            if not a["compared"]:
+                continue
+            c = int(np.nonzero((cat.center_schema == cat.schema_of_features[combo])
+                               & (cat.center_cell == a["cell"]))[0][0])
+            vals = cat.center_similarity_values(c, kinship)
+            maxima.append(float(vals.max()) if vals.size else 0.0)
+        assert v["histogram"] == cat._similarity_histogram(np.asarray(maxima), "branch")
+
+        # the pooled picture IS the elementwise sum of the cards' strips, and
+        # its bars at or above the threshold are the branch's whole list
+        strips = [a["histogram"] for a in v["anchors"] if a["compared"]]
+        pooled = v["histogram_pairs"]
+        assert pooled["scope"] == "branch_pairs"
+        assert pooled["counts"] == [sum(s["counts"][i] for s in strips) for i in range(len(pooled["counts"]))]
+        assert pooled["below_floor"] == sum(s["below_floor"] for s in strips)
+        assert pooled["identical"] == sum(s["identical"] for s in strips)
+        assert pooled["n_centers"] == sum(s["n_centers"] for s in strips)
+        assert pooled["identical"] + sum(
+            c for c, e in zip(pooled["counts"], pooled["edges"]) if e >= v["threshold"] - 1e-12
+        ) == sum(a["total"] for a in v["anchors"] if a["compared"])
+        # the solid part of that picture is the sum of the strips ON SCREEN:
+        # every compared centre with no filter, and otherwise only the centres
+        # whose cards survive it
+        listed_strips = [
+            a["histogram"] for a in v["anchors"]
+            if a["compared"] and (kinship == "all" or a["total"] > 0)
+        ]
+        shown = v["histogram_pairs_listed"]
+        assert v["n_centers_listed"] == len(listed_strips)
+        assert shown["counts"] == [sum(s["counts"][i] for s in listed_strips) for i in range(len(shown["counts"]))]
+        assert shown["below_floor"] == sum(s["below_floor"] for s in listed_strips)
+        assert shown["identical"] == sum(s["identical"] for s in listed_strips)
+        assert shown["n_centers"] == sum(s["n_centers"] for s in listed_strips)
+        # solid never exceeds the whole, and equals it when nothing is hidden
+        assert all(a >= b for a, b in zip(pooled["counts"], shown["counts"]))
+        assert shown["n_centers"] <= pooled["n_centers"]
+        if len(listed_strips) == len(strips):
+            assert shown == pooled
+        # paging one card must not shrink any branch-level picture
+        first = next(a for a in v["anchors"] if a["compared"])
+        page = cat.branch_view(list(combo), 0.8, limit=3, anchor=first["cell"], kinship=kinship)
+        assert page["histogram_pairs"] == pooled and page["histogram"] == v["histogram"]
+        assert page["histogram_pairs_listed"] == shown
+        assert page["n_centers_listed"] == v["n_centers_listed"]
+
+    # the early-exit walk used for the whole family equals the dense route
+    for kinship in ("related", "unrelated"):
+        dense = np.asarray([
+            (lambda w: float(w.max()) if w.size else 0.0)(cat.center_similarity_values(c, kinship))
+            for c in range(cat.n_centers)
+        ])
+        fast = cat.nearest_neighbour_histogram(None, "all", kinship)
+        assert fast == cat._similarity_histogram(dense, "all")
+        assert fast != cat.nearest_neighbour_histogram(None, "all", "all")
+
+
+def test_level_coarsening_breaks_the_child_parent_row_nesting():
+    """
+    The reason `relation` may not be inferred from `lineage`: a schema's
+    partition refines its sub-schema's ONLY while no shared column was
+    coarsened to fit the grid capacity (Section 4.3). On titanic this fails
+    for a measurable share of the nested schema pairs, and the resulting
+    pairs are reported as inconsistent rather than as sub-cells.
+    """
+    X, z, names = _titanic()
+    cat = collect_centers(X, z, names, positive_class=1, center_spec=CenterSpec(tau=0.9), min_rows=10)
+    F = cat.factory
+    broken = []
+    for parent in itertools.combinations(range(F.n_features), 3):
+        for extra in range(F.n_features):
+            if extra in parent:
+                continue
+            child = tuple(sorted(parent + (extra,)))
+            cc, _ = F.codes(child)
+            pc, _ = F.codes(parent)
+            order = np.argsort(cc, kind="stable")
+            bounds = np.flatnonzero(np.diff(cc[order])) + 1
+            if any(np.unique(pc[g]).size > 1 for g in np.split(order, bounds)):
+                broken.append((parent, child))
+    assert broken, "expected the capacity rule to coarsen at least one shared column"
+    # and an inconsistent pair is classified as such, never as a sub-cell
+    parent, child = broken[0]
+    q_child = cat.schema_of_features.get(child)
+    if q_child is not None:
+        for c in np.nonzero(cat.center_schema == q_child)[0].tolist():
+            u = int(cat.center_set[c])
+            for ref in range(cat.n_sets):
+                k = cat._kinship(c, parent, int(cat.set_n[u]), int(cat.set_n[ref]), cat.intersection(u, ref))
+                assert k["lineage"] == "child"
+                assert k["consistent"] == (k["relation"] in ("identical", "inside"))
 
 
 def test_branch_view_anchor_pages_one_centre():

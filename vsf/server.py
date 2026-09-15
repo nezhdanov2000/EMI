@@ -1147,6 +1147,10 @@ class VSFRequestHandler(http.server.BaseHTTPRequestHandler):
         of another schema with mutual containment >= `threshold` to it;
         `anchor` (a cell code) pages one centre's list with
         `limit`/`offset` (`CenterCatalog.branch_view`).
+        `kinship` ("all", "related", "unrelated"; both detail endpoints)
+        keeps only the alternatives whose schema is nested with the
+        reference's column set, or only those whose schema is not; the
+        unfiltered split comes back as `kinship_counts` either way.
         """
         try:
             req = self._read_json_body()
@@ -1166,6 +1170,10 @@ class VSFRequestHandler(http.server.BaseHTTPRequestHandler):
                 self._send_json_response(400, {"error": "min_rows >= 1, limit >= 1, offset >= 0 are required"})
                 return
             limit = min(limit, _CENTERS_MAX_LIMIT)
+            kinship = req.get("kinship", "all")
+            if kinship not in ("all", "related", "unrelated"):
+                self._send_json_response(400, {"error": "kinship must be 'all', 'related' or 'unrelated'"})
+                return
             catalog = self.server.get_center_catalog(params, center_spec, params["_target"], min_rows)
             echo = {
                 "target": params["target_col"], "criterion": params["criterion"],
@@ -1185,14 +1193,14 @@ class VSFRequestHandler(http.server.BaseHTTPRequestHandler):
                 except (TypeError, ValueError):
                     self._send_json_response(400, {"error": "features and anchor must be integers"})
                     return
-                out = catalog.branch_view(feats_i, threshold, limit=limit, offset=offset, anchor=anchor)
+                out = catalog.branch_view(feats_i, threshold, limit=limit, offset=offset, anchor=anchor, kinship=kinship)
             elif detail:
                 try:
                     group = int(req["group"])
                 except (KeyError, TypeError, ValueError):
                     self._send_json_response(400, {"error": "group is a required integer"})
                     return
-                out = catalog.group_detail(threshold, group, limit=limit, offset=offset)
+                out = catalog.group_detail(threshold, group, limit=limit, offset=offset, kinship=kinship)
             else:
                 sort = req.get("sort", "coverage")
                 filter_d = req.get("filter_d", None)
@@ -1220,6 +1228,7 @@ class VSFRequestHandler(http.server.BaseHTTPRequestHandler):
                         return
                 out = catalog.groups_page(
                     threshold, sort=sort, d=filter_d, cell=cell, limit=limit, offset=offset,
+                    kinship=kinship,
                 )
                 out["filter_d"] = filter_d
                 out["cell"] = None if cell is None else {"d": cell[0], "ix": cell[1], "iy": cell[2]}

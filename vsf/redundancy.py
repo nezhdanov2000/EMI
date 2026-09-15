@@ -125,6 +125,10 @@ _OPERAND_CELLS: int = 16_000_000
 _HIST_STEP: float = 0.05
 
 GroupSort = Literal["coverage", "members"]
+#: Which alternatives a view lists, by how their schema stands to the
+#: reference's: "related" - one column set is nested in the other (the same
+#: lineage of the search lattice); "unrelated" - neither is.
+Kinship = Literal["all", "related", "unrelated"]
 
 
 def _value_label(v: object) -> str:
@@ -251,6 +255,11 @@ class CenterCatalog:
         self.schema_of_features: Dict[Tuple[int, ...], int] = {
             f: q for q, f in enumerate(schema_features)
         }
+        #: Column sets of the schemas, for the nesting test of `_kinship`.
+        self._schema_sets: List[frozenset] = [frozenset(f) for f in schema_features]
+        #: Centres of each distinct row set, CSR-style; built on first use.
+        self._set_centers_indptr: Optional[np.ndarray] = None
+        self._set_centers_indices: Optional[np.ndarray] = None
         self.n_centers = int(center_schema.shape[0])
         self.n_sets = int(set_n.shape[0])
         self._rank_sets()
@@ -538,31 +547,173 @@ class CenterCatalog:
         }
 
     # -- summaries -------------------------------------------------------------
-    def nearest_neighbour_histogram(self) -> Dict[str, object]:
+    def _similarity_histogram(self, values: np.ndarray, scope: str) -> Dict[str, object]:
         """
-        For every CENTRE, the mutual containment with its closest other
-        centre (any schema): 1 when another centre has the identical row
-        set, otherwise the set's nearest stored neighbour, or "below the
-        floor" when none reaches PAIR_FLOOR. Binned in steps of 0.05 from
-        the floor to 1, with exact identity counted separately.
+        `values` (one mutual containment per compared centre) binned in
+        steps of `_HIST_STEP` from PAIR_FLOOR to 1. Exact identity (1) is
+        counted on its own, and everything the pair store does not hold
+        (below PAIR_FLOOR) goes to `below_floor`, so the three parts always
+        sum to `values.size`.
         """
-        per_set = np.where(self.set_multiplicity > 1, 1.0, self.set_nn_sim)
-        per_center = per_set[self.center_set]
+        v = np.asarray(values, dtype=np.float64).ravel()
         edges = np.round(np.arange(PAIR_FLOOR, 1.0 + _HIST_STEP / 2, _HIST_STEP), 10)
-        below = int(np.count_nonzero(per_center < PAIR_FLOOR - _EPS))
-        identical = int(np.count_nonzero(per_center >= 1.0 - _EPS))
+        below = int(np.count_nonzero(v < PAIR_FLOOR - _EPS))
+        identical = int(np.count_nonzero(v >= 1.0 - _EPS))
         counts = []
         for i in range(edges.shape[0] - 1):
             lo, hi = edges[i], edges[i + 1]
             last = i == edges.shape[0] - 2
-            m = (per_center >= lo - _EPS) & ((per_center < hi - _EPS) if not last else (per_center < 1.0 - _EPS))
+            m = (v >= lo - _EPS) & ((v < hi - _EPS) if not last else (v < 1.0 - _EPS))
             counts.append(int(np.count_nonzero(m)))
         return {
+            "scope": scope,
             "floor": PAIR_FLOOR, "step": _HIST_STEP,
             "edges": [float(e) for e in edges],
             "counts": counts, "below_floor": below, "identical": identical,
-            "n_centers": self.n_centers,
+            "n_centers": int(v.shape[0]),
         }
+
+    def _schema_nests(self, q_a: int, q_b: int) -> bool:
+        """Whether one schema's column set contains the other's."""
+        s_a = self._schema_sets[int(q_a)]
+        s_b = self._schema_sets[int(q_b)]
+        return s_a <= s_b or s_b <= s_a
+
+    def _centers_of_set(self) -> Tuple[np.ndarray, np.ndarray]:
+        """Centres grouped by distinct row set, CSR-style (indptr, indices)."""
+        if self._set_centers_indptr is None:
+            with self._lock:
+                if self._set_centers_indptr is None:
+                    order = np.argsort(self.center_set, kind="stable")
+                    counts = np.bincount(self.center_set, minlength=self.n_sets)
+                    self._set_centers_indices = order
+                    self._set_centers_indptr = np.concatenate(([0], np.cumsum(counts))).astype(np.int64)
+        return self._set_centers_indptr, self._set_centers_indices
+
+    def _comparison_mask(self, center: int, kinship: Kinship) -> np.ndarray:
+        """
+        Which centres `center` is compared against under `kinship`: every
+        other centre ("all"), or only those whose schema is nested with its
+        own ("related") or is not ("unrelated"). The centre itself is always
+        excluded, so the mask has at most `n_centers - 1` true entries. The
+        nesting test runs once per SCHEMA, not once per centre.
+        """
+        c = int(center)
+        keep = np.ones(self.n_centers, dtype=bool)
+        keep[c] = False
+        if kinship == "all":
+            return keep
+        q_c = int(self.center_schema[c])
+        n_schemas = len(self.schema_features)
+        by_schema = np.fromiter(
+            (self._schema_nests(q, q_c) for q in range(n_schemas)), dtype=bool, count=n_schemas,
+        )
+        nests = by_schema[self.center_schema]
+        return keep & (nests if kinship == "related" else ~nests)
+
+    def _nearest_similarity(self, center: int, kinship: Kinship) -> float:
+        """
+        The mutual containment of `center` with its closest other centre
+        under `kinship`, or 0 when it has none at or above PAIR_FLOOR. The
+        stored neighbours are walked in descending similarity and the walk
+        stops at the first set holding an admissible centre, so the cost is
+        a couple of steps rather than a pass over every centre.
+        """
+        c = int(center)
+        q_c = int(self.center_schema[c])
+        indptr, indices = self._centers_of_set()
+        want = kinship == "related"
+
+        def admissible(v: int) -> bool:
+            for b in indices[indptr[v]:indptr[v + 1]].tolist():
+                if b == c:
+                    continue
+                if kinship == "all" or self._schema_nests(int(self.center_schema[b]), q_c) == want:
+                    return True
+            return False
+
+        u = int(self.center_set[c])
+        if admissible(u):  # another centre with the identical row set
+            return 1.0
+        nb, _, sim = self.neighbours(u)
+        if nb.size:
+            for i in np.argsort(-sim, kind="stable").tolist():
+                if admissible(int(nb[i])):
+                    return float(sim[i])
+        return 0.0
+
+    def center_similarity_values(self, center: int, kinship: Kinship = "all") -> np.ndarray:
+        """
+        The mutual containment of `center` with every centre it is compared
+        against under `kinship`, one value per such centre. Centres sharing
+        its row set score 1; pairs the store does not hold fall below
+        PAIR_FLOOR by construction (the store keeps every pair at or above
+        the floor).
+        """
+        c = int(center)
+        if c < 0 or c >= self.n_centers:
+            raise ValueError(f"center must be in [0, {self.n_centers}), got {center}")
+        if kinship not in ("all", "related", "unrelated"):
+            raise ValueError(f"kinship must be 'all', 'related' or 'unrelated', got {kinship!r}")
+        u = int(self.center_set[c])
+        nb, _, sim = self.neighbours(u)
+        per_set = np.zeros(self.n_sets, dtype=np.float64)
+        if nb.size:
+            per_set[nb] = sim
+        per_set[u] = 1.0
+        return per_set[self.center_set][self._comparison_mask(c, kinship)]
+
+    def nearest_neighbour_histogram(
+        self, centers: Optional[np.ndarray] = None, scope: str = "all", kinship: Kinship = "all"
+    ) -> Dict[str, object]:
+        """
+        For every centre of `centers` (all of them when None), the mutual
+        containment with its closest OTHER centre: 1 when another centre has
+        the identical row set, otherwise the set's nearest stored neighbour,
+        or "below the floor" when none reaches PAIR_FLOOR. `centers` chooses
+        whose nearest neighbour is counted; `kinship` restricts, per centre,
+        which other centres it may be nearest to - so the histogram is drawn
+        on the same population as the lists beside it.
+        """
+        sets = self.center_set if centers is None else self.center_set[np.asarray(centers, dtype=np.int64)]
+        if kinship == "all":
+            per_set = np.where(self.set_multiplicity > 1, 1.0, self.set_nn_sim)
+            return self._similarity_histogram(per_set[sets], scope)
+        if kinship not in ("related", "unrelated"):
+            raise ValueError(f"kinship must be 'all', 'related' or 'unrelated', got {kinship!r}")
+        idx = np.arange(self.n_centers) if centers is None else np.asarray(centers, dtype=np.int64)
+        values = np.fromiter(
+            (self._nearest_similarity(int(c), kinship) for c in idx.tolist()),
+            dtype=np.float64, count=int(idx.shape[0]),
+        )
+        return self._similarity_histogram(values, scope)
+
+    def _pool_histograms(self, hists: Sequence[Dict[str, object]], scope: str) -> Dict[str, object]:
+        """
+        The elementwise sum of histograms drawn on the same axis: the
+        distribution of every PAIR they cover, rather than one value per
+        centre. Two centres of one schema hold disjoint cells, so pooling
+        the per-centre strips of one schema counts every pair once.
+        """
+        out = self._similarity_histogram(np.zeros(0, dtype=np.float64), scope)
+        counts = list(out["counts"])
+        for h in hists:
+            for i, c in enumerate(h["counts"]):
+                counts[i] += int(c)
+            out["below_floor"] += int(h["below_floor"])
+            out["identical"] += int(h["identical"])
+            out["n_centers"] += int(h["n_centers"])
+        out["counts"] = counts
+        return out
+
+    def center_similarity_histogram(self, center: int, kinship: Kinship = "all") -> Dict[str, object]:
+        """
+        For ONE centre, the mutual containment with every centre it is
+        compared against under `kinship` (not just its nearest): the
+        distribution behind the "other descriptions" count of that centre,
+        so the threshold can be read off the card it applies to.
+        """
+        return self._similarity_histogram(self.center_similarity_values(center, kinship), "center")
 
     def _group_members(self, grouping: CenterGrouping, leader: int) -> np.ndarray:
         """Centres of the group represented by distinct set `leader`."""
@@ -587,8 +738,10 @@ class CenterCatalog:
             cells[key] = cells.get(key, 0) + 1
         others = sets[sets != leader]
         min_sim = float(grouping.sim_to_leader[others].min()) if others.size else 1.0
+        rep_features = self.schema_features[int(self.center_schema[rep])]
         return {
             "group": int(leader),
+            "kinship_counts": self._kinship_counts(members[members != rep], leader, rep_features),
             "representative": self._center_dict(rep),
             "n_members": int(members.shape[0]),
             "n_distinct": int(sets.shape[0]),
@@ -614,6 +767,7 @@ class CenterCatalog:
         cell: Optional[Tuple[Optional[int], int, int]] = None,
         limit: int = 20,
         offset: int = 0,
+        kinship: Kinship = "all",
     ) -> Dict[str, object]:
         """
         One page of groups at `threshold`, with the run's summary and the
@@ -623,9 +777,16 @@ class CenterCatalog:
         with at least one member of that dimensionality; `cell=(d_or_None,
         ix, iy)` keeps groups with a member whose schema falls in that cell
         of the landscape lattice drawn for d (None: all d together).
+
+        `kinship` does NOT filter the grouping - the grouping is the
+        clustering itself, and it is paged here - but it does restrict which
+        other centres each centre may be nearest to in the histogram, so the
+        picture matches the member lists the same filter produces.
         """
         if sort not in ("coverage", "members"):
             raise ValueError(f"sort must be 'coverage' or 'members', got {sort!r}")
+        if kinship not in ("all", "related", "unrelated"):
+            raise ValueError(f"kinship must be 'all', 'related' or 'unrelated', got {kinship!r}")
         if limit < 1 or offset < 0:
             raise ValueError("limit must be >= 1 and offset >= 0")
         g = self.group(threshold)
@@ -674,7 +835,8 @@ class CenterCatalog:
             "n_groups": int(leaders.shape[0]),
             "n_groups_with_duplicates": multi,
             "n_centers_in_duplicate_groups": int(n_members[leaders][n_members[leaders] > 1].sum()),
-            "histogram": self.nearest_neighbour_histogram(),
+            "kinship": kinship,
+            "histogram": self.nearest_neighbour_histogram(None, "all", kinship),
             "total": int(sel.shape[0]),
             "offset": int(offset),
             "limit": int(limit),
@@ -682,12 +844,60 @@ class CenterCatalog:
             "groups": groups,
         }
 
-    def _member_entry(self, c: int, ref: int) -> Dict[str, object]:
+    def _kinship(
+        self, c: int, ref_features: Optional[Sequence[int]], n_m: int, n_r: int, inter: int
+    ) -> Dict[str, object]:
+        """
+        How centre `c` stands to the reference centre, as TWO independent
+        facts. `lineage` compares the two schemas' column sets - "child"
+        (the reference's columns are a strict subset of this centre's),
+        "parent", "same_schema", or "unrelated". `relation` compares the
+        two ROW sets - "identical", "inside" (this centre's rows are a
+        subset of the reference's), "contains", or "crossing".
+
+        The second is measured, never inferred from the first. A child
+        schema refines its parent's partition only while no column of
+        either was coarsened to fit the grid capacity (Section 4.3); when
+        one was, a "child" cell can straddle two parent cells. `consistent`
+        is False exactly in that case (lineage and relation disagree), so
+        such a pair is reported as the artefact it is instead of being
+        presented as a sub-cell of its parent.
+        """
+        if inter >= n_m and inter >= n_r:
+            relation = "identical"
+        elif inter >= n_m:
+            relation = "inside"
+        elif inter >= n_r:
+            relation = "contains"
+        else:
+            relation = "crossing"
+        if ref_features is None:
+            return {"lineage": None, "relation": relation, "consistent": True}
+        s_a = set(self.schema_features[int(self.center_schema[c])])
+        s_b = set(int(j) for j in ref_features)
+        if s_a == s_b:
+            lineage = "same_schema"
+        elif s_b < s_a:
+            lineage = "child"
+        elif s_a < s_b:
+            lineage = "parent"
+        else:
+            lineage = "unrelated"
+        if lineage == "child":
+            consistent = relation in ("identical", "inside")
+        elif lineage == "parent":
+            consistent = relation in ("identical", "contains")
+        else:
+            consistent = True
+        return {"lineage": lineage, "relation": relation, "consistent": consistent}
+
+    def _member_entry(self, c: int, ref: int, ref_features: Optional[Sequence[int]] = None) -> Dict[str, object]:
         """
         Centre `c` described against the distinct set `ref` (a group's
         representative, or a branch centre): both one-sided shares, the
-        similarity expected by chance, the rescaled similarity, and what
-        each side holds that the other does not.
+        similarity expected by chance, the rescaled similarity, what each
+        side holds that the other does not, and - when `ref_features` names
+        the reference's schema - the kinship of the two (see `_kinship`).
         """
         u = int(self.center_set[c])
         n_m, k_m = int(self.set_n[u]), int(self.set_k[u])
@@ -711,8 +921,58 @@ class CenterCatalog:
             "intersection": {"n": inter, "k": k_inter},
             "only_here": {"n": only_m_n, "k": only_m_k, "purity": (only_m_k / only_m_n) if only_m_n else None},
             "only_in_representative": {"n": only_r_n, "k": only_r_k, "purity": (only_r_k / only_r_n) if only_r_n else None},
+            "kinship": self._kinship(c, ref_features, n_m, n_r, inter),
         })
         return entry
+
+    def _kinship_mask(
+        self, centers: np.ndarray, ref_features: Sequence[int], kinship: Kinship
+    ) -> np.ndarray:
+        """
+        Which of `centers` a `kinship` filter keeps. "related": the two
+        schemas' column sets are nested one way or the other - the centre
+        comes from the same lineage of the search lattice as the reference.
+        "unrelated": they are not - a description built on other columns.
+        Schemas of equal dimensionality are always unrelated (two distinct
+        column sets of the same size cannot be nested).
+        """
+        if kinship == "all":
+            return np.ones(centers.shape[0], dtype=bool)
+        if kinship not in ("related", "unrelated"):
+            raise ValueError(f"kinship must be 'all', 'related' or 'unrelated', got {kinship!r}")
+        s_b = frozenset(int(j) for j in ref_features)
+        related = np.asarray([
+            (lambda s_a: s_a <= s_b or s_b <= s_a)(self._schema_sets[int(self.center_schema[c])])
+            for c in centers.tolist()
+        ], dtype=bool) if centers.size else np.zeros(0, dtype=bool)
+        return related if kinship == "related" else ~related
+
+    def _kinship_counts(
+        self, centers: np.ndarray, ref: int, ref_features: Sequence[int]
+    ) -> Dict[str, int]:
+        """
+        The `related` / `unrelated` split of `centers` against the
+        reference, and how many of them contradict their lineage: a child
+        schema whose rows are not inside the parent's, or a parent schema
+        whose rows do not contain the child's. Those are the pairs the
+        capacity coarsening produced, and the reader is told how many there
+        are rather than being shown them as sub-cells.
+        """
+        if not centers.size:
+            return {"related": 0, "unrelated": 0, "inconsistent": 0}
+        rel = self._kinship_mask(centers, ref_features, "related")
+        n_r = int(self.set_n[ref])
+        bad = 0
+        for c in centers[rel].tolist():
+            u = int(self.center_set[c])
+            k = self._kinship(int(c), ref_features, int(self.set_n[u]), n_r, self.intersection(u, ref))
+            if not k["consistent"]:
+                bad += 1
+        return {
+            "related": int(np.count_nonzero(rel)),
+            "unrelated": int(np.count_nonzero(~rel)),
+            "inconsistent": bad,
+        }
 
     def _alternatives(self, u: int, t: float, exclude: int) -> np.ndarray:
         """
@@ -730,6 +990,22 @@ class CenterCatalog:
         order = np.lexsort((self.set_rank[self.center_set[cs]], self.schema_d[self.center_schema[cs]], -s_c))
         return cs[order]
 
+    def _listed_centers(self, schema_centers: np.ndarray, t: float, kinship: Kinship) -> np.ndarray:
+        """
+        Which centres of a schema the interface lists at `t` under `kinship`:
+        all of them with no filter, and otherwise only those that have an
+        alternative of the chosen kind. The rest are dropped from the cards,
+        so the pooled picture separates their pairs from the listed ones.
+        """
+        if kinship == "all":
+            return np.ones(schema_centers.shape[0], dtype=bool)
+        out = np.zeros(schema_centers.shape[0], dtype=bool)
+        for i, c in enumerate(schema_centers.tolist()):
+            alts = self._alternatives(int(self.center_set[c]), t, int(c))
+            ref = self.schema_features[int(self.center_schema[c])]
+            out[i] = bool(self._kinship_mask(alts, ref, kinship).any())
+        return out
+
     def branch_view(
         self,
         features: Sequence[int],
@@ -737,6 +1013,7 @@ class CenterCatalog:
         limit: int = 50,
         offset: int = 0,
         anchor: Optional[int] = None,
+        kinship: Kinship = "all",
     ) -> Dict[str, object]:
         """
         The centres of ONE schema (a branch, or a schema opened from the
@@ -747,9 +1024,19 @@ class CenterCatalog:
         the schema below `min_rows` are reported with `compared = false`.
         `anchor` (a cell code of the schema) restricts the answer to one
         centre and pages its alternatives with `limit`/`offset`.
+
+        `kinship` restricts the alternatives to those whose schema is
+        nested with the branch's ("related") or is not ("unrelated"); the
+        unfiltered split is reported per centre as `kinship_counts`
+        whichever filter is on. Every derived quantity - `total`,
+        `n_identical`, `union`, `simplest`, the schema and characteristic
+        counts - is computed on the filtered set, so a card never mixes
+        numbers from two different filters.
         """
         if limit < 1 or offset < 0:
             raise ValueError("limit must be >= 1 and offset >= 0")
+        if kinship not in ("all", "related", "unrelated"):
+            raise ValueError(f"kinship must be 'all', 'related' or 'unrelated', got {kinship!r}")
         t = float(threshold)
         if not (PAIR_FLOOR - _EPS <= t <= 1.0 + _EPS):
             raise ValueError(f"threshold must be in [{PAIR_FLOOR}, 1], got {threshold}")
@@ -791,7 +1078,10 @@ class CenterCatalog:
                 continue
             own = np.nonzero((self.center_schema == q) & (self.center_cell == int(cell)))[0]
             c_self = int(own[0])
-            alts = self._alternatives(int(u), t, c_self)
+            base["histogram"] = self.center_similarity_histogram(c_self, kinship)
+            all_alts = self._alternatives(int(u), t, c_self)
+            base["kinship_counts"] = self._kinship_counts(all_alts, int(u), combo)
+            alts = all_alts[self._kinship_mask(all_alts, combo, kinship)]
             page = alts[int(offset): int(offset) + int(limit)] if anchor is not None else alts[: int(limit)]
             schemas = np.unique(self.center_schema[alts]) if alts.size else np.zeros(0, dtype=np.int64)
             dims = np.bincount(self.schema_d[schemas], minlength=MAX_BRANCH_D + 1)[1:]
@@ -802,7 +1092,7 @@ class CenterCatalog:
             simplest = None
             if alts.size:
                 best = alts[np.lexsort((self.set_rank[self.center_set[alts]], self.schema_d[self.center_schema[alts]]))[0]]
-                simplest = self._member_entry(int(best), int(u))
+                simplest = self._member_entry(int(best), int(u), combo)
             union = self.set_bits[int(u)].copy()
             for v in np.unique(self.center_set[alts]).tolist():
                 union |= self.set_bits[v]
@@ -827,9 +1117,28 @@ class CenterCatalog:
                 "landscape_cells": self._landscape_cells(schemas),
                 "offset": int(offset) if anchor is not None else 0,
                 "limit": int(limit),
-                "alternatives": [self._member_entry(int(c), int(u)) for c in page.tolist()],
+                "alternatives": [self._member_entry(int(c), int(u), combo) for c in page.tolist()],
             })
             anchors.append(base)
+        # Pooled over every compared centre of the schema, not only the cards
+        # in this response: with `anchor` set the response carries one card,
+        # while both branch-level pictures stay branch-level. The pool is split
+        # into the centres the cards list and the centres the filter drops, so
+        # the drawn picture can show the listed part as the sum of the strips
+        # on screen and the rest as what is being hidden.
+        schema_centers = np.nonzero(self.center_schema == q)[0] if q is not None else np.zeros(0, dtype=np.int64)
+        listed = self._listed_centers(schema_centers, t, kinship)
+        by_center: Dict[int, Dict[str, object]] = {}
+        if anchor is None:
+            for a in anchors:
+                if a.get("histogram") is not None:
+                    by_center[int(a["cell"])] = a["histogram"]
+        strips, strips_listed = [], []
+        for c, keep in zip(schema_centers.tolist(), listed.tolist()):
+            h = by_center.get(int(self.center_cell[c])) or self.center_similarity_histogram(int(c), kinship)
+            strips.append(h)
+            if keep:
+                strips_listed.append(h)
         return {
             "threshold": t,
             "pair_floor": PAIR_FLOOR,
@@ -842,7 +1151,20 @@ class CenterCatalog:
             "d": len(combo),
             "n_centers": int(cells.shape[0]) if anchor is None else int(mask.sum()),
             "coverage": (int(k_cell[mask].sum()) / self.n_positive) if self.n_positive else 0.0,
-            "histogram": self.nearest_neighbour_histogram(),
+            # Scoped to this schema (whose nearest neighbour is counted) and to
+            # the same kinship as the lists below it (what each may be nearest
+            # to), so the picture and the cards always describe one population.
+            "histogram": self.nearest_neighbour_histogram(schema_centers, "branch", kinship),
+            # The same pairs the cards' own strips draw, pooled: one value per
+            # (branch centre, other centre) pair instead of one per centre, so
+            # the whole left tail is visible and not only each centre's best.
+            "histogram_pairs": self._pool_histograms(strips, "branch_pairs"),
+            # The part of it that the cards on screen account for: with no
+            # filter this is the whole of it, and with one it is exactly the
+            # sum of the strips the reader can see.
+            "histogram_pairs_listed": self._pool_histograms(strips_listed, "branch_pairs"),
+            "n_centers_listed": int(np.count_nonzero(listed)),
+            "kinship": kinship,
             "anchors": anchors,
         }
 
@@ -857,7 +1179,8 @@ class CenterCatalog:
         ]
 
     def group_detail(
-        self, threshold: float, group: int, limit: int = 50, offset: int = 0
+        self, threshold: float, group: int, limit: int = 50, offset: int = 0,
+        kinship: Kinship = "all",
     ) -> Dict[str, object]:
         """
         The members of one group (by its representative's set id): every
@@ -867,9 +1190,14 @@ class CenterCatalog:
         similarity rescaled against it, (s - s0) / (1 - s0) - the share of
         the possible excess over chance that is realised, in the manner of
         Cohen's kappa - and what each side holds that the other does not.
+        `kinship` restricts the members to those whose schema is nested
+        with the representative's ("related") or is not ("unrelated"); the
+        unfiltered split is always reported as `kinship_counts`.
         """
         if limit < 1 or offset < 0:
             raise ValueError("limit must be >= 1 and offset >= 0")
+        if kinship not in ("all", "related", "unrelated"):
+            raise ValueError(f"kinship must be 'all', 'related' or 'unrelated', got {kinship!r}")
         g = self.group(threshold)
         leader = int(group)
         if not (0 <= leader < self.n_sets) or int(g.leader_of_set[leader]) != leader:
@@ -884,11 +1212,16 @@ class CenterCatalog:
             -sims,
         ))
         members = members[order]
+        rep_features = self.schema_features[int(self.center_schema[rep])]
+        counts = self._kinship_counts(members, leader, rep_features)
+        members = members[self._kinship_mask(members, rep_features, kinship)]
         page = members[int(offset): int(offset) + int(limit)]
-        out_members = [self._member_entry(int(c), leader) for c in page.tolist()]
+        out_members = [self._member_entry(int(c), leader, rep_features) for c in page.tolist()]
         summary = self._group_summary(g, leader, self._group_members(g, leader))
         summary.update({
             "threshold": g.threshold,
+            "kinship": kinship,
+            "kinship_counts": counts,
             "total": int(members.shape[0]),
             "offset": int(offset),
             "limit": int(limit),
