@@ -304,6 +304,7 @@ async function startDatasetScan() {
                 tau: readCertTau(),
                 alpha: readCertAlpha(),
                 rule: readCertRule(),
+                multiplicity: readCertMultiplicity(),
                 direction: readDirection(),
                 // The scan's OWN Min. objects, not readCertMinSamples() --
                 // tau/alpha ARE shared with the Green/Red sliders
@@ -766,9 +767,39 @@ function readCertMinSamples() {
     return (Number.isFinite(v) && v >= 1) ? v : 1;
 }
 
+// What the green (or, under absence, red) cells mean - #certMode:
+//   'family'  (default) certified above the boundary, with a guarantee that
+//             holds for the branch the search chose: Bonferroni over every
+//             cell of every partition the search could show
+//             (Project_Master_Document.md Section 4.14);
+//   'schema'  certified as if the branch had been chosen in advance - the
+//             earlier strict mode, optimistic after a search (Section 4.5);
+//   'purity'  the observed share reaches the boundary; nothing is certified
+//             (the earlier default).
+function readCertMode() {
+    const el = document.getElementById('certMode');
+    const v = el ? el.value : 'family';
+    return (v === 'schema' || v === 'purity') ? v : 'family';
+}
+
 function readCertRule() {
-    const el = document.getElementById('certStrict');
-    return (el && el.checked) ? 'certified' : 'purity';
+    return readCertMode() === 'purity' ? 'purity' : 'certified';
+}
+
+function readCertMultiplicity() {
+    return readCertMode() === 'family' ? 'family' : 'bonferroni';
+}
+
+// A certificate of exactly 100 % purity cannot exist (H0: pi <= 1 is never
+// rejected), so the certified modes stop the boundary at 99 %.
+function certMaxPct() {
+    return readCertRule() === 'certified' ? 99 : 100;
+}
+
+function onCertModeChange() {
+    syncColorScaleFromInputs();
+    updateTauLabel();
+    applyCertificate();
 }
 
 // The lower colour boundary is cosmetic: it partitions the same cells into
@@ -793,8 +824,9 @@ async function applyCertificate() {
     // live control here.
     const tauEl = document.getElementById('certTau');
     const tau = tauEl ? Number(tauEl.value) : 90;
-    if (!Number.isFinite(tau) || tau <= 0 || tau > 100) {
-        showAnalysisError('The green boundary must be in (0, 100] percent.');
+    const maxPct = certMaxPct();
+    if (!Number.isFinite(tau) || tau <= 0 || tau > maxPct) {
+        showAnalysisError(`The boundary must be in (0, ${maxPct}] percent${maxPct < 100 ? ': 100 % purity cannot be certified' : ''}.`);
         return;
     }
     if (lastTargetCol === null) return;
@@ -810,13 +842,7 @@ function renderCertificateSummary(response) {
     const el = document.getElementById('certSummary');
     if (!el) return;
     el.innerHTML = '';
-    if (readCertRule() === 'certified' && !(response && response.schema && response.schema.selected_from_landscape)) {
-        // Section 4.5: the per-schema certificate assumes the schema was
-        // fixed in advance; the search chose it among many.
-        el.textContent = 'Strict mode certifies the cells of each branch as if its schema had been chosen in advance. '
-            + 'The search chose it among many, so these certificates are optimistic; '
-            + '“Validate” under Branches gives one that stays valid after the search.';
-    }
+    el.textContent = certificateModeNote(response);
     if (response && response.schema && response.schema.selected_from_landscape) {
         let note = 'Schema opened from the landscape: '
             + (response.schema.feature_names || []).join(' + ')
@@ -828,8 +854,35 @@ function renderCertificateSummary(response) {
         if (b && cert && cert.partition_matches_search === false && b.search_centers && b.centers) {
             note += ` The search scored this schema on a capacity-coarsened partition (coverage ${(b.search_centers.coverage * 100).toFixed(1)}%, ${b.search_centers.n_centers} centres — the numbers in the landscape); the lattice shows the full-resolution partition (${(b.centers.coverage * 100).toFixed(1)}%, ${b.centers.n_centers} centres).`;
         }
-        el.textContent = note;
+        el.textContent = (el.textContent ? el.textContent + ' ' : '') + note;
     }
+}
+
+function certificateModeNote(response) {
+    const cert = (response && response.certificate) || {};
+    const coloured = activeDirection === 'absence' ? 'Red' : 'Green';
+    if (cert.rule === 'purity') {
+        return `${coloured} = the observed share reaches the boundary. Nothing is certified: `
+            + 'the search chose these cells by looking at them. “Check this result” under Branches tests them.';
+    }
+    if (cert.multiplicity === 'family') {
+        const t = (cert.family_tests !== null && cert.family_tests !== undefined) ? cert.family_tests.toLocaleString() : '—';
+        const lvl = (cert.per_cell_level !== null && cert.per_cell_level !== undefined) ? cert.per_cell_level.toExponential(1) : '—';
+        const nMin = (cert.min_certifiable_rows !== null && cert.min_certifiable_rows !== undefined)
+            ? ` A cell needs at least ${cert.min_certifiable_rows} rows, all of them the value, to be certifiable at all.` : '';
+        return `${coloured} = certified above the boundary, valid for the branches the search chose: `
+            + `Bonferroni over all ${t} cells it could show (per-cell level ${lvl}, family-wise ${((cert.alpha || 0.05) * 100).toFixed(0)}%).${nMin}`;
+    }
+    return `${coloured} = certified as if this branch had been chosen in advance (legacy). `
+        + 'The search chose it among many, so these certificates are optimistic.';
+}
+
+function updateTauLabel() {
+    const labelTau = document.getElementById('labelTau');
+    if (!labelTau || activeDirection === 'absence') return;
+    labelTau.title = readCertRule() === 'certified'
+        ? "A cell is a discrete centre — and is drawn green — when it is certified to contain more of the target value than this. Must lie above the value's base rate (the p₀ tick) and below 100 %. Coverage is computed from exactly these cells, so moving this re-runs the analysis."
+        : "A cell is drawn green when its observed share of the target value reaches this. Must lie above the value's base rate (the p₀ tick). Coverage is computed from exactly these cells, so moving this re-runs the analysis. 100% is allowed and means 'only cells that are entirely the target value'.";
 }
 
 // Monotone id of the latest /api/analyze request. Arrow-key nudges and
@@ -880,6 +933,7 @@ async function runAnalysis(targetCol, criterion = null, features = null, options
             tau: readCertTau(),
             alpha: readCertAlpha(),
             rule: readCertRule(),
+            multiplicity: readCertMultiplicity(),
             min_samples: readCertMinSamples(),
             direction: readDirection(),
         });
@@ -1168,7 +1222,8 @@ async function setDirection(direction) {
         labelTau.style.color = direction === 'absence' ? '#ef4444' : 'var(--green)';
         labelTau.title = direction === 'absence'
             ? 'A cell is certified FREE of the chosen value — and is drawn red — when its share of rows WITHOUT the value reaches this. Must lie above the base rate of rows without the value (the 1−p₀ tick). Moving this re-runs the analysis.'
-            : "A cell is a discrete centre — and is drawn green — when its share of the target value reaches this. Must lie above the value's base rate (the p₀ tick). Coverage is computed from exactly these cells, so moving this re-runs the analysis. 100% is allowed and means 'only cells that are entirely the target value'.";
+            : '';
+        if (direction !== 'absence') updateTauLabel();
     }
     if (labelRed) {
         labelRed.textContent = direction === 'absence' ? '⚪ Grey up to:' : '🔴 Red up to:';
@@ -1335,7 +1390,8 @@ function readDecoBoundaryPct() {
 // (one point past it at the closest), up to 100.
 function certBoundaryRange() {
     const a = axisAnchorPct();
-    return { lo: a === null ? 1 : Math.min(100, a + 1), hi: 100 };
+    const hi = certMaxPct();
+    return { lo: a === null ? 1 : Math.min(hi, a + 1), hi };
 }
 
 // Admissible range of the decorative boundary: at or below the anchor and
@@ -2489,6 +2545,7 @@ function landscapeParams() {
         target: currentBranchesResponse.target,
         criterion: currentBranchesResponse.criterion,
         tau: readCertTau(), alpha: readCertAlpha(), rule: readCertRule(),
+        multiplicity: readCertMultiplicity(),
         min_samples: readCertMinSamples(), direction: readDirection(),
     });
     if (currentBranchesResponse.also && currentBranchesResponse.also.length) p.also = currentBranchesResponse.also;

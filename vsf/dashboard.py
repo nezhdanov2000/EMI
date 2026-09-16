@@ -172,6 +172,11 @@ def _render_html(
 """
 
 
+#: The certificate an export is built under when the caller names none: the
+#: same one the live application colours by by default.
+DEFAULT_EXPORT_SPEC = CenterSpec(tau=0.90, alpha=0.05, rule="certified", multiplicity="family")
+
+
 def export_full_dashboard(
     df: pd.DataFrame,
     target: str = "class",
@@ -211,9 +216,13 @@ def export_full_dashboard(
         center_spec: the discrete-centre certificate (`vsf.centers.CenterSpec`)
             baked into this export: the purity floor `tau`, the simultaneous
             error rate `alpha`, and the multiplicity policy. Defaults to
-            tau = 0.90, alpha = 0.05, Bonferroni. A static page cannot be
-            re-certified after the fact, so this value is final for the
-            exported document and is stated in its legend.
+            `DEFAULT_EXPORT_SPEC`: tau = 0.90, alpha = 0.05, a certificate
+            corrected over the whole search family, which - unlike the
+            per-schema Bonferroni correction - holds for the branches the
+            search chose (Project_Master_Document.md Section 4.14). Pass
+            `CenterSpec()` for the observed-purity colouring. A static page
+            cannot be re-certified after the fact, so this value is final
+            for the exported document and is stated in its legend.
         direction: `"presence"` (default) or `"absence"` — see
             `vsf.avr.Direction`. Under `"absence"` the exported branches
             certify cells where `criterion` is almost missing; they are
@@ -260,7 +269,7 @@ def export_full_dashboard(
     # every payload and into the legend. `discover_branches` raises
     # ValueError when `criterion=None` and `target` is not itself
     # two-valued -- see this function's docstring.
-    spec = center_spec if center_spec is not None else CenterSpec()
+    spec = center_spec if center_spec is not None else DEFAULT_EXPORT_SPEC
     positive_class = 1 if criterion is not None else None
     branches = discover_branches(
         X, Z, feature_names=feature_names, max_d=max_d, random_state=0,
@@ -271,6 +280,9 @@ def export_full_dashboard(
 
     branches_data: Dict[str, Any] = {}
     for d, branch in branches.items():
+        # The spec the search resolved (a family certificate carries its
+        # family size) - the display must certify at the same level.
+        spec = branch.centers.spec
         payload = prepare_visualization_payload(
             branch,
             X,

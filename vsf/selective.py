@@ -34,20 +34,27 @@ is why `certify_discovery` requires alpha <= 0.05.
 Certification methods
 -----------------------------------------------------------------------
 `"family_bonferroni"`
-    Every cell of every scored schema, all dimensionalities together, is one
-    family of T tests (cells below `min_samples` are not tests - they can
-    never be certified). A cell is certified iff p_c <= alpha / T. The union
-    bound over the WHOLE family makes the choice of schema irrelevant:
-    P(any cell with pi_c <= tau certified, anywhere) <= alpha, whatever the
-    search does, with no assumption on the dependence between cells. The
-    search itself ranks schemas by the coverage of cells certified this way,
-    so the reported branch maximises the honest quantity. Price: T is in the
-    thousands on small data and grows as sum_d C(M, d) x cells.
+    Every occupied cell of every partition the search can report or display
+    - each scored schema's search partition and, where the capacity rule
+    coarsened it, its uncoarsened partition too - over all dimensionalities
+    is one family of T tests (`vsf.avr.family_cell_count`). A cell is
+    certified iff p_c <= alpha / T. The union bound over the WHOLE family
+    makes the choice of schema irrelevant: P(any cell with pi_c <= tau
+    certified, anywhere) <= alpha, whatever the search does, with no
+    assumption on the dependence between cells. The search ranks schemas by
+    the coverage of cells certified this way, so the reported branch
+    maximises the honest quantity. This is exactly
+    `CenterSpec(rule="certified", multiplicity="family")`, the certificate
+    the interface colours by. Price: T is in the thousands on small data and
+    grows as sum_d C(M, d) x cells. T does not depend on `min_samples`,
+    which a user may move after seeing the data.
 
 `"split"`
     The rows are divided at random, independently of the target, into a
-    search half A and an evaluation half B. The search runs on A with the
-    caller's `CenterSpec`; on A the cells of every reported schema that pass
+    search half A and an evaluation half B. The search runs on A and ranks
+    by observed purity (`rule="purity"` at the caller's tau and
+    min_samples) whatever rule the caller's spec names - A only proposes,
+    B certifies. On A the cells of every reported schema that pass
     a screen (default: A-purity >= tau and A-size >= min_samples) become the
     candidate cells. Only those are tested, on B's counts, at alpha / T_B
     where T_B is the number of candidates (all reported branches together by
@@ -98,8 +105,11 @@ from .avr import (
     _CandidateFactory,
     _exhaustive_search,
     _prepare_search,
+    family_cell_count,
+    resolve_center_spec,
 )
 from .centers import (
+    MAX_CERTIFICATE_ALPHA,
     MIN_POSITIVES_FOR_CV,
     CenterSpec,
     CVCoverage,
@@ -321,20 +331,14 @@ def random_halves(n_rows: int, random_state: Optional[int]) -> Tuple[np.ndarray,
     return np.sort(perm[:cut]), np.sort(perm[cut:])
 
 
-def family_test_count(factory: _CandidateFactory, max_d: int, min_samples: int) -> int:
+def family_test_count(factory: _CandidateFactory, max_d: int) -> int:
     """
-    T of `"family_bonferroni"`: the number of cells with at least
-    `min_samples` rows, summed over every candidate schema of dimensionality
-    1 .. max_d that the search scores (pruned renamings carry an identical
-    partition to a scored one and add no new hypothesis).
+    T of `"family_bonferroni"`: `vsf.avr.family_cell_count` - every occupied
+    cell of every partition a search over d <= max_d can report or display
+    (pruned renamings carry the row sets of a counted partition and add no
+    new hypothesis).
     """
-    total = 0
-    for _, codes, n_cells in factory.iter_candidates(max_d):
-        if n_cells == 0:
-            continue
-        n_cell = np.bincount(codes, minlength=n_cells)
-        total += int(np.count_nonzero(n_cell >= max(1, min_samples)))
-    return total
+    return family_cell_count(factory, max_d)
 
 
 def certification_passes(method: CertificationMethod) -> int:
@@ -377,8 +381,9 @@ def schema_stability(
 
 
 #: Largest family-wise level `certify_discovery` accepts; see "The claim and
-#: the model" in the module docstring for why the bound is needed.
-MAX_ALPHA: Final[float] = 0.05
+#: the model" in the module docstring for why the bound is needed. Alias of
+#: `vsf.centers.MAX_CERTIFICATE_ALPHA`.
+MAX_ALPHA: Final[float] = MAX_CERTIFICATE_ALPHA
 
 
 def _require_certifiable(spec: CenterSpec) -> None:
@@ -507,13 +512,15 @@ def certify_discovery(
             progress(done, total_passes)
 
     if method == "family_bonferroni":
-        t_family = family_test_count(factory, eff_d, m)
-        tick(1)
-        level = spec.alpha / t_family if t_family > 0 else spec.alpha
-        search_spec = CenterSpec(
-            tau=spec.tau, alpha=level, rule="certified", min_samples=m,
-            method="clopper-pearson", multiplicity="none",
+        search_spec = resolve_center_spec(
+            factory,
+            CenterSpec(tau=spec.tau, alpha=spec.alpha, rule="certified", min_samples=m,
+                       method="clopper-pearson", multiplicity="family"),
+            eff_d,
         )
+        assert search_spec.family_tests is not None
+        t_family = int(search_spec.family_tests)
+        tick(1)
         best = _exhaustive_search(factory, z64, 2, [1], search_spec, eff_d)[0]
         tick(2)
         branches: Dict[int, SelectiveCertificate] = {}
@@ -528,9 +535,9 @@ def certify_discovery(
             n_tests={d: t_family for d in branches},
             per_cell_level={d: (spec.alpha / t_family if t_family else None) for d in branches},
             guarantee=(
-                f"P(any cell with purity <= {spec.tau:g} is certified, in any of the "
-                f"{t_family} cells of all scored schemas of d <= {eff_d}) <= {spec.alpha:g}; "
-                "valid for the reported schemas whatever the search chose "
+                f"P(any cell with purity <= {spec.tau:g} is certified, among the "
+                f"{t_family} cells of every partition of d <= {eff_d} the search can show) "
+                f"<= {spec.alpha:g}; valid for the reported schemas whatever the search chose "
                 "(Bonferroni over the whole family; rows i.i.d.)"
             ),
             branches=branches,
@@ -541,7 +548,8 @@ def certify_discovery(
 
     # ---- split -------------------------------------------------------------
     rows_a, rows_b = random_halves(factory.n_samples, random_state)
-    best = _exhaustive_search(factory, z64, 2, [1], spec, eff_d, rows=rows_a)[0]
+    proposal_spec = CenterSpec(tau=spec.tau, alpha=spec.alpha, rule="purity", min_samples=m)
+    best = _exhaustive_search(factory, z64, 2, [1], proposal_spec, eff_d, rows=rows_a)[0]
     tick(1)
     z_a, z_b = z[rows_a], z[rows_b]
     per_branch: Dict[int, Tuple[Tuple[int, ...], np.ndarray, np.ndarray, np.ndarray, np.ndarray]] = {}
@@ -629,6 +637,7 @@ def nested_crossvalidation(
         raise ValueError("no feature columns")
     factory, z, names = prepared
     eff_d = min(max_d, factory.n_features)
+    spec = resolve_center_spec(factory, spec, eff_d)
     z64 = z.astype(np.int64)
     n_positive = int(z.sum())
     if n_positive < MIN_POSITIVES_FOR_CV:

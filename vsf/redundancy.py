@@ -90,7 +90,14 @@ from typing import Dict, List, Literal, Optional, Sequence, Tuple
 
 import numpy as np
 
-from .avr import MAX_BRANCH_D, Direction, Landscape, _CandidateFactory, _prepare_search
+from .avr import (
+    MAX_BRANCH_D,
+    Direction,
+    Landscape,
+    _CandidateFactory,
+    _prepare_search,
+    resolve_center_spec,
+)
 from .centers import CenterSpec, _beta_quantile, clopper_pearson_lower, min_successes_to_select
 
 __all__ = [
@@ -1286,6 +1293,7 @@ def collect_centers(
     if prepared is None:
         raise ValueError("no feature columns to search")
     factory, z_binary, names = prepared
+    spec = resolve_center_spec(factory, spec, min(max_d, factory.n_features))
     z = z_binary.astype(np.int64)
     N = factory.n_samples
     landscape = Landscape(N, int(z.sum()), direction, names)

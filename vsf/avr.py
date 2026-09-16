@@ -46,8 +46,11 @@ What is still not claimed
 
 from __future__ import annotations
 
+import hashlib
 import itertools
-from dataclasses import dataclass, field
+import threading
+from collections import OrderedDict
+from dataclasses import dataclass, field, replace
 from typing import Callable, Dict, Iterator, List, Literal, Optional, Sequence, Tuple
 
 import numpy as np
@@ -319,6 +322,11 @@ class _CandidateFactory:
         # the bound the rule simply prunes less (never more).
         self._occupancy: Dict[Tuple[int, ...], int] = {}
         self.n_pruned = 0
+        # Set by `iter_candidates` before each yield: the occupied-cell count
+        # of the candidate's UNCOARSENED joint partition, and whether the
+        # yielded partition is a coarsening of it (`family_cell_count`).
+        self.last_raw_cells = 0
+        self.last_coarsened = False
 
     # -- coarsening ---------------------------------------------------------
     def _coarse_column(self, j: int, k: int) -> Tuple[np.ndarray, int]:
@@ -446,6 +454,7 @@ class _CandidateFactory:
         """
         m = self.n_features
         if self.n_samples == 0:
+            self.last_raw_cells, self.last_coarsened = 0, False
             for d in range(1, max_d + 1):
                 for combo in itertools.combinations(range(m), d):
                     yield combo, np.zeros(0, dtype=np.int64), 0
@@ -471,10 +480,90 @@ class _CandidateFactory:
                     dense, n_cells = self._dense(flat, total)
                     if cache and d < max_d and len(self._occupancy) < _OCCUPANCY_CACHE_MAX:
                         self._occupancy[combo] = n_cells
+                    self.last_raw_cells = n_cells
                     if n_cells <= self.capacity:
+                        self.last_coarsened = False
                         yield combo, dense, n_cells
                     else:
+                        self.last_coarsened = True
                         yield (combo,) + self._coarsened_codes(combo)
+
+    def family_cell_count(self, max_d: int) -> int:
+        """
+        T of `CenterSpec(multiplicity="family")`: the number of occupied
+        cells of every partition a search over d <= max_d can report or
+        display. For each scored combination that is its search partition
+        and, when the capacity rule coarsened it, also its uncoarsened joint
+        partition - the one `vsf.vis` draws. Every prefix view of a branch
+        is the partition of a smaller combination, and a combination skipped
+        as a renaming (`_is_redundant`) has the row sets of a counted one, so
+        every cell the product can certify or colour is one of the T
+        hypotheses. Cells too small to reach a threshold are counted too:
+        `min_samples` belongs to the user and may move after the data are
+        seen, so the family cannot depend on it.
+        """
+        total = 0
+        for _, _, n_cells in self.iter_candidates(max_d):
+            total += int(n_cells)
+            if self.last_coarsened:
+                total += int(self.last_raw_cells)
+        return total
+
+
+_FAMILY_CACHE_MAX_ENTRIES = 64
+_FAMILY_CACHE: "OrderedDict[Tuple[object, ...], int]" = OrderedDict()
+_FAMILY_CACHE_LOCK = threading.Lock()
+
+
+def _family_key(factory: _CandidateFactory, max_d: int) -> Tuple[object, ...]:
+    raw = np.ascontiguousarray(factory._raw)
+    digest = hashlib.blake2b(raw.tobytes(), digest_size=20)
+    digest.update(str((raw.dtype.str, raw.shape)).encode("ascii"))
+    return (
+        digest.hexdigest(),
+        int(factory.capacity),
+        tuple(factory.ordered),
+        tuple(sorted(factory.determined_by.items())),
+        int(max_d),
+    )
+
+
+def family_cell_count(factory: _CandidateFactory, max_d: int) -> int:
+    """
+    `_CandidateFactory.family_cell_count`, memoised on the factory's data,
+    capacity, column orders, pruning dependencies and `max_d` - the family
+    does not depend on the target, so every value of a column and every
+    endpoint of one analysis share it. Thread-safe.
+    """
+    key = _family_key(factory, max_d)
+    with _FAMILY_CACHE_LOCK:
+        hit = _FAMILY_CACHE.get(key)
+        if hit is not None:
+            _FAMILY_CACHE.move_to_end(key)
+            return hit
+    # Counted on a fresh factory: the count walks the enumeration, and the
+    # caller's factory may be mid-iteration or carry pruning state.
+    fresh = _CandidateFactory(
+        factory._raw, factory.bin_counts, factory.n_samples,
+        ordered=factory.ordered, determined_by=factory.determined_by,
+    )
+    count = max(1, fresh.family_cell_count(max_d))
+    with _FAMILY_CACHE_LOCK:
+        _FAMILY_CACHE[key] = count
+        while len(_FAMILY_CACHE) > _FAMILY_CACHE_MAX_ENTRIES:
+            _FAMILY_CACHE.popitem(last=False)
+    return count
+
+
+def resolve_center_spec(factory: _CandidateFactory, spec: CenterSpec, max_d: int) -> CenterSpec:
+    """
+    `spec` with `family_tests` filled in for `multiplicity="family"` (the
+    family of the search over d <= max_d on `factory`); any other spec, or
+    one already resolved, is returned unchanged.
+    """
+    if spec.is_resolved:
+        return spec
+    return replace(spec, family_tests=family_cell_count(factory, max_d))
 
 
 def _subset_codes(
@@ -1127,6 +1216,7 @@ def discover_branches(
         return branches
     factory, z_binary, feature_names = prepared
     effective_max_d = min(max_d, factory.n_features)
+    spec = resolve_center_spec(factory, spec, effective_max_d)
     # ---- exhaustive search ------------------------------------------------
     # The 0/1 indicator is its own two-valued code vector; value 1 is the
     # class searched for (the positive class, or under `direction="absence"`
@@ -1234,9 +1324,11 @@ def compute_landscape(
     if prepared is None:
         return Landscape(int(np.asarray(X).shape[0]), 0, direction, []).freeze()
     factory, z_binary, names = prepared
+    effective_max_d = min(max_d, factory.n_features)
+    spec = resolve_center_spec(factory, spec, effective_max_d)
     landscape = Landscape(factory.n_samples, int(z_binary.sum()), direction, names)
     _exhaustive_search(
-        factory, z_binary.astype(np.int64), 2, [1], spec, min(max_d, factory.n_features),
+        factory, z_binary.astype(np.int64), 2, [1], spec, effective_max_d,
         landscape=landscape,
     )
     return landscape.freeze()
@@ -1307,9 +1399,7 @@ def compute_tau_curves(
     # refuse: build the search with a floor that is always admissible.
     prepared = _prepare_search(
         X, Z, feature_names, positive_class,
-        CenterSpec(tau=1.0 if spec.rule == "purity" else 0.999, alpha=spec.alpha,
-                   rule=spec.rule, min_samples=spec.min_samples, method=spec.method,
-                   multiplicity=spec.multiplicity),
+        replace(spec, tau=1.0 if spec.rule == "purity" else 0.999),
         direction,
         prune_dependent,
     )
@@ -1325,6 +1415,7 @@ def compute_tau_curves(
         taus = taus[taus < 1.0]  # tau = 1 is not certifiable
     T = int(taus.shape[0])
     effective_max_d = min(max_d, factory.n_features)
+    spec = resolve_center_spec(factory, spec, effective_max_d)
     z64 = z_binary.astype(np.int64)
     use_mass = direction == "absence"
 
@@ -1371,10 +1462,7 @@ def compute_tau_curves(
             K = np.zeros(T, dtype=np.int64)
             for ti, tau in enumerate(taus.tolist()):
                 k_min = min_successes_to_select(
-                    n_cell, CenterSpec(tau=float(tau), alpha=spec.alpha, rule="certified",
-                                       min_samples=spec.min_samples, method=spec.method,
-                                       multiplicity=spec.multiplicity),
-                    alpha_eff,
+                    n_cell, replace(spec, tau=float(tau)), alpha_eff,
                 )
                 mask = (k_cell >= k_min) & (n_cell > 0)
                 k_sel[ti] = int(k_cell[mask].sum())
@@ -1434,11 +1522,18 @@ def report_schema(
     cv_splits: int = 5,
     cv_repeats: int = 5,
     direction: Direction = "presence",
+    family_max_d: int = MAX_BRANCH_D,
+    prune_dependent: bool = False,
 ) -> Dict[int, BranchResult]:
     """
     The full report (`_report_branches`) for ONE explicitly chosen feature
     subset, without a search: `{len(features): BranchResult}`. This is how
     a schema picked from the `Landscape` is opened.
+
+    Under `multiplicity="family"` the certificate refers to the family of
+    the landscape the schema was picked from: `family_max_d` and
+    `prune_dependent` must be those of that landscape (the server's are
+    `MAX_BRANCH_D` and the request's `prune`).
 
     Statistical caveat, and the reason `n_permutations_centers` defaults to
     0 here unlike `discover_branches`: a schema chosen by looking at the
@@ -1458,12 +1553,15 @@ def report_schema(
         raise ValueError(
             f"features must be 1 to {MAX_BRANCH_D} distinct column indices, got {list(features)}"
         )
-    prepared = _prepare_search(X, Z, feature_names, positive_class, spec, direction)
+    if not (1 <= family_max_d <= MAX_BRANCH_D):
+        raise ValueError(f"family_max_d must be in [1, {MAX_BRANCH_D}], got {family_max_d}")
+    prepared = _prepare_search(X, Z, feature_names, positive_class, spec, direction, prune_dependent)
     if prepared is None:
         return {}
     factory, z_binary, names = prepared
     if any(j < 0 or j >= factory.n_features for j in combo):
         raise ValueError(f"feature index out of range in {list(combo)}")
+    spec = resolve_center_spec(factory, spec, min(family_max_d, factory.n_features))
     d = len(combo)
     codes, n_cells = factory.codes(combo)
     key = coverage_score(z_binary, codes, n_cells, spec)
@@ -1614,6 +1712,7 @@ def iter_branches_by_value(
         X_discrete, bin_counts, n_samples, ordered=ordered_columns(X_arr),
         determined_by=(exact_dependencies(X_arr, feature_names) if prune_dependent else None),
     )
+    spec = resolve_center_spec(factory, spec, effective_max_d)
 
     uniq, z_codes = np.unique(Z_str, return_inverse=True)
     z_codes = z_codes.astype(np.int64).ravel()

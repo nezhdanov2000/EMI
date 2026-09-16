@@ -148,7 +148,9 @@ __all__ = [
     "CenterReport",
     "CenterSpec",
     "FamilywiseCoverageNull",
+    "MAX_CERTIFICATE_ALPHA",
     "MIN_POSITIVES_FOR_CV",
+    "Multiplicity",
     "PairedGain",
     "binarize_target",
     "center_report",
@@ -176,6 +178,15 @@ _TINY: Final[float] = 1e-300
 
 BoundMethod = Literal["clopper-pearson", "wilson"]
 CenterRule = Literal["purity", "certified"]
+Multiplicity = Literal["bonferroni", "none", "family"]
+
+#: Largest family-wise level a certificate that must hold for cells of
+#: heterogeneous rows may use. Conditional on the features, a cell's count
+#: is Poisson-binomial; the exact binomial test at the mean purity is valid
+#: for thresholds k >= n tau + 1 (Hoeffding, 1956, Theorem 4), and every
+#: certifying threshold satisfies that at per-cell levels up to 0.05
+#: (`tests/test_selective.py`).
+MAX_CERTIFICATE_ALPHA: Final[float] = 0.05
 
 #: Below this many target-value samples, no out-of-sample coverage statement
 #: is attempted and `CenterReport.coverage_cv` is None.
@@ -612,11 +623,29 @@ class CenterSpec:
         reported; `"wilson"` only where mean coverage suffices.
 
     multiplicity
-        `"bonferroni"` divides alpha by the number of occupied cells C.
+        `"bonferroni"` divides alpha by the number of occupied cells C of the
+        partition at hand. That is the correct level for ONE partition fixed
+        in advance, and too liberal for a partition a search chose (Section
+        4.5 of the specification: on pure noise a reported branch carries a
+        false certificate in 68 % of runs).
+        `"family"` divides alpha by `family_tests`, the number of cells of
+        EVERY partition the search can report or display
+        (`vsf.avr.family_cell_count`), so a certificate holds for whichever
+        schema the search picks (Section 4.14). Requires
+        `rule="certified"` and `alpha <= MAX_CERTIFICATE_ALPHA`. The search
+        entry points of `vsf.avr`, `vsf.redundancy` and `vsf.selective`
+        fill `family_tests` themselves (`vsf.avr.resolve_center_spec`); a
+        partition-level function given an unresolved family spec raises.
         `"none"` reproduces the naive per-cell bound and exists so the test
         suite can demonstrate the false-certification rate it produces
         (~alpha * C centres on pure noise); it must not be used for a report
         under `rule="certified"`.
+
+    family_tests
+        T of `multiplicity="family"`; None until resolved. Set it only from
+        `vsf.avr.family_cell_count` on the same data, feature set, maximum
+        dimensionality and pruning as the search it certifies: a smaller T
+        voids the guarantee.
     """
 
     tau: float = 0.90
@@ -624,7 +653,8 @@ class CenterSpec:
     rule: CenterRule = "purity"
     min_samples: int = 1
     method: BoundMethod = "clopper-pearson"
-    multiplicity: Literal["bonferroni", "none"] = "bonferroni"
+    multiplicity: Multiplicity = "bonferroni"
+    family_tests: Optional[int] = None
 
     def __post_init__(self) -> None:
         if self.rule not in ("purity", "certified"):
@@ -645,13 +675,41 @@ class CenterSpec:
             raise ValueError(f"min_samples must be >= 1, got {self.min_samples}")
         if self.method not in ("clopper-pearson", "wilson"):
             raise ValueError(f"unknown bound method: {self.method!r}")
-        if self.multiplicity not in ("bonferroni", "none"):
+        if self.multiplicity not in ("bonferroni", "none", "family"):
             raise ValueError(f"unknown multiplicity policy: {self.multiplicity!r}")
+        if self.multiplicity == "family":
+            if self.rule != "certified":
+                raise ValueError(
+                    "multiplicity='family' is a certificate and needs rule='certified'; "
+                    "rule='purity' selects cells by their observed share and has no level to correct"
+                )
+            if self.alpha > MAX_CERTIFICATE_ALPHA:
+                raise ValueError(
+                    f"alpha = {self.alpha} exceeds {MAX_CERTIFICATE_ALPHA}: above it the exact "
+                    "binomial test is not guaranteed valid for a cell of heterogeneous rows"
+                )
+            if self.family_tests is not None and int(self.family_tests) < 1:
+                raise ValueError(f"family_tests must be >= 1, got {self.family_tests}")
+        elif self.family_tests is not None:
+            raise ValueError("family_tests is only meaningful with multiplicity='family'")
+
+    @property
+    def is_resolved(self) -> bool:
+        """False only for a family spec whose family size is still unknown."""
+        return self.multiplicity != "family" or self.family_tests is not None
 
     def effective_alpha(self, n_occupied_cells: int) -> float:
         """Per-cell level of the reported bounds, after the multiplicity policy."""
         if self.multiplicity == "none":
             return self.alpha
+        if self.multiplicity == "family":
+            if self.family_tests is None:
+                raise ValueError(
+                    "unresolved multiplicity='family': the family size is unknown. "
+                    "Pass the spec through a search entry point (vsf.discover_branches, "
+                    "compute_landscape, ...) or vsf.avr.resolve_center_spec first."
+                )
+            return self.alpha / int(self.family_tests)
         return self.alpha / max(1, int(n_occupied_cells))
 
 

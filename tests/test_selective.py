@@ -8,7 +8,20 @@ from typing import Dict, Tuple
 import numpy as np
 import pytest
 
-from vsf.avr import _exhaustive_search, _prepare_search, discover_branches
+from vsf.avr import (
+    _exhaustive_search,
+    _prepare_search,
+    compute_landscape,
+    compute_tau_curves,
+    discover_branches,
+    family_cell_count,
+    iter_branches_by_value,
+    report_schema,
+    resolve_center_spec,
+)
+from vsf.metrics import cell_codes
+from vsf.pmd import discretize_dataset
+from vsf.redundancy import collect_centers
 from vsf.centers import (
     CenterSpec,
     _cell_counts,
@@ -144,17 +157,63 @@ def test_random_halves_partition_the_rows_deterministically() -> None:
         random_halves(1, 0)
 
 
-@pytest.mark.parametrize("m", [1, 5])
-def test_family_test_count_is_the_number_of_eligible_cells_of_every_schema(m: int) -> None:
-    X, Z = _noise(4, n=300, m=5)
+def test_family_test_count_covers_search_and_displayed_partitions() -> None:
+    # 300 rows: capacity 30, so the 4-level 3- and 4-column partitions are
+    # coarsened for the search while the display draws them uncoarsened.
+    X, Z = _noise(4, n=300, m=5, levels=4)
     spec = CenterSpec(tau=0.5)
     factory, _, _ = _factory(X, Z, spec)
+    Xd, _ = discretize_dataset(X)
     brute = 0
+    coarsened = 0
     for d in range(1, 5):
         for combo in itertools.combinations(range(5), d):
-            codes, n_cells = factory.codes(combo)
-            brute += int(np.count_nonzero(np.bincount(codes, minlength=n_cells) >= m))
-    assert family_test_count(factory, 4, m) == brute
+            _, n_search = factory.codes(combo)
+            _, n_raw = cell_codes(Xd[:, combo])
+            brute += n_search + (n_raw if n_raw != n_search else 0)
+            coarsened += int(n_raw != n_search)
+    assert coarsened > 0
+    assert family_test_count(factory, 4) == brute
+    assert family_cell_count(factory, 2) < family_cell_count(factory, 4)
+
+
+def test_family_multiplicity_is_resolved_by_every_search_entry_point() -> None:
+    X, Z = _planted(14, n=400)
+    spec = CenterSpec(tau=0.8, rule="certified", multiplicity="family")
+    assert not spec.is_resolved
+    with pytest.raises(ValueError):
+        spec.effective_alpha(3)
+    factory, _, _ = _factory(X, Z, spec)
+    t = family_cell_count(factory, 4)
+    resolved = resolve_center_spec(factory, spec, 4)
+    assert resolved.family_tests == t and resolved.effective_alpha(1) == pytest.approx(0.05 / t)
+    assert resolve_center_spec(factory, resolved, 2) is resolved
+    branches = discover_branches(X, Z, positive_class="1", center_spec=spec, n_permutations_centers=19)
+    assert {b.centers.spec.family_tests for b in branches.values()} == {t}
+    assert all(b.centers.alpha_effective == pytest.approx(0.05 / t) for b in branches.values())
+    opened = report_schema(X, Z, [0, 1], positive_class="1", center_spec=spec)
+    assert opened[2].centers.spec.family_tests == t
+    land = compute_landscape(X, Z, positive_class="1", center_spec=spec)
+    ref = compute_landscape(X, Z, positive_class="1", center_spec=resolved)
+    assert np.array_equal(land.n_centers, ref.n_centers)
+    curves = compute_tau_curves(X, Z, positive_class="1", center_spec=spec)
+    assert curves["curves"]["2"]["n_centers"]
+    catalog = collect_centers(X, Z, positive_class="1", center_spec=spec)
+    assert catalog.spec.family_tests == t
+    by_value = dict(iter_branches_by_value(X, Z, ["1"], center_spec=spec, n_permutations_centers=0, cv_repeats=0))
+    assert by_value["1"][2].centers.spec.family_tests == t
+
+
+def test_family_spec_validation() -> None:
+    with pytest.raises(ValueError):
+        CenterSpec(tau=0.8, rule="purity", multiplicity="family")
+    with pytest.raises(ValueError):
+        CenterSpec(tau=0.8, rule="certified", multiplicity="family", alpha=0.1)
+    with pytest.raises(ValueError):
+        CenterSpec(tau=0.8, rule="certified", multiplicity="family", family_tests=0)
+    with pytest.raises(ValueError):
+        CenterSpec(tau=0.8, rule="certified", family_tests=10)
+    assert CenterSpec(tau=0.8, rule="certified", multiplicity="family", family_tests=10).effective_alpha(99) == pytest.approx(0.005)
 
 
 def test_schema_stability_summary() -> None:
@@ -182,7 +241,7 @@ def test_family_bonferroni_tests_every_eligible_cell_at_alpha_over_t() -> None:
     spec = CenterSpec(tau=0.8, alpha=0.05, min_samples=2)
     res = certify_discovery(X, Z, positive_class="1", center_spec=spec, method="family_bonferroni")
     factory, z, _ = _factory(X, Z, spec)
-    t = family_test_count(factory, 4, 2)
+    t = family_test_count(factory, 4)
     assert set(res.n_tests.values()) == {t}
     level = 0.05 / t
     for d, br in res.branches.items():
@@ -547,3 +606,95 @@ def test_the_page_ships_the_validation_panel() -> None:
     for element_id in ("validationPanel", "validationMethod", "validationRepeats", "btnValidate", "validationBody"):
         assert f'id="{element_id}"' in html
     assert "'/api/validate'" in js and "function runValidation" in js and "retry: true" in js
+    # the colouring defaults to the certificate that holds after the search
+    assert '<option value="family" selected>' in html
+    assert "multiplicity: readCertMultiplicity()" in js
+
+
+# ---------------------------------------------------------------------------
+# multiplicity in the live application
+# ---------------------------------------------------------------------------
+def _post_json(srv: "_Server", path: str, body: dict) -> Tuple[int, dict]:
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{srv.port}{path}",
+        data=json.dumps(body).encode("utf-8"),
+        headers={"Content-Type": "application/json"}, method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            return r.status, json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        return e.code, json.loads(e.read())
+
+
+def test_analyze_certifies_over_the_family_by_default_under_the_certified_rule() -> None:
+    df = _planted_frame()
+    srv = _Server(df)
+    try:
+        body = {"target": "target", "criterion": "yes", "tau": 0.8, "rule": "certified"}
+        status, fam = _post_json(srv, "/api/analyze", body)
+        assert status == 200, fam
+        status, legacy = _post_json(srv, "/api/analyze", {**body, "multiplicity": "bonferroni"})
+        assert status == 200, legacy
+        status, purity = _post_json(srv, "/api/analyze", {**body, "rule": "purity"})
+        assert status == 200, purity
+    finally:
+        srv.close()
+
+    X = df[["a", "b", "c", "e"]].values
+    Z = (df["target"] == "yes").astype(int).values
+    factory, _, _ = _prepare_search(X, Z, None, 1, CenterSpec(tau=0.8), "presence")
+    t = family_cell_count(factory, 4)
+
+    cert = fam["certificate"]
+    assert cert["multiplicity"] == "family" and cert["valid_after_search"] is True
+    assert cert["family_tests"] == t
+    assert cert["per_cell_level"] == pytest.approx(0.05 / t)
+    # a fully pure cell of n rows has p = tau ** n
+    n_min = cert["min_certifiable_rows"]
+    assert 0.8 ** n_min <= 0.05 / t < 0.8 ** (n_min - 1)
+    ref = discover_branches(
+        X, Z, positive_class=1, n_permutations_centers=0, cv_repeats=0,
+        center_spec=CenterSpec(tau=0.8, rule="certified", multiplicity="family"),
+    )
+    for d, payload in fam["branches"].items():
+        assert payload["certificate"]["multiplicity"] == "family"
+        assert payload["certificate"]["family_tests"] == t
+        assert payload["certificate"]["alpha_effective"] == pytest.approx(0.05 / t)
+        assert payload["search_centers"]["n_centers"] == ref[int(d)].centers.n_centers
+        # every green cell of the display is certified at the family level
+        for cell in payload["centers"]["top"]:
+            assert exact_upper_tail(cell["k"], cell["n"], 0.8)[0] <= 0.05 / t
+
+    assert legacy["certificate"]["multiplicity"] == "bonferroni"
+    assert legacy["certificate"]["valid_after_search"] is False
+    assert legacy["certificate"]["family_tests"] is None
+    assert purity["certificate"]["rule"] == "purity"
+    assert purity["certificate"]["valid_after_search"] is False
+    # the legacy per-schema certificate is never stricter than the family one
+    for d in fam["branches"]:
+        assert (legacy["branches"][d]["search_centers"]["coverage"]
+                >= fam["branches"][d]["search_centers"]["coverage"] - 1e-12)
+
+
+def test_certificate_request_validation_and_cache_separation() -> None:
+    srv = _Server(_planted_frame(n=300))
+    try:
+        base = {"target": "target", "criterion": "yes", "tau": 0.8}
+        for patch in (
+            {"rule": "purity", "multiplicity": "family"},
+            {"rule": "certified", "multiplicity": "holm"},
+            {"rule": "certified", "alpha": 0.1},
+            {"rule": "certified", "tau": 1.0},
+        ):
+            for path in ("/api/analyze", "/api/landscape"):
+                status, data = _post_json(srv, path, {**base, **patch})
+                assert status == 400, (path, patch, data)
+        status, a = _post_json(srv, "/api/landscape", {**base, "rule": "certified"})
+        assert status == 200, a
+        status, b = _post_json(srv, "/api/landscape", {**base, "rule": "certified", "multiplicity": "bonferroni"})
+        assert status == 200, b
+        assert a["n_zero"] >= b["n_zero"]
+        assert len(srv.httpd.landscape_cache) == 2
+    finally:
+        srv.close()

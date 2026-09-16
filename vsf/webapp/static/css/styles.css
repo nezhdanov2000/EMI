@@ -1332,3 +1332,13 @@ body.absence-mode .color-scale-handle--red { --handle-color: #64748b; }
     font-size: 0.72rem;
     color: var(--text-dim);
 }
+
+.cert-mode-select {
+    background: rgba(15, 23, 42, 0.8);
+    color: white;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 4px;
+    padding: 2px 6px;
+    max-width: 200px;
+    font-size: 0.75rem;
+}

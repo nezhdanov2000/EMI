@@ -30,6 +30,8 @@ from .avr import (
     Direction,
     Landscape,
     base_rate_reason,
+    family_cell_count,
+    resolve_center_spec,
     compute_landscape,
     compute_tau_curves,
     tau_grid,
@@ -40,6 +42,7 @@ from .avr import (
     select_branch_dimensionality,
 )
 from .centers import (
+    MAX_CERTIFICATE_ALPHA,
     MIN_POSITIVES_FOR_CV,
     CVCoverage,
     Center,
@@ -105,6 +108,9 @@ from .server import serve
 __version__ = "2.3.0"
 
 __all__ = [
+    "MAX_CERTIFICATE_ALPHA",
+    "family_cell_count",
+    "resolve_center_spec",
     "CertifiedCell",
     "NestedCVResult",
     "SchemaStability",

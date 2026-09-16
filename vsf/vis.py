@@ -849,6 +849,7 @@ def prepare_visualization_payload(
             "min_samples": int(spec.min_samples),
             "method": spec.method,
             "multiplicity": spec.multiplicity,
+            "family_tests": spec.family_tests,
             "alpha_effective": float(cell_stats[_headline_key].alpha_effective),
             "positive_value": None if positive_value is None else str(positive_value),
             "positive_label": (

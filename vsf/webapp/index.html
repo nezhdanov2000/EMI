@@ -480,9 +480,18 @@
                     </div>
                     <div class="scale-axis-caption" id="scaleAxisCaption">axis: share of the chosen value in a cell</div>
 
+                    <div style="display: flex; justify-content: space-between; align-items: center; gap: 6px;">
+                        <label for="certMode" style="color: var(--text-muted);"
+                            title="What a green cell means. Certified (default): the cell is certified to exceed the boundary, and the guarantee holds for the branch the search chose. The two legacy options reproduce the earlier colourings: per-schema certificates (optimistic after a search) and the observed share (no certificate).">Colouring:</label>
+                        <select id="certMode" class="cert-mode-select" onchange="onCertModeChange()">
+                            <option value="family" selected>Certified (valid after search)</option>
+                            <option value="schema">Legacy: certified per schema</option>
+                            <option value="purity">Legacy: observed share</option>
+                        </select>
+                    </div>
                     <div style="display: flex; justify-content: space-between; align-items: center;">
                         <label id="labelTau" style="color: var(--green);"
-                            title="A cell is a discrete centre — and is drawn green — when its share of the target value reaches this. Coverage is computed from exactly these cells, so moving this re-runs the analysis. 100% is allowed and means 'only cells that are entirely the target value'.">🟢 Green from:</label>
+                            title="A cell is a discrete centre — and is drawn green — when it is certified to contain more of the target value than this (below 100 %). Coverage is computed from exactly these cells, so moving this re-runs the analysis.">🟢 Green from:</label>
                         <div style="display: flex; align-items: center; gap: 4px;">
                             <input type="number" id="certTau" min="0" max="100" step="1" value="90"
                                 onchange="syncColorScaleFromInputs(); applyCertificate()"

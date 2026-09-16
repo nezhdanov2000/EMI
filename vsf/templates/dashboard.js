@@ -102,12 +102,19 @@ function renderCertificateLegend(payload) {
     const label = cert.positive_label || payload.target_name || 'target';
     const brown = readBrownFrom() * 100;
     const strict = (cert.rule === 'certified');
+    const family = strict && cert.multiplicity === 'family';
+    const level = (cert.alpha_effective !== undefined && cert.alpha_effective !== null) ? cert.alpha_effective : null;
+    const scope = !strict
+        ? 'Green means the observed share reaches the boundary; nothing is certified.'
+        : (family
+            ? `Green cells are certified to exceed the boundary with a guarantee that holds for the branches the search chose (Bonferroni over all ${cert.family_tests !== undefined && cert.family_tests !== null ? cert.family_tests.toLocaleString() : ''} cells the search could show; per-cell level ${level !== null ? level.toExponential(1) : '—'}).`
+            : 'Green cells are certified as if this branch had been chosen in advance; the search chose it among many, so these certificates are optimistic.');
     el.innerHTML = `
-        <div class="purity-legend-item"><span class="purity-swatch" style="background: var(--purity-green);"></span><b>Discrete centre</b> — ${strict ? `lower bound ≥ ${tau.toFixed(0)}%` : `purity ≥ ${tau.toFixed(0)}%`}</div>
+        <div class="purity-legend-item"><span class="purity-swatch" style="background: var(--purity-green);"></span><b>Discrete centre</b> — ${strict ? `certified above ${tau.toFixed(0)}%` : `purity ≥ ${tau.toFixed(0)}%`}</div>
         <div class="purity-legend-item"><span class="purity-swatch" style="background: var(--purity-brown);"></span>Mixed — ${brown.toFixed(0)}% – ${tau.toFixed(0)}%</div>
         <div class="purity-legend-item"><span class="purity-swatch" style="background: var(--purity-red);"></span>Low — below ${brown.toFixed(0)}%</div>
         <div style="font-size:0.72rem;opacity:0.75;margin-top:6px;line-height:1.45;">
-            Positive value: <b>${label}</b>. Base rate ${prev.toFixed(2)}%.
+            Positive value: <b>${label}</b>. Base rate ${prev.toFixed(2)}%. ${scope}
             Green cells are exactly the cells Coverage is computed from; the green
             boundary was fixed when this file was exported. Every cell carries a
             ${(100 - alpha).toFixed(0)}% Clopper–Pearson interval in its hover text.

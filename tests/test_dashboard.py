@@ -237,7 +237,10 @@ def test_branches_are_independent_not_required_to_be_nested():
         "class": z_bit,
     })
 
-    html = vsf.export_full_dashboard(df, target="class", max_d=2)
+    # Observed-purity colouring, the rule this demonstration was built for;
+    # the export's default family certificate certifies nothing at d = 1
+    # here, so its d = 1 branch is a tie-break, not a finding.
+    html = vsf.export_full_dashboard(df, target="class", max_d=2, center_spec=vsf.CenterSpec())
     branches_data = _extract_last_json_const(html, "BRANCHES_DATA")
 
     # `selected_features` in the payload is already the human-readable list

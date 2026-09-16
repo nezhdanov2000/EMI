@@ -321,6 +321,86 @@ def _resolve_target(df: pd.DataFrame, req: Dict[str, Any], default_target: str) 
     return _Target(target_col, criterion, tuple(sorted(also))), None
 
 
+def _default_multiplicity(rule: str) -> str:
+    """
+    The multiplicity a request gets when it names none: a certificate
+    (`rule="certified"`) is corrected over the whole search family, because
+    the per-schema correction does not hold for a schema the search chose
+    (Project_Master_Document.md Sections 4.5 and 4.14). The per-schema
+    correction must be asked for explicitly (`multiplicity="bonferroni"`).
+    `rule="purity"` certifies nothing; its per-cell intervals keep the
+    per-schema level.
+    """
+    return "family" if rule == "certified" else "bonferroni"
+
+
+def _parse_certificate(
+    req: Dict[str, Any], min_samples_key: str = "min_samples",
+) -> Tuple[Optional[CenterSpec], Optional[str]]:
+    """
+    The `CenterSpec` of a request - `tau`, `alpha`, `rule`, `multiplicity`
+    and `min_samples` - or (None, error). The spec is returned unresolved;
+    every library entry point resolves the family size itself (cached).
+    """
+    try:
+        tau = float(req.get("tau", 0.90))
+        alpha = float(req.get("alpha", 0.05))
+        min_samples = int(req.get(min_samples_key, 1))
+    except (TypeError, ValueError):
+        return None, "tau, alpha and min_samples must be numbers"
+    rule = req.get("rule", "purity")
+    if rule not in ("purity", "certified"):
+        return None, f"rule must be 'purity' or 'certified', got {rule!r}"
+    multiplicity = req.get("multiplicity", None)
+    if multiplicity is None:
+        multiplicity = _default_multiplicity(rule)
+    if multiplicity not in ("family", "bonferroni"):
+        return None, f"multiplicity must be 'family' or 'bonferroni', got {multiplicity!r}"
+    if multiplicity == "family" and rule != "certified":
+        return None, "multiplicity='family' needs rule='certified'"
+    try:
+        return CenterSpec(
+            tau=tau, alpha=alpha, rule=rule, min_samples=min_samples,
+            multiplicity=multiplicity,
+        ), None
+    except ValueError as exc:
+        return None, str(exc)
+
+
+def _certificate_params(spec: CenterSpec) -> Dict[str, Any]:
+    """The certificate's part of an analysis cache key (resolution excluded)."""
+    return {
+        "tau": spec.tau, "alpha": spec.alpha, "rule": spec.rule,
+        "min_samples": spec.min_samples, "multiplicity": spec.multiplicity,
+    }
+
+
+def _certificate_payload(spec: CenterSpec) -> Dict[str, Any]:
+    """
+    What a response says about the certificate it was computed under. For a
+    resolved family spec this includes the family size, the per-cell level
+    and the smallest cell that can be certified at all (a fully pure one).
+    """
+    out: Dict[str, Any] = {
+        "tau": spec.tau,
+        "alpha": spec.alpha,
+        "rule": spec.rule,
+        "min_samples": spec.min_samples,
+        "method": spec.method,
+        "multiplicity": spec.multiplicity,
+        "family_tests": spec.family_tests,
+        "per_cell_level": None,
+        "min_certifiable_rows": None,
+        "valid_after_search": spec.rule == "certified" and spec.multiplicity == "family",
+    }
+    if spec.multiplicity == "family" and spec.family_tests is not None:
+        level = spec.effective_alpha(1)
+        out["per_cell_level"] = level
+        # A cell of n rows, all of the value, has p = tau ** n.
+        out["min_certifiable_rows"] = int(_np.ceil(_np.log(level) / _np.log(spec.tau) - 1e-12))
+    return out
+
+
 def _parse_screen_options(
     df: pd.DataFrame, req: Dict[str, Any], target: Optional["_Target"] = None,
 ) -> Tuple[Optional[Tuple[str, ...]], bool, Optional[str]]:
@@ -848,21 +928,9 @@ class VSFRequestHandler(http.server.BaseHTTPRequestHandler):
             # or alpha changes every centre, every colour and every reported
             # number, so a cached payload computed at a different tau must not
             # be served.
-            try:
-                tau = float(req.get("tau", 0.90))
-                alpha = float(req.get("alpha", 0.05))
-                min_samples = int(req.get("min_samples", 1))
-            except (TypeError, ValueError):
-                self._send_json_response(
-                    400, {"error": "tau, alpha and min_samples must be numbers"}
-                )
-                return
-            rule = req.get("rule", "purity")
-            if rule not in ("purity", "certified"):
-                self._send_json_response(
-                    400,
-                    {"error": f"rule must be 'purity' or 'certified', got {rule!r}"},
-                )
+            center_spec, cert_err = _parse_certificate(req)
+            if center_spec is None:
+                self._send_json_response(400, {"error": cert_err})
                 return
             direction = req.get("direction", "presence")
             if direction not in ("presence", "absence"):
@@ -877,14 +945,6 @@ class VSFRequestHandler(http.server.BaseHTTPRequestHandler):
                     {"error": "an absence search needs an explicit target value (criterion) whose absence to certify"},
                 )
                 return
-            try:
-                center_spec = CenterSpec(
-                    tau=tau, alpha=alpha, rule=rule, min_samples=min_samples
-                )
-            except ValueError as exc:
-                self._send_json_response(400, {"error": str(exc)})
-                return
-
             # Explicit schema (`features`: indices into the feature columns,
             # i.e. `df` minus the target, in order) - opened from the
             # landscape rather than found by the search.
@@ -904,11 +964,8 @@ class VSFRequestHandler(http.server.BaseHTTPRequestHandler):
                     return
 
             cache_key = dict(target.params())
+            cache_key.update(_certificate_params(center_spec))
             cache_key.update({
-                "tau": tau,
-                "alpha": alpha,
-                "rule": rule,
-                "min_samples": min_samples,
                 "direction": direction,
                 "drop": drop,
                 "prune": prune,
@@ -963,6 +1020,8 @@ class VSFRequestHandler(http.server.BaseHTTPRequestHandler):
                             center_spec=center_spec,
                             n_permutations_centers=0,
                             direction=direction,
+                            family_max_d=_MAX_D,
+                            prune_dependent=prune,
                         )
                     else:
                         branches = discover_branches(
@@ -1018,25 +1077,16 @@ class VSFRequestHandler(http.server.BaseHTTPRequestHandler):
             self._send_json_response(400, {"error": err})
             return None
         target_col, criterion = target.target_col, target.criterion
-        try:
-            tau = float(req.get("tau", 0.90))
-            alpha = float(req.get("alpha", 0.05))
-            min_samples = int(req.get("min_samples", 1))
-        except (TypeError, ValueError):
-            self._send_json_response(400, {"error": "tau, alpha and min_samples must be numbers"})
+        center_spec, cert_err = _parse_certificate(req)
+        if center_spec is None:
+            self._send_json_response(400, {"error": cert_err})
             return None
-        rule = req.get("rule", "purity")
         direction = req.get("direction", "presence")
-        if rule not in ("purity", "certified") or direction not in ("presence", "absence"):
+        if direction not in ("presence", "absence"):
             self._send_json_response(400, {"error": "invalid rule or direction"})
             return None
         if direction == "absence" and criterion is None:
             self._send_json_response(400, {"error": "an absence landscape needs an explicit criterion"})
-            return None
-        try:
-            center_spec = CenterSpec(tau=tau, alpha=alpha, rule=rule, min_samples=min_samples)
-        except ValueError as exc:
-            self._send_json_response(400, {"error": str(exc)})
             return None
         d = req.get("d", None)
         if d is not None:
@@ -1053,10 +1103,8 @@ class VSFRequestHandler(http.server.BaseHTTPRequestHandler):
             self._send_json_response(400, {"error": err})
             return None
         params = dict(target.params())
-        params.update({
-            "tau": tau, "alpha": alpha, "rule": rule, "min_samples": min_samples,
-            "direction": direction, "drop": drop, "prune": prune,
-        })
+        params.update(_certificate_params(center_spec))
+        params.update({"direction": direction, "drop": drop, "prune": prune})
         params["_target"] = target  # not part of the key (see `_analyze_key`)
         return params, center_spec, d
 
@@ -1468,6 +1516,15 @@ class VSFRequestHandler(http.server.BaseHTTPRequestHandler):
                     {"error": f"rule must be 'purity' or 'certified', got {scan_rule!r}"},
                 )
                 return
+            scan_multiplicity = req.get("multiplicity", None) or _default_multiplicity(scan_rule)
+            if scan_multiplicity not in ("family", "bonferroni") or (
+                scan_multiplicity == "family" and scan_rule != "certified"
+            ):
+                self._send_json_response(
+                    400,
+                    {"error": "multiplicity must be 'family' (with rule='certified') or 'bonferroni'"},
+                )
+                return
             scan_direction = req.get("direction", "presence")
             if scan_direction not in ("presence", "absence"):
                 self._send_json_response(
@@ -1478,7 +1535,7 @@ class VSFRequestHandler(http.server.BaseHTTPRequestHandler):
             try:
                 scan_spec = CenterSpec(
                     tau=scan_tau, alpha=scan_alpha, rule=scan_rule,
-                    min_samples=scan_min_samples,
+                    min_samples=scan_min_samples, multiplicity=scan_multiplicity,
                 )
             except ValueError as exc:
                 self._send_json_response(400, {"error": str(exc)})
@@ -1523,6 +1580,7 @@ class VSFRequestHandler(http.server.BaseHTTPRequestHandler):
                     "tau": scan_spec.tau,
                     "alpha": scan_spec.alpha,
                     "rule": scan_spec.rule,
+                    "multiplicity": scan_spec.multiplicity,
                     "min_samples": scan_spec.min_samples,
                     "direction": scan_direction,
                     "fdr_q": fdr_q,
@@ -1614,7 +1672,8 @@ class VSFRequestHandler(http.server.BaseHTTPRequestHandler):
                             "target": target.target_col, "criterion": target.criterion,
                             "also": [list(pair) for pair in target.also],
                             "tau": center_spec.tau, "alpha": center_spec.alpha,
-                            "rule": center_spec.rule, "min_samples": center_spec.min_samples,
+                            "rule": center_spec.rule, "multiplicity": center_spec.multiplicity,
+                            "min_samples": center_spec.min_samples,
                             "direction": params["direction"], "drop": list(params["drop"]),
                             "prune": params["prune"], "method": method, "repeats": repeats,
                         },
@@ -1878,6 +1937,10 @@ def _build_analyze_response(
     feature_names = list(X_df.columns)
     X = X_df.values
     n_positive = int((Z == 1).sum()) if criterion is not None else None
+    # The display certifies with the spec the search resolved (for a family
+    # certificate: the family size of this search); every branch carries it.
+    if branches:
+        center_spec = next(iter(branches.values())).centers.spec
 
     branches_data: Dict[str, Any] = {}
     for d, branch in branches.items():
@@ -1956,14 +2019,7 @@ def _build_analyze_response(
         # certifies anything. The frontend must render None as "none",
         # never as 1.
         "sufficient_d": None if selected_d is None else int(selected_d),
-        "certificate": {
-            "tau": center_spec.tau,
-            "alpha": center_spec.alpha,
-            "rule": center_spec.rule,
-            "min_samples": center_spec.min_samples,
-            "method": center_spec.method,
-            "multiplicity": center_spec.multiplicity,
-        },
+        "certificate": _certificate_payload(center_spec),
     }
 
 
@@ -2003,12 +2059,9 @@ def _prefetch_sibling_values(
         keys_of: Dict[str, Tuple[Any, ...]] = {}
         todo: List[str] = []
         for v in values:
-            params = {
-                "target_col": target_col, "criterion": v,
-                "tau": center_spec.tau, "alpha": center_spec.alpha,
-                "rule": center_spec.rule, "min_samples": center_spec.min_samples,
-                "direction": direction, "drop": tuple(drop), "prune": bool(prune),
-            }
+            params = {"target_col": target_col, "criterion": v}
+            params.update(_certificate_params(center_spec))
+            params.update({"direction": direction, "drop": tuple(drop), "prune": bool(prune)})
             key = _analyze_key(params)
             if server.cache_get(key) is not None:
                 continue
