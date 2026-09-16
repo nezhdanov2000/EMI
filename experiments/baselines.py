@@ -34,21 +34,37 @@ Methods
                that are each >= tau can form a union below tau; groups of
                the other methods are disjoint, so their unions stay >= tau
                by construction. This is the like-for-like rule baseline.
-`tree`         CART (scikit-learn, entropy) on one-hot training rows,
-               max_depth 1..4, min_samples_leaf = m; qualifying leaves
-               selected by the same greedy; at each budget the best depth
-               on the training fold.
+`tree`         one CART tree (scikit-learn) on one-hot training rows,
+               min_samples_leaf = m; qualifying leaves selected by the same
+               greedy. At each budget the tree with the most covered
+               training positives over the grid max_depth 1..4 x criterion
+               {entropy, gini} x class_weight {None, balanced} (balanced
+               weights push splits towards the minority class, which is
+               usually the target).
 
 All selections use training rows only. Evaluation: union of the selected
-groups on the held-out rows - coverage (share of held-out positives inside)
-and purity (share of held-out rows inside that are positive).
+groups on the held-out rows, from the counts k (positives inside), n (rows
+inside) and P (held-out positives):
+
+coverage       k / P
+purity         k / n
+net coverage   (k - tau / (1 - tau) * (n - k)) / P. The Lagrangian of
+               "cover the most positives subject to purity >= tau": a group
+               of purity exactly tau adds 0, a union below tau scores < 0,
+               a pure union scores its coverage. It compares methods whose
+               held-out purities differ, which coverage alone cannot.
+stability      mean pairwise Jaccard index, over the splits, of the sets of
+               ALL rows the selected union contains (pairs where both
+               unions are empty are skipped): does the reader get the same
+               description from a different sample?
 """
 from __future__ import annotations
 
 import heapq
 import itertools
+import time
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, List, Literal, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -57,8 +73,15 @@ from vsf.avr import (
     _CandidateFactory,
     _prepare_search,
     apply_fitted_partition,
+    resolve_center_spec,
 )
-from vsf.centers import CenterSpec, coverage_score, stratified_repeated_kfold, summarize_cv
+from vsf.centers import (
+    CenterSpec,
+    coverage_score,
+    min_successes_to_certify_heterogeneous,
+    stratified_repeated_kfold,
+    summarize_cv,
+)
 from vsf.metrics import cell_codes
 
 __all__ = [
@@ -67,6 +90,12 @@ __all__ = [
     "METHODS",
     "MethodResult",
     "budgeted_greedy",
+    "certification_threshold",
+    "Selection",
+    "description_stability",
+    "held_out_counts",
+    "net_coverage",
+    "union_members",
     "evaluate_groups",
     "SplitOutcome",
     "run_comparison",
@@ -75,6 +104,7 @@ __all__ = [
     "select_rules",
     "select_tree",
     "select_vsf",
+    "TREE_GRID",
 ]
 
 #: Condition budgets every method is evaluated at.
@@ -177,10 +207,39 @@ def budgeted_greedy(
     return out
 
 
-def _qualifying(k: np.ndarray, n: np.ndarray, tau: float, m: int) -> np.ndarray:
-    """Cells with n >= m and k / n >= tau (the product's observed-purity rule)."""
-    need = np.ceil(tau * n.astype(np.float64) - 1e-9).astype(np.int64)
-    return (n >= max(1, m)) & (n > 0) & (k >= np.maximum(need, 1))
+def _qualifying(
+    k: np.ndarray, n: np.ndarray, tau: float, m: int, threshold: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    """
+    Groups with n >= m and, when `threshold` is None, k / n >= tau (the
+    product's observed-purity rule); otherwise k >= threshold[n] (a
+    size-dependent count, see `certification_threshold`).
+    """
+    n = np.asarray(n, dtype=np.int64)
+    k = np.asarray(k, dtype=np.int64)
+    if threshold is None:
+        need = np.maximum(np.ceil(tau * n.astype(np.float64) - 1e-9).astype(np.int64), 1)
+    else:
+        if n.size and int(n.max()) >= threshold.size:
+            raise ValueError(f"threshold covers n <= {threshold.size - 1}, got n = {int(n.max())}")
+        need = threshold[n]
+    return (n >= max(1, m)) & (n > 0) & (k >= need)
+
+
+#: Selection rules a comparison can run under.
+Selection = Literal["purity", "certified"]
+
+
+def certification_threshold(n_max: int, tau: float, alpha_eff: float) -> np.ndarray:
+    """
+    Per n = 0..n_max, the smallest positive count certified at `alpha_eff`
+    for rows with possibly different success probabilities
+    (`vsf.centers.min_successes_to_certify_heterogeneous`; n + 1 = never).
+    """
+    sizes = np.arange(n_max + 1, dtype=np.int64)
+    out = np.asarray(min_successes_to_certify_heterogeneous(sizes, tau, alpha_eff), dtype=np.int64)
+    out[0] = 1
+    return out
 
 
 # --------------------------------------------------------------------------
@@ -188,13 +247,13 @@ def _qualifying(k: np.ndarray, n: np.ndarray, tau: float, m: int) -> np.ndarray:
 # --------------------------------------------------------------------------
 def _schema_table(
     fit: _CandidateFactory, z_train: np.ndarray, combo: Tuple[int, ...], codes: np.ndarray,
-    n_cells: int, tau: float, m: int,
+    n_cells: int, tau: float, m: int, threshold: Optional[np.ndarray] = None,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """(qualifying cell ids sorted by positives desc then size asc, their positives)."""
     table = np.bincount(codes * 2 + z_train, minlength=2 * n_cells).reshape(n_cells, 2)
     n = table.sum(axis=1)
     k = table[:, 1]
-    q = np.flatnonzero(_qualifying(k, n, tau, m))
+    q = np.flatnonzero(_qualifying(k, n, tau, m, threshold))
     order = np.lexsort((n[q], -k[q]))
     return q[order], k[q][order]
 
@@ -220,6 +279,7 @@ def select_vsf(
     fit: _CandidateFactory, X_all: np.ndarray, train: np.ndarray, z_train: np.ndarray,
     tau: float, m: int, budgets: Sequence[int], names: Sequence[str],
     combos: Optional[Sequence[Tuple[int, ...]]] = None, max_d: int = MAX_BRANCH_D,
+    threshold: Optional[np.ndarray] = None,
 ) -> MethodResult:
     """
     Best single schema per budget: the schema whose top floor(B / d)
@@ -238,7 +298,7 @@ def select_vsf(
     for combo, codes, n_cells in source:
         if n_cells == 0:
             continue
-        cells, k_sorted = _schema_table(fit, z64, tuple(combo), codes, n_cells, tau, m)
+        cells, k_sorted = _schema_table(fit, z64, tuple(combo), codes, n_cells, tau, m, threshold)
         if cells.size == 0:
             continue
         cum = np.cumsum(k_sorted)
@@ -293,7 +353,7 @@ def greedy_chain(
 def select_rules(
     X_all: np.ndarray, train: np.ndarray, z_train: np.ndarray, tau: float, m: int,
     budgets: Sequence[int], names: Sequence[str], max_len: int = MAX_BRANCH_D,
-    pure_union: bool = False,
+    pure_union: bool = False, threshold: Optional[np.ndarray] = None,
 ) -> MethodResult:
     """Qualifying conjunctions of <= max_len (column = value) conditions, greedy under budget."""
     n_train = int(train.size)
@@ -307,7 +367,7 @@ def select_rules(
             codes, n_cells = cell_codes(X_train[:, combo])
             codes = np.asarray(codes, dtype=np.int64)
             table = np.bincount(codes * 2 + z64, minlength=2 * n_cells).reshape(n_cells, 2)
-            q = np.flatnonzero(_qualifying(table[:, 1], table.sum(axis=1), tau, m))
+            q = np.flatnonzero(_qualifying(table[:, 1], table.sum(axis=1), tau, m, threshold))
             if q.size == 0:
                 continue
             order = np.argsort(codes, kind="stable")
@@ -342,11 +402,22 @@ def select_rules(
 # --------------------------------------------------------------------------
 # Decision tree
 # --------------------------------------------------------------------------
+#: (criterion, class_weight) settings tried for the single tree.
+TREE_GRID: Tuple[Tuple[str, Optional[str]], ...] = (
+    ("entropy", None), ("gini", None), ("entropy", "balanced"), ("gini", "balanced"),
+)
+
 def select_tree(
     X_all: np.ndarray, train: np.ndarray, z_train: np.ndarray, tau: float, m: int,
     budgets: Sequence[int], random_state: int = 0, max_depth: int = MAX_BRANCH_D,
+    threshold: Optional[np.ndarray] = None,
 ) -> MethodResult:
-    """CART of depth 1..max_depth on one-hot training rows; qualifying leaves greedy under budget."""
+    """
+    One CART tree on one-hot training rows, per budget the best over
+    `TREE_GRID` x depth 1..max_depth by covered training positives (ties:
+    first in grid order); its qualifying leaves chosen greedily under the
+    budget.
+    """
     from sklearn.preprocessing import OneHotEncoder
     from sklearn.tree import DecisionTreeClassifier
 
@@ -356,10 +427,10 @@ def select_tree(
     z64 = z_train.astype(np.int64)
     n_pos = max(1, int(z64.sum()))
     best: Dict[int, Tuple[int, List[Group]]] = {}
-    for depth in range(1, max_depth + 1):
+    for (criterion, class_weight), depth in itertools.product(TREE_GRID, range(1, max_depth + 1)):
         tree = DecisionTreeClassifier(
-            criterion="entropy", max_depth=depth, min_samples_leaf=max(1, m),
-            random_state=random_state,
+            criterion=criterion, class_weight=class_weight, max_depth=depth,
+            min_samples_leaf=max(1, m), random_state=random_state,
         ).fit(H_train, z64)
         leaf_train = tree.apply(H_train)
         leaf_all = tree.apply(H_all)
@@ -369,7 +440,7 @@ def select_tree(
         for leaf in leaves.tolist():
             rows = np.flatnonzero(leaf_train == leaf)
             k = int(z64[rows].sum())
-            if not bool(_qualifying(np.array([k]), np.array([rows.size]), tau, m)[0]):
+            if not bool(_qualifying(np.array([k]), np.array([rows.size]), tau, m, threshold)[0]):
                 continue
             candidates.append(_Candidate(positives=rows[z64[rows] == 1],
                                          cost=max(1, int(node_depth[leaf])), key=leaf))
@@ -378,7 +449,8 @@ def select_tree(
             if budget in best and best[budget][0] >= covered:
                 continue
             groups = [Group(members=leaf_all == candidates[i].key, cost=candidates[i].cost,
-                            label=f"depth{depth}-leaf{candidates[i].key}") for i in idx]
+                            label=f"{criterion}-{class_weight}-depth{depth}-leaf{candidates[i].key}")
+                      for i in idx]
             best[budget] = (covered, groups)
     result = MethodResult()
     for budget in budgets:
@@ -404,18 +476,17 @@ def _node_depths(tree: object) -> np.ndarray:
 # --------------------------------------------------------------------------
 # Evaluation
 # --------------------------------------------------------------------------
-def evaluate_groups(groups: Sequence[Group], z: np.ndarray, test: np.ndarray) -> Tuple[float, float, int]:
-    """(held-out coverage, held-out purity or NaN, conditions spent)."""
-    if not groups:
-        return 0.0, float("nan"), 0
-    inside = np.zeros(z.shape[0], dtype=bool)
-    for g in groups:
-        inside |= g.members
+def held_out_counts(inside: np.ndarray, z: np.ndarray, test: np.ndarray) -> Tuple[int, int, int]:
+    """(positives inside, rows inside, positives) among the held-out rows."""
     inside_test = inside[test]
     pos_test = z[test] == 1
-    n_in = int(inside_test.sum())
-    k_in = int((inside_test & pos_test).sum())
-    n_pos = int(pos_test.sum())
+    return (int(np.count_nonzero(inside_test & pos_test)), int(np.count_nonzero(inside_test)),
+            int(np.count_nonzero(pos_test)))
+
+
+def evaluate_groups(groups: Sequence[Group], z: np.ndarray, test: np.ndarray) -> Tuple[float, float, int]:
+    """(held-out coverage, held-out purity or NaN, conditions spent)."""
+    k_in, n_in, n_pos = held_out_counts(union_members(groups, z.shape[0]), z, test)
     return (k_in / n_pos if n_pos else 0.0,
             (k_in / n_in) if n_in else float("nan"),
             int(sum(g.cost for g in groups)))
@@ -424,15 +495,64 @@ def evaluate_groups(groups: Sequence[Group], z: np.ndarray, test: np.ndarray) ->
 METHODS: Tuple[str, ...] = ("vsf", "vsf_greedy", "rules", "rules_pure", "tree")
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class SplitOutcome:
     """One method at one budget on one split."""
 
-    coverage: float
-    purity: float  # NaN when nothing was selected or nothing held out fell inside
+    k_in: int  # held-out positives inside the union
+    n_in: int  # held-out rows inside the union
+    n_pos: int  # held-out positives
     conditions: int
     train_coverage: float
     labels: Tuple[str, ...]
+    inside: np.ndarray  # bool over ALL rows: membership in the selected union
+    seconds: float  # selection time of the method on this split (all budgets)
+
+    @property
+    def coverage(self) -> float:
+        return self.k_in / self.n_pos if self.n_pos else 0.0
+
+    @property
+    def purity(self) -> float:
+        """NaN when no held-out row fell inside."""
+        return self.k_in / self.n_in if self.n_in else float("nan")
+
+    def net_coverage(self, tau: float) -> float:
+        return net_coverage(self.k_in, self.n_in, self.n_pos, tau)
+
+
+def net_coverage(k_in: int, n_in: int, n_pos: int, tau: float) -> float:
+    """(k - tau / (1 - tau) * (n - k)) / P; 0 when there are no held-out positives."""
+    if not (0.0 < tau < 1.0):
+        raise ValueError(f"tau must be in (0, 1), got {tau}")
+    if not (0 <= k_in <= n_in):
+        raise ValueError(f"need 0 <= k_in <= n_in, got {k_in}, {n_in}")
+    if n_pos == 0:
+        return 0.0
+    return (k_in - tau / (1.0 - tau) * (n_in - k_in)) / n_pos
+
+
+def description_stability(masks: Sequence[np.ndarray]) -> float:
+    """Mean pairwise Jaccard index of boolean row masks; pairs of two empty masks are skipped (NaN if none left)."""
+    if len(masks) < 2:
+        return float("nan")
+    M = np.vstack([np.asarray(m, dtype=bool) for m in masks]).astype(np.int64)
+    inter = M @ M.T
+    size = np.diag(inter)
+    union = size[:, None] + size[None, :] - inter
+    iu = np.triu_indices(M.shape[0], k=1)
+    u = union[iu]
+    keep = u > 0
+    if not np.any(keep):
+        return float("nan")
+    return float(np.mean(inter[iu][keep] / u[keep]))
+
+
+def union_members(groups: Sequence[Group], n_rows: int) -> np.ndarray:
+    inside = np.zeros(n_rows, dtype=bool)
+    for g in groups:
+        inside |= g.members
+    return inside
 
 
 #: split -> method -> budget -> outcome
@@ -443,7 +563,7 @@ def run_split(
     X: np.ndarray, Z: np.ndarray, positive_class: object, tau: float, m: int,
     split_index: int, n_splits: int = 5, n_repeats: int = 5, random_state: int = 0,
     budgets: Sequence[int] = BUDGETS, methods: Sequence[str] = METHODS,
-    max_d: int = MAX_BRANCH_D,
+    max_d: int = MAX_BRANCH_D, selection: Selection = "purity", alpha: float = 0.05,
 ) -> SplitResult:
     """
     Every method on ONE split of `vsf.centers.stratified_repeated_kfold`
@@ -453,12 +573,24 @@ def run_split(
     run, and then for all methods). Splits are independent, so a long
     comparison can be run split by split and summarised with
     `summarize_splits`.
+
+    `selection="certified"`: a group qualifies only if its training count
+    passes the family-wise certificate of the product
+    (`CenterSpec(rule="certified", multiplicity="family")`) at `alpha`,
+    with T the family of the VSF search over d <= max_d on the training
+    fold. The same size-dependent threshold filters every method, so the
+    held-out comparison is like for like. For `vsf` and the rules (whose row
+    sets all belong to that family) it is a valid post-selection
+    certificate; for `tree` it is only the same filter, since the leaves of
+    a data-grown tree are not a pre-specified family.
     """
     unknown = set(methods) - set(METHODS)
     if unknown:
         raise ValueError(f"unknown methods: {sorted(unknown)}")
     if not (1 <= max_d <= MAX_BRANCH_D):
         raise ValueError(f"max_d must be in [1, {MAX_BRANCH_D}]")
+    if selection not in ("purity", "certified"):
+        raise ValueError(f"unknown selection {selection!r}")
     spec = CenterSpec(tau=tau, min_samples=max(1, m))
     prepared = _prepare_search(X, Z, None, positive_class, spec, "presence")
     if prepared is None:
@@ -471,39 +603,62 @@ def run_split(
     train, test = splits[split_index]
     z_train = z[train]
     fit = _CandidateFactory(X_all[train], factory.bin_counts, int(train.size), ordered=factory.ordered)
-    results: Dict[str, MethodResult] = {}
-    if "vsf" in methods:
-        results["vsf"] = select_vsf(fit, X_all, train, z_train, tau, m, budgets, names, max_d=max_d)
-    if "vsf_greedy" in methods:
-        chain = greedy_chain(fit, z_train, spec, max_d)
-        results["vsf_greedy"] = select_vsf(fit, X_all, train, z_train, tau, m, budgets, names, combos=chain)
-    if "rules" in methods:
-        results["rules"] = select_rules(X_all, train, z_train, tau, m, budgets, names, max_d)
-    if "rules_pure" in methods:
-        results["rules_pure"] = select_rules(X_all, train, z_train, tau, m, budgets, names,
-                                             max_d, pure_union=True)
-    if "tree" in methods:
-        results["tree"] = select_tree(X_all, train, z_train, tau, m, budgets, random_state, max_d)
+    threshold: Optional[np.ndarray] = None
+    chain_spec = spec
+    family_seconds = 0.0
+    if selection == "certified":
+        t0 = time.perf_counter()
+        chain_spec = resolve_center_spec(
+            fit, CenterSpec(tau=tau, min_samples=max(1, m), rule="certified", multiplicity="family",
+                            alpha=alpha),
+            min(max_d, fit.n_features),
+        )
+        threshold = certification_threshold(int(train.size), tau, chain_spec.effective_alpha(0))
+        family_seconds = time.perf_counter() - t0
+    selectors: Dict[str, Callable[[], MethodResult]] = {
+        "vsf": lambda: select_vsf(fit, X_all, train, z_train, tau, m, budgets, names, max_d=max_d,
+                                  threshold=threshold),
+        "vsf_greedy": lambda: select_vsf(fit, X_all, train, z_train, tau, m, budgets, names,
+                                         combos=greedy_chain(fit, z_train, chain_spec, max_d),
+                                         threshold=threshold),
+        "rules": lambda: select_rules(X_all, train, z_train, tau, m, budgets, names, max_d,
+                                      threshold=threshold),
+        "rules_pure": lambda: select_rules(X_all, train, z_train, tau, m, budgets, names, max_d,
+                                           pure_union=True, threshold=threshold),
+        "tree": lambda: select_tree(X_all, train, z_train, tau, m, budgets, random_state, max_d,
+                                    threshold=threshold),
+    }
     out: SplitResult = {}
     for mth in methods:
-        res = results[mth]
+        t0 = time.perf_counter()
+        res = selectors[mth]()
+        seconds = time.perf_counter() - t0 + family_seconds
         out[mth] = {}
         for b in budgets:
-            c, p, spent = evaluate_groups(res.groups[b], z, test)
+            groups = res.groups[b]
+            spent = int(sum(g.cost for g in groups))
             if spent > b:
                 raise AssertionError(f"{mth} spent {spent} conditions at budget {b}")
+            inside = union_members(groups, z.shape[0])
+            k_in, n_in, n_pos = held_out_counts(inside, z, test)
             out[mth][int(b)] = SplitOutcome(
-                coverage=c, purity=p, conditions=spent,
+                k_in=k_in, n_in=n_in, n_pos=n_pos, conditions=spent,
                 train_coverage=res.train_coverage[b],
-                labels=tuple(g.label for g in res.groups[b]),
+                labels=tuple(g.label for g in groups), inside=inside, seconds=seconds,
             )
     return out
 
 
 def summarize_splits(
-    per_split: Sequence[SplitResult], n_splits: int, n_repeats: int,
+    per_split: Sequence[SplitResult], n_splits: int, n_repeats: int, tau: float,
 ) -> Dict[str, Dict[int, Dict[str, object]]]:
-    """Nadeau-Bengio summaries per method and budget; `per_split` in split order."""
+    """
+    Per method and budget: Nadeau-Bengio summaries of coverage and net
+    coverage (`CVCoverage`, paired across methods), per-split purities, the
+    share of splits whose held-out purity reaches tau, description
+    stability, mean conditions, training coverage and selection time.
+    `per_split` in split order.
+    """
     if len(per_split) != n_splits * n_repeats:
         raise ValueError(f"expected {n_splits * n_repeats} splits, got {len(per_split)}")
     summary: Dict[str, Dict[int, Dict[str, object]]] = {}
@@ -513,11 +668,17 @@ def summarize_splits(
             outs = [r[mth][b] for r in per_split]
             cov = np.array([o.coverage for o in outs])
             pur = np.array([o.purity for o in outs])
+            net = np.array([o.net_coverage(tau) for o in outs])
+            reached = [o.k_in >= tau * o.n_in - 1e-9 for o in outs if o.n_in > 0]
             summary[mth][b] = {
                 "coverage": summarize_cv(cov, pur, n_splits, n_repeats),
+                "net_coverage": summarize_cv(net, pur, n_splits, n_repeats),
                 "per_split_purity": tuple(pur.tolist()),
+                "purity_reaches_tau": float(np.mean(reached)) if reached else float("nan"),
+                "stability": description_stability([o.inside for o in outs]),
                 "cost_mean": float(np.mean([o.conditions for o in outs])),
                 "train_coverage_mean": float(np.mean([o.train_coverage for o in outs])),
+                "seconds_mean": float(np.mean([o.seconds for o in outs])),
             }
     return summary
 
@@ -526,7 +687,7 @@ def run_comparison(
     X: np.ndarray, Z: np.ndarray, positive_class: object, tau: float, m: int,
     n_splits: int = 5, n_repeats: int = 5, random_state: int = 0,
     budgets: Sequence[int] = BUDGETS, methods: Sequence[str] = METHODS,
-    max_d: int = MAX_BRANCH_D,
+    max_d: int = MAX_BRANCH_D, selection: Selection = "purity", alpha: float = 0.05,
     progress: Optional[Callable[[int, int], None]] = None,
 ) -> Dict[str, object]:
     """All splits in one call (`run_split` then `summarize_splits`)."""
@@ -534,8 +695,8 @@ def run_comparison(
     per_split: List[SplitResult] = []
     for i in range(total):
         per_split.append(run_split(X, Z, positive_class, tau, m, i, n_splits, n_repeats,
-                                   random_state, budgets, methods, max_d))
+                                   random_state, budgets, methods, max_d, selection, alpha))
         if progress is not None:
             progress(i + 1, total)
     labels = {mth: [{b: list(r[mth][b].labels) for b in budgets} for r in per_split] for mth in methods}
-    return {"summary": summarize_splits(per_split, n_splits, n_repeats), "labels": labels}
+    return {"summary": summarize_splits(per_split, n_splits, n_repeats, tau), "labels": labels}

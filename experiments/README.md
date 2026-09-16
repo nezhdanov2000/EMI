@@ -17,8 +17,8 @@ Run from the repository root with the versions in `requirements-lock.txt`.
 | `cv_gap_decomposition.py` | why nested CV exceeds fixed-schema CV: held-out positives lost in cells that are centres on all rows but not on the training fold | done; one configuration per call |
 | `n_min_table.py` | smallest certifiable cell as a function of the family size (bundled data and synthetic M, N) | done; one `--dataset` or `--synthetic M N` per call, appends to results/n_min_table.csv |
 | `baselines.py` | library: budget-matched selection for VSF (best schema, top cells), greedy VSF chain, rules (cells of uncoarsened partitions of d <= 4, budgeted max coverage), CART leaves | done; tested in `tests/test_baselines.py` |
-| `compare_baselines.py` | held-out coverage and purity at condition budgets B = 1..32, 5x5 repeated stratified CV, paired differences to VSF (Nadeau-Bengio SE) | done; one `--only <config>` per call, per-split cache in results/cache |
-| `summarize_comparison.py` | pivot of all compare_*.csv, +/- marks at \|t\| >= 2 | done |
+| `compare_baselines.py` | held-out coverage, purity, net coverage, description stability and selection time at condition budgets B = 1..32, 5x5 repeated stratified CV, paired differences to VSF (Nadeau-Bengio SE); selection by observed purity or by the family certificate | done; one `--only <dataset>` or `--synthetic <name> [--n N]` per call, repeat until done (per-split cache in results/cache) |
+| `summarize_comparison.py` | pivot of all compare_*.csv, +/=/- counts per selection rule (uninformative configurations left out) | done |
 
 The PMD tables in Section 4.14 are these scripts' output at the default
 arguments (seed 0). Every call stays under three minutes on a laptop.
