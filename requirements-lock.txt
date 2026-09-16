@@ -1,0 +1,5 @@
+# Exact versions every number in experiments/ and in the PMD is produced with.
+# CI runs the suite against these on Python 3.10-3.12.
+numpy==2.2.6
+pandas==2.3.3
+pytest==9.1.1

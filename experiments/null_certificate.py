@@ -9,7 +9,8 @@ argmax over all schemas of each dimensionality. This script measures how
 often that reported winner carries at least one certified centre.
 
 Usage:
-    python experiments/null_certificate.py --runs 100 --out null_certificate.csv
+    python experiments/null_certificate.py --runs 100
+    (writes experiments/results/null_certificate.csv)
 """
 from __future__ import annotations
 
@@ -76,7 +77,8 @@ def main() -> None:
     ap.add_argument("--tau", type=float, default=0.50)
     ap.add_argument("--alpha", type=float, default=0.05)
     ap.add_argument("--max-d", type=int, default=4)
-    ap.add_argument("--out", type=Path, default=None)
+    ap.add_argument("--out", type=Path,
+                    default=Path(__file__).resolve().parent / "results" / "null_certificate.csv")
     args = ap.parse_args()
 
     if not args.tau > args.prevalence:
@@ -101,11 +103,12 @@ def main() -> None:
               f"[95% CI {lo:.2f}, {hi:.2f}]  nominal {cfg.alpha:.2f}")
     print(f"{elapsed:.1f} s")
 
-    if args.out is not None:
-        with args.out.open("w", newline="", encoding="utf-8") as fh:
-            w = csv.DictWriter(fh, fieldnames=list(rows[0].keys()))
-            w.writeheader()
-            w.writerows(rows)
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    with args.out.open("w", newline="", encoding="utf-8") as fh:
+        w = csv.DictWriter(fh, fieldnames=list(rows[0].keys()), lineterminator="\n")
+        w.writeheader()
+        w.writerows(rows)
+    print(f"wrote {args.out}")
 
 
 if __name__ == "__main__":
