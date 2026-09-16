@@ -771,10 +771,19 @@ def _exhaustive_search(
     max_d: int,
     complement: bool = False,
     landscape: Optional[Landscape] = None,
+    rows: Optional[np.ndarray] = None,
 ) -> List[Dict[int, _Ranked]]:
     """
     argmax_{|S| = d} coverage_score(Z_v; X_S) for every d <= max_d and every
     target value v in `value_indices`, in ONE pass over the candidate family.
+
+    `rows`, when given, restricts the scoring to those row indices (sample
+    splitting and nested cross-validation, `vsf.selective`): `z_codes` still
+    covers every row of the factory, the partition of each candidate is still
+    built from ALL rows' feature values - including the grid-capacity rule,
+    which reads no target and so leaks nothing - and only the counts, the
+    occupied-cell count and the ranking use the selected rows. With
+    `rows=None` the behaviour is byte-identical to the unrestricted search.
 
     `landscape`, when given, receives every candidate's (features, k_sel,
     n_centers, n_sel) for the FIRST value of `value_indices` (a single-
@@ -804,6 +813,14 @@ def _exhaustive_search(
     candidate in enumeration order, as `key > incumbent` did.
     """
     z = np.asarray(z_codes, dtype=np.int64).ravel()
+    if z.shape[0] != factory.n_samples:
+        raise ValueError(f"z_codes has {z.shape[0]} rows, the factory {factory.n_samples}")
+    row_idx: Optional[np.ndarray] = None
+    if rows is not None:
+        row_idx = np.asarray(rows, dtype=np.int64).ravel()
+        if row_idx.size and (row_idx.min() < 0 or row_idx.max() >= z.shape[0]):
+            raise ValueError("rows contains an index outside the factory's rows")
+        z = z[row_idx]
     n_samples = int(z.shape[0])
     values = [int(v) for v in value_indices]
     n_positive = np.bincount(z, minlength=n_values).astype(np.int64)
@@ -819,6 +836,8 @@ def _exhaustive_search(
 
     for combo, codes, n_cells in factory.iter_candidates(max_d):
         d = len(combo)
+        if row_idx is not None:
+            codes = codes[row_idx]
         if n_cells == 0:
             table = np.zeros((0, n_values), dtype=np.int64)
         else:

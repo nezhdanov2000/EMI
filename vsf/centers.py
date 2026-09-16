@@ -166,6 +166,7 @@ __all__ = [
     "purity_bounds",
     "select_dimensionality",
     "stratified_repeated_kfold",
+    "summarize_cv",
     "wilson_lower",
     "wilson_upper",
 ]
@@ -1238,9 +1239,26 @@ def crossvalidated_coverage(
         coverages[i] = (k_sel / pos_te) if pos_te > 0 else 0.0
         if n_sel > 0:
             purities[i] = k_sel / n_sel
+    return summarize_cv(coverages, purities, n_splits, n_repeats)
+
+
+def summarize_cv(
+    coverages: np.ndarray, purities: np.ndarray, n_splits: int, n_repeats: int
+) -> CVCoverage:
+    """
+    `CVCoverage` from per-split coverages and pooled purities (NaN where a
+    split selected nothing), with the Nadeau-Bengio corrected standard
+    error. Shared by `crossvalidated_coverage` and
+    `vsf.selective.nested_crossvalidation`, so the two estimates are
+    summarised identically and can be compared with `paired_gain`.
+    """
+    if n_splits < 2:
+        raise ValueError(f"n_splits must be >= 2, got {n_splits}")
+    coverages = np.asarray(coverages, dtype=np.float64).ravel()
+    purities = np.asarray(purities, dtype=np.float64).ravel()
     ratio = 1.0 / (n_splits - 1)
     variance = float(coverages.var(ddof=1)) if coverages.size > 1 else 0.0
-    se = float(np.sqrt(max(0.0, (1.0 / coverages.size + ratio) * variance)))
+    se = float(np.sqrt(max(0.0, (1.0 / max(1, coverages.size) + ratio) * variance)))
     return CVCoverage(
         per_split=tuple(float(v) for v in coverages.tolist()),
         mean=float(coverages.mean()) if coverages.size else 0.0,

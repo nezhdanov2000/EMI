@@ -62,6 +62,16 @@ from .centers import (
     wilson_upper,
 )
 from .metrics import benjamini_hochberg
+from .selective import (
+    CertifiedCell,
+    NestedCVResult,
+    SchemaStability,
+    SelectiveCertificate,
+    SelectiveDiscovery,
+    certify_discovery,
+    exact_upper_tail,
+    nested_crossvalidation,
+)
 from .screen import (
     DEFAULT_MIN_STRENGTH,
     ColumnProfile,
@@ -95,6 +105,14 @@ from .server import serve
 __version__ = "2.3.0"
 
 __all__ = [
+    "CertifiedCell",
+    "NestedCVResult",
+    "SchemaStability",
+    "SelectiveCertificate",
+    "SelectiveDiscovery",
+    "certify_discovery",
+    "exact_upper_tail",
+    "nested_crossvalidation",
     "DEFAULT_N_PERMUTATIONS",
     "MAX_BRANCH_D",
     "MIN_POSITIVES_FOR_CV",
