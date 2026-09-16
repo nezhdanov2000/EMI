@@ -14,6 +14,7 @@ Run from the repository root with the versions in `requirements-lock.txt`.
 | `null_certificate.py` | global null: how often the reported winner carries a false certificate - per-schema (current product), family-wide Bonferroni, split | done; 100 runs: per-schema any branch 68 %, corrected 0 % (nominal 5 %) |
 | `certificate_power.py` | strong control and power with a cell exactly at tau beside a true centre | done; one `--sizes` value per call (500, 1000, 3000) |
 | `nested_cv.py` | in-sample vs fixed-schema CV vs nested CV, held-out purity, schema stability | done; one `--only <dataset>` per call |
+| `cv_gap_decomposition.py` | why nested CV exceeds fixed-schema CV: held-out positives lost in cells that are centres on all rows but not on the training fold | done; one configuration per call |
 | `compare_rules.py` | VSF against exhaustive rules of length <= 4 at equal tau, m, K | to rewrite (the earlier `compare.py` was lost) |
 
 The PMD tables in Section 4.14 are these scripts' output at the default
