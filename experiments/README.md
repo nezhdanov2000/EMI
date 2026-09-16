@@ -11,8 +11,12 @@ Run from the repository root with the versions in `requirements-lock.txt`.
 |---|---|---|
 | `datasets.py` | verifies `benchmark_data/` against `MANIFEST.csv` | done |
 | `build_adult.py` | builds `data/adult_census.csv` (PMD Section 3.2) from UCI | done; needs network |
-| `null_certificate.py` | how often the *reported* winner carries a false Rule C certificate under a global null | done; 100 runs: d=3 36 %, d=4 60 % against nominal 5 % |
-| `nested_cv.py` | in-sample vs fixed-schema CV vs nested CV; schema stability across folds | to write (PLAN.md, phase 1.2) |
+| `null_certificate.py` | global null: how often the reported winner carries a false certificate - per-schema (current product), family-wide Bonferroni, split | done; 100 runs: per-schema any branch 68 %, corrected 0 % (nominal 5 %) |
+| `certificate_power.py` | strong control and power with a cell exactly at tau beside a true centre | done; one `--sizes` value per call (500, 1000, 3000) |
+| `nested_cv.py` | in-sample vs fixed-schema CV vs nested CV, held-out purity, schema stability | done; one `--only <dataset>` per call |
 | `compare_rules.py` | VSF against exhaustive rules of length <= 4 at equal tau, m, K | to rewrite (the earlier `compare.py` was lost) |
+
+The PMD tables in Section 4.14 are these scripts' output at the default
+arguments (seed 0). Every call stays under three minutes on a laptop.
 
 Out of scope until PLAN.md phase 3 is finished: d = 5/6 "plates".
