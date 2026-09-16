@@ -111,6 +111,7 @@ from .avr import (
     _CandidateFactory,
     _exhaustive_search,
     _prepare_search,
+    apply_fitted_partition,
     family_cell_count,
     resolve_center_spec,
 )
@@ -128,11 +129,13 @@ from .centers import (
     stratified_repeated_kfold,
     summarize_cv,
 )
+from .screen import exact_dependencies
 
 __all__ = [
     "BranchMultiplicity",
     "CertificationMethod",
     "CertifiedCell",
+    "FoldEncoding",
     "NestedCVBranch",
     "NestedCVResult",
     "SchemaStability",
@@ -151,6 +154,8 @@ __all__ = [
 CertificationMethod = Literal["family_bonferroni", "split"]
 BranchMultiplicity = Literal["all_branches", "per_branch"]
 ScreenRule = Literal["purity", "all"]
+#: Which rows a nested cross-validation fold fits its partitions on.
+FoldEncoding = Literal["train", "all_rows"]
 #: `(done, total)` callback, counted in exhaustive passes over the family.
 Progress = Callable[[int, int], None]
 
@@ -310,6 +315,7 @@ class NestedCVResult:
     random_state: Optional[int]
     n_positive: int
     undetermined_reason: Optional[str]
+    encoding: "FoldEncoding" = "train"
 
     def select_dimensionality(self, t_threshold: float = 2.0) -> Optional[int]:
         """`vsf.centers.select_dimensionality` on the NESTED estimates (paired folds)."""
@@ -606,6 +612,7 @@ def nested_crossvalidation(
     direction: Direction = "presence",
     prune_dependent: bool = False,
     progress: Optional[Progress] = None,
+    encoding: FoldEncoding = "train",
 ) -> NestedCVResult:
     """
     Out-of-sample coverage of the whole procedure "search, then select
@@ -615,29 +622,47 @@ def nested_crossvalidation(
     folds to `crossvalidated_coverage` for the same target and seed), the
     exhaustive search runs on the training rows only; the fold's winner of
     each d and its centres (selected on the training counts under
-    `center_spec`) are applied to the test rows. Partitions are built from
-    all rows' feature values, as in the search (the capacity rule reads no
-    target). `fixed_schema` is the existing estimate for the full-data
-    winner on the same folds, so `nested` and `fixed_schema` are paired.
+    `center_spec`) are applied to the test rows. `fixed_schema` is the
+    existing estimate for the full-data winner on the same folds, so
+    `nested` and `fixed_schema` are paired.
+
+    `encoding` decides which rows the partitions are fitted on:
+    `"train"` (default) - the grid capacity, the level frequencies that
+    decide merges, the merge state and, for a family certificate, the
+    family size T are all computed from the training rows alone, and the
+    fitted partition is then applied to the test rows
+    (`vsf.avr.apply_fitted_partition`); nothing about a test row reaches
+    the procedure before it is scored. `"all_rows"` - partitions are built
+    from every row's feature values, as the interactive product does (no
+    target is read, so this is valid conditional on the features, but the
+    test rows' feature values shape the grid). Both are reported by
+    `experiments/nested_cv.py` so the difference is measured, not assumed.
+    The level codes themselves (value -> integer, sorted) always come from
+    all rows; they are a relabelling and carry no frequencies.
 
     Cost: 1 + n_splits x n_repeats full searches (`nested_passes`);
     `progress` is called after each.
     """
-    spec = center_spec if center_spec is not None else CenterSpec()
+    requested_spec = center_spec if center_spec is not None else CenterSpec()
     if not (1 <= max_d <= MAX_BRANCH_D):
         raise ValueError(f"max_d must be in [1, {MAX_BRANCH_D}], got {max_d}")
-    prepared = _prepare_search(X, Z, feature_names, positive_class, spec, direction, prune_dependent)
+    if encoding not in ("train", "all_rows"):
+        raise ValueError(f"encoding must be 'train' or 'all_rows', got {encoding!r}")
+    prepared = _prepare_search(
+        X, Z, feature_names, positive_class, requested_spec, direction, prune_dependent
+    )
     if prepared is None:
         raise ValueError("no feature columns")
     factory, z, names = prepared
+    X_arr = np.asarray(X)
     eff_d = min(max_d, factory.n_features)
-    spec = resolve_center_spec(factory, spec, eff_d)
+    spec = resolve_center_spec(factory, requested_spec, eff_d)
     z64 = z.astype(np.int64)
     n_positive = int(z.sum())
     if n_positive < MIN_POSITIVES_FOR_CV:
         return NestedCVResult(
             branches={}, spec=spec, n_splits=n_splits, n_repeats=n_repeats,
-            random_state=random_state, n_positive=n_positive,
+            random_state=random_state, n_positive=n_positive, encoding=encoding,
             undetermined_reason=(
                 f"only {n_positive} samples carry the searched value; "
                 f"{MIN_POSITIVES_FOR_CV} are required for an out-of-sample estimate"
@@ -663,13 +688,30 @@ def nested_crossvalidation(
         return hit
 
     for i, (train, test) in enumerate(splits):
-        best = _exhaustive_search(factory, z64, 2, [1], spec, eff_d, rows=train)[0]
+        if encoding == "train":
+            fold_factory = _CandidateFactory(
+                factory._raw[train], factory.bin_counts, int(train.shape[0]),
+                ordered=factory.ordered,
+                determined_by=(
+                    exact_dependencies(X_arr[train], names) if prune_dependent else None
+                ),
+            )
+            fold_spec = resolve_center_spec(fold_factory, requested_spec, eff_d)
+            best = _exhaustive_search(
+                fold_factory, z64[train], 2, [1], fold_spec, eff_d
+            )[0]
+        else:
+            fold_spec = spec
+            best = _exhaustive_search(factory, z64, 2, [1], spec, eff_d, rows=train)[0]
         for d in full:
             combo = tuple(best[d][1])
             winners[d].append(combo)
-            codes, n_cells = codes_of(combo)
+            if encoding == "train":
+                codes, n_cells = apply_fitted_partition(fold_factory, factory._raw, combo)
+            else:
+                codes, n_cells = codes_of(combo)
             k_tr, n_tr = _cell_counts(z[train], codes[train], n_cells)
-            mask, _ = select_centers(k_tr, n_tr, spec)
+            mask, _ = select_centers(k_tr, n_tr, fold_spec)
             k_te, n_te = _cell_counts(z[test], codes[test], n_cells)
             pos_te = int(k_te.sum())
             k_sel = int(k_te[mask].sum())
@@ -699,4 +741,5 @@ def nested_crossvalidation(
     return NestedCVResult(
         branches=branches, spec=spec, n_splits=n_splits, n_repeats=n_repeats,
         random_state=random_state, n_positive=n_positive, undetermined_reason=None,
+        encoding=encoding,
     )

@@ -71,6 +71,7 @@ from .metrics import cell_codes, dense_codes_from_flat
 from .screen import exact_dependencies
 from .pmd import (
     coarsen_column,
+    coarsen_lut,
     discretize_dataset,
     grid_capacity,
     level_frequency_order,
@@ -327,6 +328,7 @@ class _CandidateFactory:
         # yielded partition is a coarsening of it (`family_cell_count`).
         self.last_raw_cells = 0
         self.last_coarsened = False
+        self.last_raw_codes: Optional[np.ndarray] = None
 
     # -- coarsening ---------------------------------------------------------
     def _coarse_column(self, j: int, k: int) -> Tuple[np.ndarray, int]:
@@ -368,6 +370,26 @@ class _CandidateFactory:
         the capacity, found by bisection over the step count exactly as
         `vsf.pmd.coarsen_to_capacity` finds it.
         """
+        _, dense, n_cells = self._coarsened_state(combo)
+        return dense, n_cells
+
+    def merge_levels(self, combo: Tuple[int, ...]) -> Optional[List[int]]:
+        """
+        The per-column level counts `codes(combo)` ends with, or None when
+        the combination fits the capacity and is not coarsened.
+        """
+        combo = tuple(combo)
+        if self.n_samples == 0:
+            return None
+        flat, total = self._flatten(
+            [(self._raw_shifted[j], self._raw_radix[j]) for j in combo]
+        )
+        _, n_cells = self._dense(flat, total)
+        if n_cells <= self.capacity:
+            return None
+        return self._coarsened_state(combo)[0]
+
+    def _coarsened_state(self, combo: Tuple[int, ...]) -> Tuple[List[int], np.ndarray, int]:
         k0 = [self._levels[j] for j in combo]
 
         def build(k: List[int]) -> Tuple[np.ndarray, int]:
@@ -379,16 +401,18 @@ class _CandidateFactory:
             return self._dense(*self._flatten(cols))
 
         total_steps = sum(max(0, v - 1) for v in k0)
-        last = build(merge_state(k0, total_steps))
+        k_last = merge_state(k0, total_steps)
+        last = build(k_last)
         if last[1] > self.capacity:
-            return last
+            return (k_last,) + last
         lo, hi = 0, total_steps
-        best = last
+        best = (k_last,) + last
         while hi - lo > 1:
             mid = (lo + hi) // 2
-            dense, n_cells = build(merge_state(k0, mid))
+            k_mid = merge_state(k0, mid)
+            dense, n_cells = build(k_mid)
             if n_cells <= self.capacity:
-                hi, best = mid, (dense, n_cells)
+                hi, best = mid, (k_mid, dense, n_cells)
             else:
                 lo = mid
         return best
@@ -455,6 +479,7 @@ class _CandidateFactory:
         m = self.n_features
         if self.n_samples == 0:
             self.last_raw_cells, self.last_coarsened = 0, False
+            self.last_raw_codes = None
             for d in range(1, max_d + 1):
                 for combo in itertools.combinations(range(m), d):
                     yield combo, np.zeros(0, dtype=np.int64), 0
@@ -481,6 +506,7 @@ class _CandidateFactory:
                     if cache and d < max_d and len(self._occupancy) < _OCCUPANCY_CACHE_MAX:
                         self._occupancy[combo] = n_cells
                     self.last_raw_cells = n_cells
+                    self.last_raw_codes = dense
                     if n_cells <= self.capacity:
                         self.last_coarsened = False
                         yield combo, dense, n_cells
@@ -490,24 +516,50 @@ class _CandidateFactory:
 
     def family_cell_count(self, max_d: int) -> int:
         """
-        T of `CenterSpec(multiplicity="family")`: the number of occupied
-        cells of every partition a search over d <= max_d can report or
-        display. For each scored combination that is its search partition
-        and, when the capacity rule coarsened it, also its uncoarsened joint
-        partition - the one `vsf.vis` draws. Every prefix view of a branch
-        is the partition of a smaller combination, and a combination skipped
-        as a renaming (`_is_redundant`) has the row sets of a counted one, so
-        every cell the product can certify or colour is one of the T
-        hypotheses. Cells too small to reach a threshold are counted too:
+        T of `CenterSpec(multiplicity="family")`: the number of DISTINCT row
+        sets among the occupied cells of every partition a search over
+        d <= max_d can report or display. For each scored combination those
+        are the cells of its search partition and, when the capacity rule
+        coarsened it, also of its uncoarsened joint partition - the one
+        `vsf.vis` draws. Every prefix view of a branch is the partition of a
+        smaller combination, a 4-D slice is a cell set of the 4-D
+        uncoarsened partition, and a combination skipped as a renaming
+        (`_is_redundant`) has the row sets of a counted one, so every cell
+        the product can certify or colour has one of the T row sets.
+
+        Why distinct row sets, and why this is exact: two cells with the same
+        rows have the same n, the same k and the same mean purity, so their
+        certification decisions and their "false certificate" events
+        coincide - they are one hypothesis, however many schemas describe
+        them. Cells too small to reach a threshold are counted too:
         `min_samples` belongs to the user and may move after the data are
-        seen, so the family cannot depend on it.
+        seen, so the family cannot depend on it (nor on tau, which the user
+        also moves; see Section 4.14).
+
+        Row sets are compared through a 128-bit additive fingerprint - the
+        sum, modulo 2^64, of per-row weights, twice with independent
+        weights - together with the set size. Two distinct sets of equal
+        size differ in at least one row, so for weights drawn uniformly at
+        random they collide with probability 2^-128; with S sets the chance
+        of any merge is at most S^2 / 2^129 (< 1e-24 for S <= 1e7). A merge
+        would undercount T by one. The weights come from a fixed generator
+        so that T is reproducible.
         """
-        total = 0
-        for _, _, n_cells in self.iter_candidates(max_d):
-            total += int(n_cells)
-            if self.last_coarsened:
-                total += int(self.last_raw_cells)
-        return total
+        n = self.n_samples
+        if n == 0:
+            for _ in self.iter_candidates(max_d):
+                pass
+            return 0
+        rng = np.random.default_rng(_FINGERPRINT_SEED)
+        w1 = rng.integers(0, np.iinfo(np.uint64).max, size=n, dtype=np.uint64, endpoint=True)
+        w2 = rng.integers(0, np.iinfo(np.uint64).max, size=n, dtype=np.uint64, endpoint=True)
+        seen = _FingerprintSet()
+        for _, codes, n_cells in self.iter_candidates(max_d):
+            if n_cells:
+                seen.add(_cell_fingerprints(codes, n_cells, w1, w2))
+            if self.last_coarsened and self.last_raw_codes is not None:
+                seen.add(_cell_fingerprints(self.last_raw_codes, self.last_raw_cells, w1, w2))
+        return seen.count()
 
 
 _FAMILY_CACHE_MAX_ENTRIES = 64
@@ -564,6 +616,106 @@ def resolve_center_spec(factory: _CandidateFactory, spec: CenterSpec, max_d: int
     if spec.is_resolved:
         return spec
     return replace(spec, family_tests=family_cell_count(factory, max_d))
+
+
+def apply_fitted_partition(
+    fitted: _CandidateFactory, X_discrete_all: np.ndarray, combo: Sequence[int]
+) -> Tuple[np.ndarray, int]:
+    """
+    The partition of `combo` as FITTED on `fitted`'s rows - its capacity,
+    its level frequencies, its merge state - applied to every row of
+    `X_discrete_all` (which must contain `fitted`'s rows and use the same
+    level codes, e.g. `vsf.pmd.discretize_dataset` of all rows).
+    Restricted to the fitted rows it is the partition `fitted.codes(combo)`
+    returns (up to the labels). A held-out row with a level the fitted rows
+    never saw joins the "other" group of a merged nominal column, the
+    nearest lower group of a merged ordered column, or a cell of its own in
+    an unmerged column (`vsf.pmd.coarsen_lut`). No row outside `fitted`
+    influences any choice made here.
+    """
+    combo = tuple(int(j) for j in combo)
+    X_all = np.asarray(X_discrete_all, dtype=np.int64)
+    if X_all.ndim != 2 or X_all.shape[1] != fitted.n_features:
+        raise ValueError("X_discrete_all must have the fitted factory's columns")
+    if X_all.shape[0] == 0:
+        return np.zeros(0, dtype=np.int64), 0
+    k = fitted.merge_levels(combo)
+    flat = np.zeros(X_all.shape[0], dtype=np.int64)
+    total = 1
+    for i, j in enumerate(combo):
+        col_all = X_all[:, j]
+        col_fit = fitted._raw[:, j].astype(np.int64, copy=False)
+        lo = int(min(col_all.min(), col_fit.min())) if col_fit.size else int(col_all.min())
+        hi = int(max(col_all.max(), col_fit.max())) if col_fit.size else int(col_all.max())
+        if k is not None and k[i] < fitted._levels[j]:
+            lut = coarsen_lut(col_fit, k[i], lo, hi, order=fitted._orders[j],
+                              ordered=fitted.ordered[j])
+            g = lut[col_all - lo]
+        else:
+            g = col_all
+        g = g - int(g.min())
+        radix = int(g.max()) + 1
+        flat = flat * radix + g
+        total *= radix
+    if total >= (1 << 62):  # pragma: no cover - >2^62 nominal cells
+        _, dense = np.unique(flat, return_inverse=True)
+        dense = np.asarray(dense, dtype=np.int64).ravel()
+    else:
+        dense = dense_codes_from_flat(flat, total)
+    return dense, int(dense.max()) + 1
+
+
+#: Seed of the per-row weights of the row-set fingerprint
+#: (`_CandidateFactory.family_cell_count`). Fixed so that T is reproducible.
+_FINGERPRINT_SEED = 0x5F3759DF
+_FINGERPRINT_DTYPE = np.dtype([("size", np.uint64), ("h1", np.uint64), ("h2", np.uint64)])
+
+
+def _cell_fingerprints(
+    codes: np.ndarray, n_cells: int, w1: np.ndarray, w2: np.ndarray
+) -> np.ndarray:
+    """(size, h1, h2) of every occupied cell of one dense partition."""
+    codes = np.asarray(codes, dtype=np.int64)
+    order = np.argsort(codes, kind="stable")
+    sorted_codes = codes[order]
+    starts = np.concatenate(([0], np.flatnonzero(np.diff(sorted_codes)) + 1))
+    sizes = np.diff(np.concatenate((starts, [codes.shape[0]])))
+    out = np.empty(starts.shape[0], dtype=_FINGERPRINT_DTYPE)
+    out["size"] = sizes.astype(np.uint64)
+    # integer addition wraps modulo 2^64: the fingerprint is a sum in Z / 2^64
+    with np.errstate(over="ignore"):
+        out["h1"] = np.add.reduceat(w1[order], starts)
+        out["h2"] = np.add.reduceat(w2[order], starts)
+    return out
+
+
+class _FingerprintSet:
+    """Distinct fingerprints, merged in sorted batches to bound memory."""
+
+    _BATCH = 1 << 20
+
+    def __init__(self) -> None:
+        self._unique = np.empty(0, dtype=_FINGERPRINT_DTYPE)
+        self._pending: List[np.ndarray] = []
+        self._pending_size = 0
+
+    def add(self, fingerprints: np.ndarray) -> None:
+        self._pending.append(fingerprints)
+        self._pending_size += int(fingerprints.shape[0])
+        if self._pending_size >= self._BATCH:
+            self._flush()
+
+    def _flush(self) -> None:
+        if not self._pending:
+            return
+        merged = np.concatenate([self._unique] + self._pending)
+        self._unique = np.unique(merged)
+        self._pending = []
+        self._pending_size = 0
+
+    def count(self) -> int:
+        self._flush()
+        return int(self._unique.shape[0])
 
 
 def _subset_codes(

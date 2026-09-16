@@ -11,6 +11,7 @@ import pytest
 from vsf.avr import (
     _exhaustive_search,
     _prepare_search,
+    apply_fitted_partition,
     compute_landscape,
     compute_tau_curves,
     discover_branches,
@@ -215,16 +216,24 @@ def test_family_test_count_covers_search_and_displayed_partitions() -> None:
     spec = CenterSpec(tau=0.5)
     factory, _, _ = _factory(X, Z, spec)
     Xd, _ = discretize_dataset(X)
-    brute = 0
+    row_sets = set()
+    listed = 0
     coarsened = 0
     for d in range(1, 5):
         for combo in itertools.combinations(range(5), d):
-            _, n_search = factory.codes(combo)
-            _, n_raw = cell_codes(Xd[:, combo])
-            brute += n_search + (n_raw if n_raw != n_search else 0)
+            search_codes, n_search = factory.codes(combo)
+            raw_codes, n_raw = cell_codes(Xd[:, combo])
+            partitions = [search_codes] + ([raw_codes] if n_raw != n_search else [])
             coarsened += int(n_raw != n_search)
+            for codes in partitions:
+                codes = np.asarray(codes)
+                for c in np.unique(codes):
+                    listed += 1
+                    row_sets.add(np.flatnonzero(codes == c).tobytes())
     assert coarsened > 0
-    assert family_test_count(factory, 4) == brute
+    # one hypothesis per distinct row set: duplicates share n, k and purity
+    assert len(row_sets) < listed
+    assert family_test_count(factory, 4) == len(row_sets)
     assert family_cell_count(factory, 2) < family_cell_count(factory, 4)
 
 
@@ -441,7 +450,9 @@ def test_null_false_certificate_rate_is_at_most_alpha(method: str) -> None:
 def test_nested_cv_fold_winners_and_coverages_are_recomputable() -> None:
     X, Z = _planted(10, n=600)
     spec = CenterSpec(tau=0.8)
-    res = nested_crossvalidation(X, Z, positive_class="1", center_spec=spec, max_d=3, n_repeats=2, random_state=3)
+    res = nested_crossvalidation(X, Z, positive_class="1", center_spec=spec, max_d=3, n_repeats=2,
+                                 random_state=3, encoding="all_rows")
+    assert res.encoding == "all_rows"
     factory, z, _ = _factory(X, Z, spec)
     splits = stratified_repeated_kfold(z, 5, 2, 3)
     assert all(len(b.fold_winners) == len(splits) for b in res.branches.values())
@@ -456,6 +467,71 @@ def test_nested_cv_fold_winners_and_coverages_are_recomputable() -> None:
             k_te, _ = _cell_counts(z[test], codes[test], n_cells)
             expected = k_te[mask].sum() / k_te.sum()
             assert b.nested.per_split[i] == pytest.approx(expected)
+
+
+@pytest.mark.parametrize("spec", [CenterSpec(tau=0.8), CenterSpec(tau=0.8, rule="certified", multiplicity="family")])
+def test_nested_cv_train_encoding_uses_nothing_from_the_test_rows(spec: CenterSpec) -> None:
+    # 300 rows, 4-level columns: capacity binds, so the fold's merges matter.
+    rng = np.random.default_rng(15)
+    X = rng.integers(0, 4, size=(300, 5))
+    inside = (X[:, 0] == 0) & (X[:, 1] < 2)
+    Z = np.where(rng.random(300) < np.where(inside, 0.97, 0.15), "1", "0")
+    X = X.astype(str)
+    res = nested_crossvalidation(X, Z, positive_class="1", center_spec=spec, max_d=3,
+                                 n_repeats=2, random_state=5)
+    assert res.encoding == "train"
+    factory, z, _ = _factory(X, Z, spec)
+    splits = stratified_repeated_kfold(z, 5, 2, 5)
+    for i, (train, test) in enumerate(splits):
+        # The fold's procedure, rebuilt from the training rows ALONE: the
+        # test rows' features are replaced by garbage that cannot matter.
+        X_train_only = X.copy()
+        X_train_only[test] = X[train[0]]
+        fit, zt, _ = _factory(X_train_only[train], np.where(z[train] == 1, "1", "0"), spec)
+        fold_spec = resolve_center_spec(fit, spec, 3)
+        best = _exhaustive_search(fit, zt.astype(np.int64), 2, [1], fold_spec, 3)[0]
+        for d, b in res.branches.items():
+            combo = tuple(best[d][1])
+            assert b.fold_winners[i] == combo
+            train_codes, n_train_cells = fit.codes(combo)
+            k_tr, n_tr = _cell_counts(zt, train_codes, n_train_cells)
+            mask, _ = select_centers(k_tr, n_tr, fold_spec)
+            # test rows scored through the fitted partition
+            codes_all, n_all = apply_fitted_partition(fit, factory._raw, combo)
+            # a training cell and its image are the same cell
+            image = {}
+            for tc, ac in zip(train_codes.tolist(), codes_all[train].tolist()):
+                assert image.setdefault(tc, ac) == ac
+            centre_images = {image[c] for c in np.nonzero(mask)[0].tolist()}
+            k_te = sum(int(z[r]) for r in test.tolist() if int(codes_all[r]) in centre_images)
+            expected = k_te / int(z[test].sum())
+            assert b.nested.per_split[i] == pytest.approx(expected)
+
+
+def test_apply_fitted_partition_reproduces_the_fitted_partition_and_maps_unseen_levels() -> None:
+    rng = np.random.default_rng(16)
+    X = rng.integers(0, 6, size=(400, 4)).astype(str)
+    Z = np.where(rng.random(400) < 0.3, "1", "0")
+    factory, _, _ = _factory(X, Z, CenterSpec(tau=0.5))
+    train = np.flatnonzero(factory._raw[:, 0] != 5)  # level 5 of column 0 unseen in training
+    fit = type(factory)(factory._raw[train], factory.bin_counts, int(train.size), ordered=factory.ordered)
+    merged = 0
+    for combo in itertools.combinations(range(4), 3):
+        codes_fit, _ = fit.codes(combo)
+        codes_all, _ = apply_fitted_partition(fit, factory._raw, combo)
+        pairs = set(zip(codes_fit.tolist(), codes_all[train].tolist()))
+        assert len(pairs) == len(set(codes_fit.tolist())) == len(set(codes_all[train].tolist()))
+        k = fit.merge_levels(combo)
+        if k is not None and k[0] < fit._levels[0]:
+            merged += 1
+            # the unseen level joins column 0's "other" group
+            unseen = np.flatnonzero(factory._raw[:, 0] == 5)
+            other = train[np.flatnonzero(~np.isin(factory._raw[train, 0], fit._orders[0][: k[0] - 1]))]
+            same_rest = other[np.all(factory._raw[other][:, list(combo[1:])] == factory._raw[unseen[0], list(combo[1:])], axis=1)] \
+                if 0 in combo and combo[0] == 0 else np.empty(0, dtype=np.int64)
+            if same_rest.size:
+                assert codes_all[unseen[0]] == codes_all[same_rest[0]]
+    assert merged > 0
 
 
 def test_nested_cv_fixed_schema_is_the_existing_estimate_on_the_same_folds() -> None:

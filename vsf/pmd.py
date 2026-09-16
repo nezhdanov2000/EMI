@@ -314,33 +314,68 @@ def coarsen_column(
         return col
     lo = int(col.min())
     hi = int(col.max())
+    return coarsen_lut(col, k_max, lo, hi, order=order, ordered=ordered)[col - lo]
+
+
+def coarsen_lut(
+    col: np.ndarray,
+    k_max: int,
+    lo: int,
+    hi: int,
+    order: np.ndarray | None = None,
+    ordered: bool = False,
+) -> np.ndarray:
+    """
+    The level map `coarsen_column` applies, FITTED on `col` and defined on
+    every code in [lo, hi]: `lut[c - lo]` is the coarsened code of level c.
+    `coarsen_column(col, ...)` is `lut[col - col.min()]` with lo, hi the
+    range of `col` itself, so on the rows it was fitted on the two agree
+    exactly.
+
+    Levels in [lo, hi] that `col` does not contain (a value seen only in
+    rows the map was not fitted on) are mapped without looking at those
+    rows: nominal - to the "other" group when the column is merged, to
+    themselves otherwise; ordered - to the group of the nearest fitted
+    level below (the first group when there is none), to themselves when
+    the column is not merged. Used to fit an encoding on training rows and
+    apply it to held-out rows (`vsf.selective`).
+    """
+    col = np.asarray(col, dtype=np.int64)
+    lo, hi = int(lo), int(hi)
+    if hi < lo:
+        raise ValueError(f"empty code range [{lo}, {hi}]")
+    if col.size and (int(col.min()) < lo or int(col.max()) > hi):
+        raise ValueError("col has codes outside [lo, hi]")
+    identity = np.arange(lo, hi + 1, dtype=np.int64)
+    if col.size == 0:
+        return identity
     if ordered:
-        counts = np.bincount(col - lo)
+        counts = np.bincount(col - lo, minlength=hi - lo + 1)
         present = np.nonzero(counts)[0]
         k = int(present.shape[0])
         if k <= k_max:
-            return col
+            return identity
         if k_max <= 1:
-            return np.zeros_like(col)
+            return np.zeros(hi - lo + 1, dtype=np.int64)
         n = int(col.shape[0])
         before = np.cumsum(counts[present]) - counts[present]
         group = (before * int(k_max)) // n  # monotone in value order, < k_max
-        # dense re-code of the groups actually formed
         _, group = np.unique(group, return_inverse=True)
-        lut = np.zeros(hi - lo + 1, dtype=np.int64)
-        lut[present] = group
-        return lut[col - lo]
+        group = np.asarray(group, dtype=np.int64).ravel()
+        # every code takes the group of the nearest present level at or below it
+        idx = np.searchsorted(present, np.arange(hi - lo + 1), side="right") - 1
+        return group[np.maximum(idx, 0)]
     if order is None:
         order = level_frequency_order(col)
     k = int(order.shape[0])
     if k <= k_max:
-        return col
+        return identity
     if k_max <= 1:
-        return np.zeros_like(col)
+        return np.zeros(hi - lo + 1, dtype=np.int64)
     lut = np.full(hi - lo + 1, k_max - 1, dtype=np.int64)  # default: "other"
     for new_code, old_code in enumerate(order[: k_max - 1].tolist()):
         lut[old_code - lo] = new_code
-    return lut[col - lo]
+    return lut
 
 
 def adaptively_coarsen_bins(

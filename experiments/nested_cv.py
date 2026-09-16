@@ -6,7 +6,10 @@ For each configured (dataset, target value, tau) this reports, per d:
   * fixed-schema CV: the full-data winner, centres re-selected per fold
     (`vsf.centers.crossvalidated_coverage`, what the product shows),
   * nested CV: the whole search repeated on each training fold
-    (`vsf.selective.nested_crossvalidation`),
+    (`vsf.selective.nested_crossvalidation`), with partitions fitted on the
+    training rows only (`encoding="train"`, the protocol), and the same with
+    partitions built from all rows' features (`encoding="all_rows"`) to
+    measure what the test rows' feature values change,
   * held-out pooled purity for both (coverage alone rewards selecting more
     cells; a CV coverage without its CV purity is not interpretable),
   * how often the fold winner equals the full-data winner.
@@ -69,9 +72,13 @@ def run(cfg: Config, seed: int) -> List[Dict[str, object]]:
     t0 = time.perf_counter()
     nested = nested_crossvalidation(
         X, Z, feats, positive_class=cfg.positive, center_spec=spec,
-        max_d=cfg.max_d, n_repeats=cfg.n_repeats, random_state=seed,
+        max_d=cfg.max_d, n_repeats=cfg.n_repeats, random_state=seed, encoding="train",
     )
     t_nested = time.perf_counter() - t0
+    nested_all = nested_crossvalidation(
+        X, Z, feats, positive_class=cfg.positive, center_spec=spec,
+        max_d=cfg.max_d, n_repeats=cfg.n_repeats, random_state=seed, encoding="all_rows",
+    )
     branches = discover_branches(
         X, Z, feats, positive_class=cfg.positive, center_spec=spec, max_d=cfg.max_d,
         n_permutations_centers=0, cv_repeats=0, random_state=seed,
@@ -83,6 +90,8 @@ def run(cfg: Config, seed: int) -> List[Dict[str, object]]:
     d_nested = nested.select_dimensionality()
     for d, b in nested.branches.items():
         gain = paired_gain(b.nested, b.fixed_schema)
+        ba = nested_all.branches[d]
+        enc_gap = paired_gain(ba.nested, b.nested)
         st = b.stability
         row: Dict[str, object] = {
             "dataset": cfg.dataset, "positive": cfg.positive, "tau": cfg.tau,
@@ -97,6 +106,11 @@ def run(cfg: Config, seed: int) -> List[Dict[str, object]]:
             "nested_cv_se": round(b.nested.se, 4),
             "nested_cv_purity": round(b.nested.purity_mean, 4),
             "nested_minus_fixed_t": round(gain.t_statistic, 2),
+            "nested_all_rows_coverage": round(ba.nested.mean, 4),
+            "nested_all_rows_purity": round(ba.nested.purity_mean, 4),
+            "all_rows_minus_train": round(enc_gap.difference, 4),
+            "all_rows_minus_train_se": round(enc_gap.se, 4),
+            "share_same_winner_all_rows": round(ba.stability.share_equal_to_reference, 3),
             "share_same_winner": round(st.share_equal_to_reference, 3),
             "n_distinct_winners": st.n_distinct,
             "mean_pairwise_jaccard": round(st.mean_pairwise_jaccard, 3),
@@ -108,7 +122,9 @@ def run(cfg: Config, seed: int) -> List[Dict[str, object]]:
             f"  d={d} {row['winner']:<42} in={row['in_sample_coverage']:.3f} "
             f"fixed={row['fixed_cv_coverage']:.3f}±{row['fixed_cv_se']:.3f} (pur {row['fixed_cv_purity']:.3f}) "
             f"nested={row['nested_cv_coverage']:.3f}±{row['nested_cv_se']:.3f} (pur {row['nested_cv_purity']:.3f}) "
-            f"same={row['share_same_winner']:.2f} distinct={st.n_distinct}"
+            f"same={row['share_same_winner']:.2f} distinct={st.n_distinct} | "
+            f"all-rows enc {row['nested_all_rows_coverage']:.3f} "
+            f"(diff {row['all_rows_minus_train']:+.3f}±{row['all_rows_minus_train_se']:.3f})"
         )
     print(f"  d* (nested) = {d_nested}; {t_nested:.1f} s")
     return rows
