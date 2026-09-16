@@ -184,7 +184,6 @@ from .centers import CenterSpec
 from .metrics import benjamini_hochberg
 from .screen import DEFAULT_MIN_STRENGTH, screen_dataset, target_report
 from .selective import (
-    MAX_ALPHA as _VALIDATE_MAX_ALPHA,
     certification_passes,
     certify_discovery,
     nested_crossvalidation,
@@ -1642,9 +1641,6 @@ class VSFRequestHandler(http.server.BaseHTTPRequestHandler):
                 return
             if not (0.0 < center_spec.tau < 1.0):
                 self._send_json_response(400, {"error": "a certificate needs a purity floor below 100 %"})
-                return
-            if center_spec.alpha > _VALIDATE_MAX_ALPHA:
-                self._send_json_response(400, {"error": f"alpha must be at most {_VALIDATE_MAX_ALPHA} for a valid certificate"})
                 return
             key = _analyze_key(params) + (("method", method), ("repeats", repeats))
             server = self.server

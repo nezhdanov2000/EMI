@@ -42,7 +42,8 @@ from .avr import (
     select_branch_dimensionality,
 )
 from .centers import (
-    MAX_CERTIFICATE_ALPHA,
+    FAMILY_TAIL_MARGIN,
+    min_successes_to_certify_heterogeneous,
     MIN_POSITIVES_FOR_CV,
     CVCoverage,
     Center,
@@ -108,7 +109,8 @@ from .server import serve
 __version__ = "2.3.0"
 
 __all__ = [
-    "MAX_CERTIFICATE_ALPHA",
+    "FAMILY_TAIL_MARGIN",
+    "min_successes_to_certify_heterogeneous",
     "family_cell_count",
     "resolve_center_spec",
     "CertifiedCell",

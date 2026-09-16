@@ -148,7 +148,7 @@ __all__ = [
     "CenterReport",
     "CenterSpec",
     "FamilywiseCoverageNull",
-    "MAX_CERTIFICATE_ALPHA",
+    "FAMILY_TAIL_MARGIN",
     "MIN_POSITIVES_FOR_CV",
     "Multiplicity",
     "PairedGain",
@@ -164,6 +164,7 @@ __all__ = [
     "crossvalidated_coverage",
     "familywise_max_coverage_null",
     "min_successes_to_certify",
+    "min_successes_to_certify_heterogeneous",
     "paired_gain",
     "purity_bounds",
     "select_dimensionality",
@@ -180,13 +181,12 @@ BoundMethod = Literal["clopper-pearson", "wilson"]
 CenterRule = Literal["purity", "certified"]
 Multiplicity = Literal["bonferroni", "none", "family"]
 
-#: Largest family-wise level a certificate that must hold for cells of
-#: heterogeneous rows may use. Conditional on the features, a cell's count
-#: is Poisson-binomial; the exact binomial test at the mean purity is valid
-#: for thresholds k >= n tau + 1 (Hoeffding, 1956, Theorem 4), and every
-#: certifying threshold satisfies that at per-cell levels up to 0.05
-#: (`tests/test_selective.py`).
-MAX_CERTIFICATE_ALPHA: Final[float] = 0.05
+#: Relative margin by which a family certificate's computed binomial tail
+#: must clear the per-cell level. The tail is evaluated in floating point
+#: (log-gamma table, reverse cumulative sum); its relative error is below
+#: 1e-11 for the cell sizes this package handles, so the margin makes a
+#: rounding error push a decision towards "not certified", never the other way.
+FAMILY_TAIL_MARGIN: Final[float] = 1e-9
 
 #: Below this many target-value samples, no out-of-sample coverage statement
 #: is attempted and `CenterReport.coverage_cv` is None.
@@ -632,7 +632,9 @@ class CenterSpec:
         EVERY partition the search can report or display
         (`vsf.avr.family_cell_count`), so a certificate holds for whichever
         schema the search picks (Section 4.14). Requires
-        `rule="certified"` and `alpha <= MAX_CERTIFICATE_ALPHA`. The search
+        `rule="certified"` and `method="clopper-pearson"`, and selects with
+        `min_successes_to_certify_heterogeneous`, whose threshold is valid
+        for a cell of rows with different success probabilities. The search
         entry points of `vsf.avr`, `vsf.redundancy` and `vsf.selective`
         fill `family_tests` themselves (`vsf.avr.resolve_center_spec`); a
         partition-level function given an unresolved family spec raises.
@@ -683,10 +685,10 @@ class CenterSpec:
                     "multiplicity='family' is a certificate and needs rule='certified'; "
                     "rule='purity' selects cells by their observed share and has no level to correct"
                 )
-            if self.alpha > MAX_CERTIFICATE_ALPHA:
+            if self.method != "clopper-pearson":
                 raise ValueError(
-                    f"alpha = {self.alpha} exceeds {MAX_CERTIFICATE_ALPHA}: above it the exact "
-                    "binomial test is not guaranteed valid for a cell of heterogeneous rows"
+                    "multiplicity='family' needs method='clopper-pearson': the certificate "
+                    "is an exact binomial test"
                 )
             if self.family_tests is not None and int(self.family_tests) < 1:
                 raise ValueError(f"family_tests must be >= 1, got {self.family_tests}")
@@ -769,6 +771,66 @@ def min_successes_to_certify(
     return out
 
 
+def min_successes_to_certify_heterogeneous(
+    n_values: np.ndarray | Sequence[int], tau: float, alpha_eff: float
+) -> np.ndarray:
+    """
+    Certification threshold that is valid when the rows of a cell have
+    DIFFERENT success probabilities - the situation of every cell once the
+    features are conditioned on. Returns, per cell size n, the smallest k
+    with
+
+        k >= ceil(n * tau) + 1                                  (i)
+        P(Bin(n, tau) >= k) <= alpha_eff * (1 - FAMILY_TAIL_MARGIN)   (ii)
+
+    (n + 1 when no k <= n satisfies both).
+
+    Proposition. Let S be a sum of n independent Bernoulli(p_i) with mean
+    pbar = sum(p_i) / n <= tau. Then P(S >= k) <= alpha_eff.
+    Proof. By (i), k - 1 >= n tau >= n pbar, so Hoeffding (1956, Theorem 4:
+    P(S <= c) >= P(Bin(n, pbar) <= c) for n pbar <= c <= n) with c = k - 1
+    gives P(S >= k) <= P(Bin(n, pbar) >= k). The binomial upper tail is
+    non-decreasing in the success probability, so this is at most
+    P(Bin(n, tau) >= k) <= alpha_eff by (ii). QED
+
+    Why (i) is needed and not decorative: without it the binomial test can
+    be anti-conservative for heterogeneous rows. With n = 3, tau = 0.01 the
+    binomial threshold at level 0.05 is k = 1 (tail 0.0297), while rows with
+    p = (0.03, 0, 0) have mean 0.01 and P(S >= 1) = 0.03 > 0.0297: by AM-GM
+    the probability of at least one success is SMALLEST when the p_i are
+    equal.
+
+    Simultaneity over tau. If the cell is certified at some tau' >= pbar,
+    then k >= ceil(n tau') + 1 >= ceil(n pbar) + 1 and
+    P(Bin(n, pbar) >= k) <= P(Bin(n, tau') >= k) <= alpha_eff, so k is at
+    least this function's threshold at tau = pbar; the event "certified at
+    some tau >= pbar" is therefore contained in one event of probability at
+    most alpha_eff, whatever floors the user tries.
+
+    Condition (i) is evaluated in exact rational arithmetic on the binary
+    value of `tau`.
+    """
+    if not (0.0 < tau < 1.0):
+        raise ValueError(f"tau must be in (0, 1), got {tau}")
+    if not (0.0 < alpha_eff < 1.0):
+        raise ValueError(f"alpha_eff must be in (0, 1), got {alpha_eff}")
+    n_arr = np.asarray(n_values, dtype=np.int64)
+    base = min_successes_to_certify(n_arr, tau, alpha_eff * (1.0 - FAMILY_TAIL_MARGIN))
+    num, den = float(tau).as_integer_ratio()
+    guard = np.ones(n_arr.shape, dtype=np.int64)
+    positive = n_arr > 0
+    if np.any(positive):
+        uniq = np.unique(n_arr[positive])
+        # ceil(n * num / den) + 1 with Python integers: no rounding, no overflow.
+        g = np.fromiter(
+            (-((-int(n) * num) // den) + 1 for n in uniq.tolist()),
+            dtype=np.int64, count=uniq.size,
+        )
+        guard[positive] = g[np.searchsorted(uniq, n_arr[positive])]
+    out = np.maximum(base, guard)
+    return np.where(positive, np.minimum(out, n_arr + 1), out)
+
+
 #: `min_successes_to_certify` thresholds, keyed by (tau, alpha_eff) and then
 #: by cell size. The threshold is a pure function of those three numbers,
 #: and the search asks for it once per candidate at the same alpha_eff for
@@ -811,7 +873,9 @@ def min_successes_to_select(
     into one integer comparison instead of a per-cell recomputation.
     """
     n_arr = np.asarray(n_values, dtype=np.int64)
-    if spec.rule == "certified":
+    if spec.rule == "certified" and spec.multiplicity == "family":
+        out = min_successes_to_certify_heterogeneous(n_arr, spec.tau, alpha_eff)
+    elif spec.rule == "certified":
         out = min_successes_to_certify(n_arr, spec.tau, alpha_eff)
     else:
         # ceil(tau * n) with a tolerance, so that tau = 0.9 and n = 10 gives 9
@@ -889,7 +953,11 @@ def certified_centers(
         # difference is seconds per branch, not milliseconds.
         k_min = np.full(k_arr.shape, np.iinfo(np.int64).max, dtype=np.int64)
         positive = n_arr > 0
-        k_min[positive] = min_successes_to_certify(n_arr[positive], spec.tau, alpha_eff)
+        threshold = (
+            min_successes_to_certify_heterogeneous if spec.multiplicity == "family"
+            else min_successes_to_certify
+        )
+        k_min[positive] = threshold(n_arr[positive], spec.tau, alpha_eff)
         return (k_arr >= k_min) & positive, alpha_eff
     lower, _ = purity_bounds(k_arr, n_arr, alpha_eff, spec.method)
     return (lower >= spec.tau) & (n_arr > 0), alpha_eff

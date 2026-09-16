@@ -858,6 +858,24 @@ function renderCertificateSummary(response) {
     }
 }
 
+// The static page is read from disk on every request while the server's
+// Python code is whatever was imported when `vsf.serve` started, so a server
+// started before an update serves the new page with the old statistics. A
+// response that does not describe the certificate that was asked for is
+// refused rather than drawn.
+function certificateMismatch(requested, response) {
+    const cert = (response && response.certificate) || null;
+    const stale = 'The server is running older code than this page: restart vsf.serve (or run.py) and reload the page.';
+    if (!cert || cert.valid_after_search === undefined) return stale;
+    if (requested.rule && cert.rule !== requested.rule) {
+        return `The server answered with rule “${cert.rule}” for a request with “${requested.rule}”. ${stale}`;
+    }
+    if (requested.multiplicity && cert.multiplicity !== requested.multiplicity) {
+        return `The server answered with multiplicity “${cert.multiplicity}” for a request with “${requested.multiplicity}”. ${stale}`;
+    }
+    return null;
+}
+
 function certificateModeNote(response) {
     const cert = (response && response.certificate) || {};
     const coloured = activeDirection === 'absence' ? 'Red' : 'Green';
@@ -957,6 +975,13 @@ async function runAnalysis(targetCol, criterion = null, features = null, options
         if (response.ok) {
             const data = await response.json();
             if (requestId !== _analysisRequestSeq) return; // superseded while parsing
+            const mismatch = certificateMismatch(reqBody, data);
+            if (mismatch) {
+                // Never draw colours computed under a different certificate
+                // than the one the page names.
+                showAnalysisError(mismatch);
+                return;
+            }
             loadBranchesResponse(data, preserveBranch);
         } else {
             let detail = `HTTP ${response.status}`;

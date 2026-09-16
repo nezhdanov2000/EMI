@@ -27,11 +27,11 @@ from vsf.centers import (
     _cell_counts,
     crossvalidated_coverage,
     min_successes_to_certify,
+    min_successes_to_certify_heterogeneous,
     select_centers,
     stratified_repeated_kfold,
 )
 from vsf.selective import (
-    MAX_ALPHA,
     certify_discovery,
     exact_upper_tail,
     family_test_count,
@@ -82,16 +82,67 @@ def test_exact_upper_tail_agrees_with_the_certification_threshold(tau: float, le
             assert exact_upper_tail(k - 1, size, tau)[0] > level * (1 - 1e-9)
 
 
-def test_certifying_thresholds_lie_in_the_range_of_hoeffdings_bound() -> None:
-    # The Poisson-binomial argument needs k >= n * tau + 1 at every level the
-    # certificates use (<= MAX_ALPHA). Above 0.05 it fails for small cells.
-    n = np.arange(1, 601)
-    for tau in np.round(np.arange(0.05, 0.99, 0.02), 2):
-        for level in (MAX_ALPHA, 1e-3, 1e-7):
-            k = min_successes_to_certify(n, float(tau), level)
-            assert np.all((k > n) | (k >= n * tau + 1 - 1e-9))
-    k = min_successes_to_certify(n, 0.05, 0.2)
-    assert not np.all((k > n) | (k >= n * 0.05 + 1 - 1e-9))
+def _poisson_binomial_upper_tail(p: np.ndarray, k: int) -> float:
+    """Exact P(sum of independent Bernoulli(p_i) >= k), by convolution."""
+    dist = np.array([1.0])
+    for pi in p:
+        dist = np.convolve(dist, [1.0 - pi, pi])
+    return float(dist[k:].sum()) if k < dist.size else 0.0
+
+
+def test_plain_binomial_threshold_is_anti_conservative_for_heterogeneous_rows() -> None:
+    # The counterexample in min_successes_to_certify_heterogeneous: the
+    # binomial threshold certifies k = 1, and rows (0.03, 0, 0) of mean 0.01
+    # reach k = 1 more often than the binomial tail says.
+    k = int(min_successes_to_certify([3], 0.01, 0.0298)[0])
+    assert k == 1
+    binomial = 1 - 0.99 ** 3
+    assert binomial <= 0.0298
+    assert _poisson_binomial_upper_tail(np.array([0.03, 0.0, 0.0]), 1) > 0.0298
+    # the guarded threshold refuses it
+    assert int(min_successes_to_certify_heterogeneous([3], 0.01, 0.0298)[0]) == 2
+
+
+@pytest.mark.parametrize("tau", [0.01, 0.2, 0.5, 0.9])
+@pytest.mark.parametrize("level", [0.3, 0.05, 1e-3])
+def test_heterogeneous_threshold_bounds_every_mean_tau_poisson_binomial(tau: float, level: float) -> None:
+    # Numerical illustration of the proposition (the proof is in the
+    # docstring): for small n, rows at the boundary pbar = tau in several
+    # heterogeneous shapes never exceed the level at the guarded threshold,
+    # and the threshold always satisfies condition (i).
+    rng = np.random.default_rng(0)
+    for n in range(1, 13):
+        k = int(min_successes_to_certify_heterogeneous([n], tau, level)[0])
+        assert k >= int(np.ceil(n * tau)) + 1 or k == n + 1
+        if k > n:
+            continue
+        shapes = [np.full(n, tau)]
+        lumped = np.zeros(n)
+        mass = n * tau
+        for i in range(n):
+            lumped[i] = min(1.0, mass)
+            mass -= lumped[i]
+        shapes.append(lumped)
+        for _ in range(20):
+            w = rng.random(n)
+            q = w / w.sum() * n * tau
+            if np.all(q <= 1.0):
+                shapes.append(q)
+        for q in shapes:
+            assert _poisson_binomial_upper_tail(q, k) <= level * (1 + 1e-12)
+
+
+def test_heterogeneous_threshold_is_the_binomial_one_where_the_guard_is_slack() -> None:
+    n = np.arange(1, 2001)
+    for tau in (0.3, 0.7, 0.9):
+        for level in (0.05, 1e-3, 1e-7):
+            plain = min_successes_to_certify(n, tau, level)
+            guarded = min_successes_to_certify_heterogeneous(n, tau, level)
+            assert np.all(guarded >= plain)
+            # at levels this small the guard never binds for n * tau >= 1;
+            # only the rounding margin can move a threshold, by at most one
+            assert np.all(guarded - plain <= 1)
+            assert np.mean(guarded == plain) > 0.99
 
 
 def test_exact_upper_tail_edges() -> None:
@@ -208,7 +259,8 @@ def test_family_spec_validation() -> None:
     with pytest.raises(ValueError):
         CenterSpec(tau=0.8, rule="purity", multiplicity="family")
     with pytest.raises(ValueError):
-        CenterSpec(tau=0.8, rule="certified", multiplicity="family", alpha=0.1)
+        CenterSpec(tau=0.8, rule="certified", multiplicity="family", method="wilson")
+    assert CenterSpec(tau=0.8, rule="certified", multiplicity="family", alpha=0.1).alpha == 0.1
     with pytest.raises(ValueError):
         CenterSpec(tau=0.8, rule="certified", multiplicity="family", family_tests=0)
     with pytest.raises(ValueError):
@@ -232,7 +284,7 @@ def test_schema_stability_summary() -> None:
 # ---------------------------------------------------------------------------
 def _coverage_at_level(z: np.ndarray, codes: np.ndarray, n_cells: int, tau: float, level: float, m: int) -> Tuple[int, int]:
     k, n = _cell_counts(z, codes, n_cells)
-    ok = (n >= m) & (exact_upper_tail(k, n, tau) <= level)
+    ok = (n >= m) & (k >= min_successes_to_certify_heterogeneous(n, tau, level))
     return int(k[ok].sum()), int(ok.sum())
 
 
@@ -250,7 +302,9 @@ def test_family_bonferroni_tests_every_eligible_cell_at_alpha_over_t() -> None:
         assert sorted(c.cell for c in br.cells) == np.nonzero(n >= 2)[0].tolist()
         for c in br.cells:
             assert (c.k, c.n) == (int(k[c.cell]), int(n[c.cell]))
-            assert c.certified == (exact_upper_tail(c.k, c.n, 0.8)[0] <= level)
+            assert c.certified == (c.k >= min_successes_to_certify_heterogeneous([c.n], 0.8, level)[0])
+            if c.certified:
+                assert c.p_value <= level
             assert c.p_adjusted == pytest.approx(min(1.0, c.p_value * t))
         # the reported schema maximises coverage of family-certified cells
         best = max(
@@ -328,8 +382,6 @@ def test_invalid_arguments_are_rejected() -> None:
         certify_discovery(X, Z, positive_class="1", screen="none")  # type: ignore[arg-type]
     with pytest.raises(ValueError):
         certify_discovery(X, Z, positive_class="1", max_d=5)
-    with pytest.raises(ValueError):
-        certify_discovery(X, Z, positive_class="1", center_spec=CenterSpec(tau=0.8, alpha=0.1))
     with pytest.raises(ValueError):  # tau not above the base rate
         certify_discovery(X, Z, positive_class="1", center_spec=CenterSpec(tau=0.05))
 
@@ -546,7 +598,6 @@ def test_validate_endpoint_rejects_invalid_requests() -> None:
             {"method": "westfall_young"},
             {"repeats": 0},
             {"repeats": 11},
-            {"alpha": 0.1},
             {"tau": 1.0},
             {"target": "nope"},
         ):
@@ -609,6 +660,8 @@ def test_the_page_ships_the_validation_panel() -> None:
     # the colouring defaults to the certificate that holds after the search
     assert '<option value="family" selected>' in html
     assert "multiplicity: readCertMultiplicity()" in js
+    # a stale server (old Python, new page) is refused, not drawn
+    assert "certificateMismatch(reqBody, data)" in js
 
 
 # ---------------------------------------------------------------------------
@@ -684,7 +737,7 @@ def test_certificate_request_validation_and_cache_separation() -> None:
         for patch in (
             {"rule": "purity", "multiplicity": "family"},
             {"rule": "certified", "multiplicity": "holm"},
-            {"rule": "certified", "alpha": 0.1},
+            {"rule": "certified", "multiplicity": "family", "tau": 0.0},
             {"rule": "certified", "tau": 1.0},
         ):
             for path in ("/api/analyze", "/api/landscape"):

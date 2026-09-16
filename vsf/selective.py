@@ -19,17 +19,23 @@ whose results carry their own guarantee statement.
 
 The claim and the model
 -----------------------------------------------------------------------
-Rows are an i.i.d. sample from a population. Partitions are functions of
-the feature values only. Conditional on the features, the target values of
-distinct rows are independent, and a cell's count is Poisson-binomial with
-mean purity pi_c = the average of P(Z = 1 | x_i) over its rows. A
-certificate is the claim pi_c > tau, tested by the one-sided exact binomial
-test of H_0: pi_c <= tau. For a threshold k >= n tau + 1 the Poisson-binomial
-upper tail is at most the binomial one at the same mean (Hoeffding, 1956,
-Theorem 4), so the test is valid. Every certifying threshold satisfies
-k >= n tau + 1 when the per-cell level is at most 0.05 (checked for
-n <= 2000 and tau on a 0.01 grid; pinned in the tests for n <= 600), which
-is why `certify_discovery` requires alpha <= 0.05.
+Assumption: conditional on the feature values X, the target values of
+distinct rows are independent (true for an i.i.d. sample; not for rows
+that share an outcome, e.g. members of one family). Partitions, and the
+family of partitions, are functions of X only. Conditional on X, a cell's
+count is then a sum of independent Bernoulli(p_i), p_i = P(Z = 1 | x_i),
+and the certificate is the claim
+
+    pbar_c = (1 / n_c) * sum over the cell's rows of P(Z = 1 | x_i) > tau,
+
+the mean purity of the rows in hand. It is not a claim about the
+population share P(Z = 1 | X in c), which differs from pbar_c by the
+sampling of the cell's composition. A cell is certified iff
+k >= `vsf.centers.min_successes_to_certify_heterogeneous`(n, tau, level),
+whose docstring proves P(certified) <= level whenever pbar_c <= tau
+(Hoeffding, 1956, Theorem 4, plus monotonicity of the binomial tail), for
+any level and every tau at once. `p_value` below is the exact binomial tail
+at tau, reported for reading; the decision also requires k >= ceil(n tau) + 1.
 
 Certification methods
 -----------------------------------------------------------------------
@@ -109,7 +115,6 @@ from .avr import (
     resolve_center_spec,
 )
 from .centers import (
-    MAX_CERTIFICATE_ALPHA,
     MIN_POSITIVES_FOR_CV,
     CenterSpec,
     CVCoverage,
@@ -119,12 +124,12 @@ from .centers import (
     crossvalidated_coverage,
     select_centers,
     select_dimensionality,
+    min_successes_to_certify_heterogeneous,
     stratified_repeated_kfold,
     summarize_cv,
 )
 
 __all__ = [
-    "MAX_ALPHA",
     "BranchMultiplicity",
     "CertificationMethod",
     "CertifiedCell",
@@ -380,23 +385,11 @@ def schema_stability(
     )
 
 
-#: Largest family-wise level `certify_discovery` accepts; see "The claim and
-#: the model" in the module docstring for why the bound is needed. Alias of
-#: `vsf.centers.MAX_CERTIFICATE_ALPHA`.
-MAX_ALPHA: Final[float] = MAX_CERTIFICATE_ALPHA
-
-
 def _require_certifiable(spec: CenterSpec) -> None:
     if not (0.0 < spec.tau < 1.0):
         raise ValueError(
             f"a certificate needs 0 < tau < 1, got tau = {spec.tau}: "
             "H_0: pi <= 1 can never be rejected"
-        )
-    if spec.alpha > MAX_ALPHA:
-        raise ValueError(
-            f"alpha = {spec.alpha} exceeds {MAX_ALPHA}: above it a certifying "
-            "threshold can fall below n * tau + 1, where the binomial test is "
-            "no longer guaranteed valid for a cell of heterogeneous rows"
         )
 
 
@@ -409,6 +402,7 @@ def _tested_cells(
     level = alpha / n_tests
     kc, nc = k[candidates], n[candidates]
     p = exact_upper_tail(kc, nc, tau)
+    k_min = min_successes_to_certify_heterogeneous(nc, tau, level)
     lower = clopper_pearson_lower(kc, nc, level)
     order = np.lexsort((candidates, -kc, p))
     return tuple(
@@ -419,7 +413,7 @@ def _tested_cells(
             p_value=float(p[i]),
             p_adjusted=float(min(1.0, p[i] * n_tests)),
             purity_lower=float(lower[i]),
-            certified=bool(p[i] <= level),
+            certified=bool(kc[i] >= k_min[i]),
         )
         for i in order.tolist()
     )
