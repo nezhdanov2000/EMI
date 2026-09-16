@@ -1,0 +1,12 @@
+# Line endings are normalised to LF in the repository and in every checkout,
+# independent of each contributor's core.autocrlf. Benchmark CSVs are part of
+# the reproducibility contract (their SHA-256 is pinned in
+# benchmark_data/MANIFEST.csv), so their bytes must not depend on the OS.
+* text=auto eol=lf
+*.csv text eol=lf
+*.py text eol=lf
+*.md text eol=lf
+
+*.png binary
+*.jpg binary
+*.zip binary
