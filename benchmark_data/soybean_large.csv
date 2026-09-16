@@ -1,4 +1,4 @@
-disease,Past_Usage,Relevant_Information_Paragraph,Number_of_Instances,Number_of_Attributes,Attribute_Information,date,plant_stand,precip,temp,hail,crop_hist,area_damaged,severity,seed_tmt,germination,plant_growth,leaves,leafspots_halo,leafspots_marg,leafspot_size,leaf_shread,leaf_malf,leaf_mild,stem,lodging,stem_cankers,canker_lesion,fruiting_bodies,external_decay,mycelium,int_discolor,sclerotia,fruit_pods,fruit_spots,seed
+disease,date,plant_stand,precip,temp,hail,crop_hist,area_damaged,severity,seed_tmt,germination,plant_growth,leaves,leafspots_halo,leafspots_marg,leafspot_size,leaf_shread,leaf_malf,leaf_mild,stem,lodging,stem_cankers,canker_lesion,fruiting_bodies,external_decay,mycelium,int_discolor,sclerotia,fruit_pods,fruit_spots,seed,mold_growth,seed_discolor,seed_size,shriveling,roots
 diaporthe-stem-canker,6,0,2,1,0,1,1,1,0,0,1,1,0,2,2,0,0,0,1,1,3,1,1,1,0,0,0,0,4,0,0,0,0,0,0
 diaporthe-stem-canker,4,0,2,1,0,2,0,2,1,1,1,1,0,2,2,0,0,0,1,0,3,1,1,1,0,0,0,0,4,0,0,0,0,0,0
 diaporthe-stem-canker,3,0,2,1,0,1,0,2,1,2,1,1,0,2,2,0,0,0,1,0,3,0,1,1,0,0,0,0,4,0,0,0,0,0,0

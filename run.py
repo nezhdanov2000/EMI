@@ -19,10 +19,10 @@ def format_size(size_bytes: int) -> str:
 
 
 def get_available_datasets(benchmark_dir: Path = Path("benchmark_data")) -> list[Path]:
-    """Find all CSV datasets in the benchmark directory."""
+    """Find all CSV datasets in the benchmark directory (the manifest is not a dataset)."""
     if not benchmark_dir.exists():
         return []
-    return sorted(benchmark_dir.glob("*.csv"))
+    return sorted(p for p in benchmark_dir.glob("*.csv") if p.name != "MANIFEST.csv")
 
 
 def print_help(datasets: list[Path]):
