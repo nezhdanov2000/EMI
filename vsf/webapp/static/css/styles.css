@@ -1196,14 +1196,29 @@ body.absence-mode .color-scale-handle--red { --handle-color: #64748b; }
 .tau-divider::before, .tau-divider::after { content: ""; flex: 1; border-top: 1px dashed rgba(239, 68, 68, 0.6); }
 
 
-/* ---- Tau-curves in the sidebar (Landscape view mode) ------------------ */
-.tau-curve-panel {
-    display: flex; flex-direction: column; gap: 8px; font-size: 0.78rem;
-    background: rgba(15, 23, 42, 0.4); padding: 10px; border-radius: 12px;
-    border: 1px solid var(--border-color);
+/* ---- Trade-offs view mode --------------------------------------------- */
+#tradeoffsArea { flex: 1; display: flex; flex-direction: column; min-height: 560px; overflow: auto; }
+.to-panel {
+    display: flex; flex-direction: column; gap: 10px; padding: 14px 18px; font-size: 0.78rem;
+    color: var(--text-muted);
 }
+.to-controls { display: flex; flex-wrap: wrap; gap: 16px; align-items: center; }
+.to-controls label { display: inline-flex; align-items: center; gap: 6px; }
+.to-controls select {
+    background: rgba(15, 23, 42, 0.8); color: white; border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 4px; padding: 2px 6px; font-size: 0.78rem;
+}
+/* The two floor panels share one x axis, so they are stacked, never side by
+   side: the point of the pair is reading a value off both at the same x. */
+.to-grid { display: flex; flex-direction: column; gap: 2px; }
+.to-chart { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.to-title { color: #e2e8f0; font-weight: 600; }
+.to-plot { width: 100%; height: 230px; }
+.to-plot-tall { height: 300px; }
+.to-plot-strip { height: 72px; }
+.to-note { color: var(--text-dim); line-height: 1.45; }
+.to-note strong { color: var(--text-muted); }
 .tau-curve-note { color: var(--text-dim); line-height: 1.4; min-height: 1em; }
-#tau-curve-plot { width: 100%; height: 300px; }
 .tau-point-panel { border-top: 1px solid var(--border-color); padding-top: 8px; max-height: 320px; overflow: auto; }
 .tau-point-panel .landscape-row { grid-template-columns: 1fr auto; row-gap: 2px; }
 .tau-point-panel .landscape-row .axes { grid-column: 1 / span 2; }

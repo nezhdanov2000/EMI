@@ -1071,6 +1071,9 @@ function selectBranch(dKey, fromInitialLoad = false) {
     updateDashboard(currentPayload);
     if (viewMode === 'landscape') refreshLandscape();
     if (viewMode === 'redundancy') refreshCenterGroups(0);
+    // The frontier is drawn at the current floor and marks the selected branch,
+    // so a change of branch changes it; the tau-curves do not depend on tau.
+    if (viewMode === 'tradeoffs') { renderTauCurves(); refreshFrontier(false); }
 }
 
 function showLoader(show) {
@@ -1108,7 +1111,7 @@ function showLoader(show) {
 const PROB_COLORS = [
     '#ef4444', // Red   - below the user's lower boundary
     '#92572e', // Brown - between the boundaries (cell colour name; the
-               // control that sets this boundary is now called redTo)
+    // control that sets this boundary is now called redTo)
     '#22c55e'  // Green - at or above tau: a discrete centre
 ];
 // Absence search (vsf.avr.Direction): the certified zone is drawn RED --
@@ -2171,8 +2174,8 @@ function flattenCoordinates(x, y, z, targetDim) {
 
 function parseRGBString(c) {
     const m = c.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
-    if(m) return [parseInt(m[1]), parseInt(m[2]), parseInt(m[3])];
-    return [0,0,0];
+    if (m) return [parseInt(m[1]), parseInt(m[2]), parseInt(m[3])];
+    return [0, 0, 0];
 }
 
 function animateScatter3d(startX, startY, startZ, startSizes, startColors, endX, endY, endZ, endSizes, endColors, duration, onComplete) {
@@ -2501,7 +2504,9 @@ function onAnalysisLoadedForLandscape(data) {
         setViewMode('lattice');
     } else if (viewMode === 'landscape') {
         refreshLandscape();
+    } else if (viewMode === 'tradeoffs') {
         refreshTauCurves();
+        refreshFrontier(false);
     } else if (viewMode === 'redundancy') {
         refreshCenterGroups(0);
     } else if (viewMode === 'screen') {
@@ -2510,7 +2515,8 @@ function onAnalysisLoadedForLandscape(data) {
 }
 
 function setViewMode(mode) {
-    viewMode = (mode === 'landscape' || mode === 'redundancy' || mode === 'screen') ? mode : 'lattice';
+    viewMode = (mode === 'landscape' || mode === 'redundancy' || mode === 'screen' || mode === 'tradeoffs')
+        ? mode : 'lattice';
     document.querySelectorAll('.view-mode-btn').forEach(btn => {
         btn.classList.toggle('active', btn.dataset.mode === viewMode);
     });
@@ -2519,24 +2525,25 @@ function setViewMode(mode) {
     const area = document.getElementById('landscapeArea');
     const dup = document.getElementById('redundancyArea');
     const scr = document.getElementById('screenArea');
+    const tro = document.getElementById('tradeoffsArea');
     const slices = document.getElementById('slice-controller');
     if (plot) plot.style.display = lattice ? '' : 'none';
     if (area) area.style.display = viewMode === 'landscape' ? 'flex' : 'none';
     if (dup) dup.style.display = viewMode === 'redundancy' ? 'flex' : 'none';
     if (scr) scr.style.display = viewMode === 'screen' ? 'flex' : 'none';
+    if (tro) tro.style.display = viewMode === 'tradeoffs' ? 'flex' : 'none';
     if (slices && !lattice) slices.style.display = 'none';
     // Display Settings: the scan rows and the contour panel belong to the
-    // lattice; the landscape shows the tau-curves in their place; the
-    // Redundancy tab keeps only the certificate controls.
+    // lattice; every other tab keeps only the certificate controls.
     const scanRows = document.getElementById('scanOnlyRows');
     const contour = document.getElementById('contourPanel');
-    const curvesPanel = document.getElementById('tauCurvePanel');
     if (scanRows) scanRows.style.display = lattice ? 'contents' : 'none';
     if (contour) contour.style.display = lattice ? '' : 'none';
-    if (curvesPanel) curvesPanel.style.display = viewMode === 'landscape' ? '' : 'none';
     if (viewMode === 'landscape') {
         refreshLandscape();
+    } else if (viewMode === 'tradeoffs') {
         refreshTauCurves();
+        refreshFrontier(false);
     } else if (viewMode === 'redundancy') {
         refreshCenterGroups(0);
     } else if (viewMode === 'screen') {
@@ -3033,7 +3040,7 @@ function renderScreen() {
             <div class="sc-section">
                 <div class="sc-sub">Columns that (nearly) determine each other</div>
                 ${pairs.length ? `<div class="sc-pairs">${pairs.map(screenPairHtml).join('')}</div>`
-                    : '<div class="cg-busy">No pair reaches the reporting floor.</div>'}
+                : '<div class="cg-busy">No pair reaches the reporting floor.</div>'}
             </div>
             <div class="sc-section">
                 <div class="sc-sub">Columns</div>
@@ -3354,7 +3361,7 @@ function histogramBlock(h, t, spec) {
     const hidden = spec.part ? h.n_centers - spec.part.n_centers : 0;
     const rows = [
         [`At or above ${pct(t, 0)}`, `<strong>${atOrAbove}</strong>`,
-            `${escHtml(spec.noun)} at or above the threshold — the ones the lists call the same`],
+        `${escHtml(spec.noun)} at or above the threshold — the ones the lists call the same`],
         h.identical
             ? ['— of them, identical rows', `<strong>${h.identical}</strong>`,
                 'Mutual containment exactly 1: the two hold the same rows, not almost the same']
@@ -3364,7 +3371,7 @@ function histogramBlock(h, t, spec) {
                 `Below the threshold but still drawn: what raising or lowering it would move`]
             : null,
         [`Below ${pct(h.floor, 0)}`, `<strong>${h.below_floor}</strong>`,
-            `Not drawn at all: the pair store keeps nothing below ${pct(h.floor, 0)}, where two centres share less than half of the larger one`],
+        `Not drawn at all: the pair store keeps nothing below ${pct(h.floor, 0)}, where two centres share less than half of the larger one`],
         hidden > 0 ? ['In the cards shown', `<strong>${spec.part.n_centers}</strong>`,
             'The solid part of each bar: the sum of the strips the reader can see'] : null,
         hidden > 0 ? ['In the centres the filter hides', `<strong>${hidden}</strong>`,
@@ -3421,11 +3428,11 @@ function renderCenterGroupsHistogram(data) {
             title: `One bar counts PAIRS: every (centre of this branch, other centre) pair, over ${against}. `
                 + (hidden > 0
                     ? `The solid part of each bar is the elementwise sum of the strips inside the cards on screen; the `
-                      + `faded part above it belongs to the ${h.n_centers - (data.n_centers_listed || 0)} centres the `
-                      + `Descriptions filter drops from the list, which have no alternative of that kind at the current `
-                      + `threshold but do have nearer ones below it. Solid + faded is every pair of the branch.`
+                    + `faded part above it belongs to the ${h.n_centers - (data.n_centers_listed || 0)} centres the `
+                    + `Descriptions filter drops from the list, which have no alternative of that kind at the current `
+                    + `threshold but do have nearer ones below it. Solid + faded is every pair of the branch.`
                     : `This is exactly the elementwise sum of the strips inside the cards below, so the bars at or above `
-                      + `the dashed line are the alternatives those cards list, added up.`)
+                    + `the dashed line are the alternatives those cards list, added up.`)
                 + ` Unlike the picture on the left it keeps the whole left tail, which is where a gap — if the data had `
                 + `one — would show. Pairs below ${pct(hp.floor, 0)} are counted in the text, not drawn.`,
         });
@@ -3859,8 +3866,8 @@ function renderOverlapTable(el, spec) {
     const kc = spec.kinshipCounts;
     const split = kc && (kc.related + kc.unrelated) > 0
         ? ` · <span class="cg-kin">${kc.related} related</span>, <span class="cg-kin">${kc.unrelated} unrelated</span>`
-            + (kc.inconsistent ? `, <span class="cg-kin-warn">${kc.inconsistent} ⚠</span>` : '')
-            + (spec.kinship && spec.kinship !== 'all' ? ` (showing ${escHtml(spec.kinship)} only)` : '')
+        + (kc.inconsistent ? `, <span class="cg-kin-warn">${kc.inconsistent} ⚠</span>` : '')
+        + (spec.kinship && spec.kinship !== 'all' ? ` (showing ${escHtml(spec.kinship)} only)` : '')
         : '';
     el.innerHTML = `
         <div class="cg-detail-head"><span>${escHtml(spec.title)}${together}${weakest}${split}
@@ -3947,7 +3954,7 @@ async function refreshTauCurves() {
         if (curvesState.pointData) renderTauPoint();
         return;
     }
-    const note = document.getElementById('tauCurveNote');
+    const note = document.getElementById('toCurveNote');
     if (note) note.textContent = 'Computing the curves…';
     try {
         const res = await fetch('/api/landscape/curves', {
@@ -3972,61 +3979,252 @@ function tauCurveYLabel(data) {
     return data.x === 'mass' ? 'mass certified free of the value, %' : 'coverage of the value, %';
 }
 
+// ---- Trade-offs tab -------------------------------------------------------
+// Three pictures of what coverage costs. The first two share an x axis (the
+// purity floor) and are stacked, so the two quantities are read against one
+// scale instead of two: the envelope's coverage above, the centre count of the
+// schema that reaches it below. That schema CHANGES along the envelope, and a
+// cost series of a moving schema would be a saw read as a trend, so every
+// change of winner is marked on both panels; "Track: the selected branch"
+// switches both to one fixed schema instead. The third answers the question
+// the first two cannot: at the CURRENT floor, how much coverage is available
+// at a given number of rules - the Pareto staircase, where the search's own
+// winner is usually far to the right of the knee.
+const TO_PLOT_CFG = { displayModeBar: false, responsive: true };
+
+function toLayout(data, opts) {
+    return {
+        paper_bgcolor: 'rgba(0,0,0,0)', plot_bgcolor: 'rgba(15,23,42,0.4)',
+        margin: { l: 56, r: 12, t: 10, b: opts.xtitle ? 44 : 26 }, autosize: true,
+        font: { color: '#94a3b8', size: 11 },
+        xaxis: {
+            title: opts.xtitle ? { text: opts.xtitle, font: { size: 11 } } : undefined,
+            range: opts.xrange, gridcolor: 'rgba(255,255,255,0.06)', zeroline: false,
+            type: opts.xtype || 'linear',
+        },
+        yaxis: {
+            title: { text: opts.ytitle, font: { size: 11 } }, range: opts.yrange,
+            gridcolor: 'rgba(255,255,255,0.06)', zeroline: false, rangemode: 'tozero',
+        },
+        legend: { orientation: 'h', x: 0, y: 1.0, yanchor: 'bottom', font: { size: 10 }, itemwidth: 16, traceorder: 'normal' },
+        shapes: opts.shapes || [], hovermode: 'closest', showlegend: !!opts.legend,
+    };
+}
+
+// Where the envelope changes schema: one tick per change, so a jump in the
+// centre count is never mistaken for a property of the data.
+function tauWinnerChanges(curve, taus) {
+    const out = [];
+    for (let i = 1; i < taus.length; i++) {
+        const a = curve.feature_names[i - 1], b = curve.feature_names[i];
+        if (!a || !b) continue;
+        if (a.join('+') !== b.join('+')) out.push(i);
+    }
+    return out;
+}
+
+// Which dimensionality leads at each floor: the argmax of the upper panel,
+// as intervals on the same axis, each in that d's own colour. Ties go to the
+// SMALLER d — at equal coverage the shorter description is the better one, the
+// rule the toolbar states — and then to the schema with fewer centres. Floors
+// where nothing certifies have no leader and stay blank.
+function leadSegments(data, taus, dims) {
+    const segs = [];
+    for (let i = 0; i < taus.length; i++) {
+        let best = null;
+        dims.forEach(d => {
+            const c = data.curves[String(d)];
+            const v = c.x[i];
+            if (v <= 0) return;
+            if (!best || v > best.v + 1e-12
+                || (Math.abs(v - best.v) <= 1e-12 && c.n_centers[i] < best.k)) {
+                best = { d, v, k: c.n_centers[i], name: c.feature_names[i].join(' + ') };
+            }
+        });
+        const last = segs.length ? segs[segs.length - 1] : null;
+        if (last && last.d === (best && best.d)) {
+            last.i1 = i;
+            last.v1 = best ? best.v : last.v1;
+            last.name1 = best ? best.name : last.name1;
+        } else if (best) {
+            segs.push({ d: best.d, i0: i, i1: i, v0: best.v, v1: best.v, name0: best.name, name1: best.name });
+        }
+    }
+    return segs;
+}
+
+function renderLeadStrip(data, taus, dims, shapes, xrange) {
+    const el = document.getElementById('to-lead-plot');
+    if (!el) return [];
+    const segs = leadSegments(data, taus, dims);
+    const half = taus.length > 1 ? (taus[1] - taus[0]) * 50 : 0.5;
+    const traces = segs.map(s => {
+        const x0 = taus[s.i0] * 100 - half, x1 = taus[s.i1] * 100 + half;
+        return {
+            type: 'bar', orientation: 'h', base: [x0], x: [Math.max(x1 - x0, 1e-6)], y: ['leads'],
+            marker: { color: TAU_CURVE_COLORS[s.d] || '#e2e8f0', line: { width: 0 } },
+            width: 0.72, showlegend: false, hoverinfo: 'text',
+            hovertext: `${s.d}D leads from ${x0.toFixed(0)}% to ${x1.toFixed(0)}%`
+                + ` · ${data.x} ${pct(s.v0)} → ${pct(s.v1)}`
+                + (s.name0 === s.name1 ? ` · ${s.name0}` : ` · ${s.name0} … ${s.name1}`),
+        };
+    });
+    const layout = toLayout(data, {
+        ytitle: '', xtitle: tauCurveXLabel(data), xrange, shapes,
+    });
+    layout.barmode = 'overlay';
+    layout.bargap = 0;
+    layout.margin = { l: 56, r: 12, t: 4, b: 44 };
+    layout.yaxis = { showticklabels: false, showgrid: false, zeroline: false, fixedrange: true, range: [-0.5, 0.5] };
+    Plotly.react(el, traces, layout, TO_PLOT_CFG);
+    return segs;
+}
+
+// The cost unit of the WHOLE tab: the centres panel and the frontier must
+// never measure the description in two different units at once. "conditions"
+// is d x centres — every centre of a d-schema fixes exactly d columns — which
+// is what puts the four dimensionalities on one scale: a 4D rule spells out
+// four (column = value) pairs where a 1D rule spells out one.
+function costUnit() {
+    const el = document.getElementById('toCost');
+    return el && el.value === 'conditions' ? 'conditions' : 'centers';
+}
+
+function onCostChange() {
+    renderTauCurves();
+    refreshFrontier(true);
+}
+
+function trackMode() {
+    const el = document.getElementById('toTrack');
+    return el && el.value === 'branch' ? 'branch' : 'envelope';
+}
+
+// The selected branch as a series over the same tau grid: its own coverage and
+// centre count, read off the envelope's family only where it IS the winner —
+// elsewhere the server has not scored it at that floor, so the series is drawn
+// only at the floors where the branch appears. Honest and cheap; a full curve
+// for one fixed schema would need its own pass.
+function branchSeries(data, taus) {
+    const feats = centerGroupsBranchFeatures();
+    if (!feats || !feats.length) return null;
+    const want = feats.slice().sort((a, b) => a - b).join(',');
+    const d = String(feats.length);
+    const c = data.curves[d];
+    if (!c) return null;
+    const xs = [], cov = [], cen = [];
+    taus.forEach((t, i) => {
+        const f = c.features[i];
+        if (!f) return;
+        if (f.slice().sort((a, b) => a - b).join(',') !== want) return;
+        xs.push(t * 100); cov.push(c.x[i] * 100); cen.push(c.n_centers[i]);
+    });
+    return xs.length ? { xs, cov, cen, d: feats.length } : null;
+}
+
 function renderTauCurves() {
     const data = curvesState.data;
-    const container = document.getElementById('tau-curve-plot');
-    const note = document.getElementById('tauCurveNote');
-    if (!data || !container) return;
+    const covEl = document.getElementById('to-coverage-plot');
+    const cenEl = document.getElementById('to-centres-plot');
+    const note = document.getElementById('toCurveNote');
+    if (!data || !covEl || !cenEl || typeof Plotly === 'undefined') return;
     const taus = data.taus;
-    const traces = [];
     const dims = Object.keys(data.curves).map(Number).sort((a, b) => a - b);
+    const track = trackMode();
+    const cursor = readCertTau() * 100;
+    const xmin = taus.length ? Math.floor(taus[0] * 100) - 1 : 0;
+    const cursorShape = {
+        type: 'line', xref: 'x', yref: 'paper', x0: cursor, x1: cursor, y0: 0, y1: 1,
+        line: { color: '#f8fafc', width: 1, dash: 'dot' },
+    };
+
+    const unit = costUnit();
+    const costNoun = unit === 'conditions' ? 'conditions' : 'centres';
+    const costFactor = (d) => (unit === 'conditions' ? d : 1);
+    const covTraces = [], cenTraces = [], marks = [];
+    let totalChanges = 0;
     dims.forEach(d => {
         const c = data.curves[String(d)];
+        const colour = TAU_CURVE_COLORS[d] || '#e2e8f0';
         const custom = taus.map((t, i) => [
             c.n_centers[i], c.feature_names[i].join(' + '), (c.mass[i] * 100).toFixed(2),
             c.n_certifying[i], c.n_family,
         ]);
-        traces.push({
+        const dim = track === 'branch' ? 0.25 : 1;
+        covTraces.push({
             type: 'scatter', mode: 'lines+markers', name: `${d}D`,
-            x: taus.map(t => t * 100), y: c.x.map(v => v * 100),
-            customdata: custom,
-            line: { color: TAU_CURVE_COLORS[d] || '#e2e8f0', width: 1.5 },
-            marker: { size: 4, color: TAU_CURVE_COLORS[d] || '#e2e8f0' },
+            x: taus.map(t => t * 100), y: c.x.map(v => v * 100), customdata: custom,
+            line: { color: colour, width: 1.5 }, marker: { size: 4, color: colour },
+            opacity: dim,
             hovertemplate: `<b>${d}D</b> at %{x:.0f}%: ${data.x} %{y:.2f}%<br>`
                 + '%{customdata[1]}<br>%{customdata[0]} centres, mass %{customdata[2]}%<br>'
-                + `%{customdata[3]} of %{customdata[4]} schemas certify a centre<extra></extra>`,
+                + '%{customdata[3]} of %{customdata[4]} schemas certify a centre<extra></extra>',
         });
+        cenTraces.push({
+            type: 'scatter', mode: 'lines+markers', name: `${d}D`, showlegend: false,
+            x: taus.map(t => t * 100), y: c.n_centers.map(v => v * costFactor(d)), customdata: custom,
+            line: { color: colour, width: 1.5, shape: 'hv' }, marker: { size: 4, color: colour },
+            opacity: dim,
+            hovertemplate: `<b>${d}D</b> at %{x:.0f}%: %{y} ${costNoun}`
+                + (unit === 'conditions' ? ` <i>(%{customdata[0]} centres × ${d})</i>` : '')
+                + '<br>%{customdata[1]}<extra></extra>',
+        });
+        if (track !== 'branch') {
+            const ch = tauWinnerChanges(c, taus);
+            totalChanges += ch.length;
+            ch.forEach(i => marks.push({
+                type: 'line', xref: 'x', yref: 'paper', x0: taus[i] * 100, x1: taus[i] * 100,
+                y0: 0, y1: 0.06, line: { color: colour, width: 1 },
+            }));
+        }
     });
-    const shapes = [];
-    const cursor = readCertTau() * 100;
-    shapes.push({
-        type: 'line', xref: 'x', yref: 'paper', x0: cursor, x1: cursor, y0: 0, y1: 1,
-        line: { color: '#f8fafc', width: 1, dash: 'dot' },
-    });
+    const bs = track === 'branch' ? branchSeries(data, taus) : null;
+    if (bs) {
+        const colour = TAU_CURVE_COLORS[bs.d] || '#f8fafc';
+        covTraces.push({
+            type: 'scatter', mode: 'lines+markers', name: 'selected branch',
+            x: bs.xs, y: bs.cov, line: { color: '#f8fafc', width: 2 }, marker: { size: 5, color: colour },
+            hovertemplate: `selected branch at %{x:.0f}%: ${data.x} %{y:.2f}%<extra></extra>`,
+        });
+        cenTraces.push({
+            type: 'scatter', mode: 'lines+markers', name: 'selected branch', showlegend: false,
+            x: bs.xs, y: bs.cen.map(v => v * costFactor(bs.d)), line: { color: '#f8fafc', width: 2, shape: 'hv' },
+            marker: { size: 5, color: colour },
+            hovertemplate: `selected branch at %{x:.0f}%: %{y} ${costNoun}<extra></extra>`,
+        });
+    }
     if (curvesState.point) {
         const c = data.curves[String(curvesState.point.d)];
         const ti = curvesState.point.ti;
         if (c) {
-            traces.push({
+            covTraces.push({
                 type: 'scatter', mode: 'markers', x: [taus[ti] * 100], y: [c.x[ti] * 100],
                 marker: { size: 11, color: 'rgba(0,0,0,0)', line: { color: '#f8fafc', width: 2 } },
                 hoverinfo: 'skip', showlegend: false,
             });
         }
     }
-    const xmin = taus.length ? Math.floor(taus[0] * 100) - 1 : 0;
-    const layout = {
-        paper_bgcolor: 'rgba(0,0,0,0)', plot_bgcolor: 'rgba(15,23,42,0.4)',
-        margin: { l: 42, r: 8, t: 26, b: 44 }, autosize: true,
-        font: { color: '#94a3b8', size: 10 },
-        xaxis: { title: { text: tauCurveXLabel(data), font: { size: 10 } }, range: [xmin, 101], gridcolor: 'rgba(255,255,255,0.06)', zeroline: false },
-        yaxis: { title: { text: tauCurveYLabel(data), font: { size: 10 } }, range: [0, 102], gridcolor: 'rgba(255,255,255,0.06)', zeroline: false },
-        legend: { orientation: 'h', x: 0, y: 1.0, yanchor: 'bottom', font: { size: 9 }, itemwidth: 14, traceorder: 'normal' },
-        shapes, hovermode: 'closest', showlegend: true,
-    };
-    Plotly.react(container, traces, layout, { displayModeBar: false, responsive: true });
-    container.removeAllListeners && container.removeAllListeners('plotly_click');
-    container.on('plotly_click', ev => {
+    // The winner-change ticks go under the CENTRES panel only: on the coverage
+    // panel a change of schema leaves no artefact (the envelope is continuous
+    // by construction), while on the centres panel it is a step that would
+    // otherwise read as a cost that moved.
+    Plotly.react(covEl, covTraces, toLayout(data, {
+        ytitle: tauCurveYLabel(data), xrange: [xmin, 101], yrange: [0, 102],
+        shapes: [cursorShape], legend: true,
+    }), TO_PLOT_CFG);
+    Plotly.react(cenEl, cenTraces, toLayout(data, {
+        ytitle: unit === 'conditions'
+            ? 'conditions in its description (d × centres)' : 'certified centres of that schema',
+        xrange: [xmin, 101], shapes: [cursorShape].concat(marks),
+    }), TO_PLOT_CFG);
+    const segs = renderLeadStrip(data, taus, dims, [cursorShape], [xmin, 101]);
+
+    const cenTitle = document.getElementById('toCentresTitle');
+    if (cenTitle) {
+        cenTitle.textContent = (unit === 'conditions' ? 'Conditions' : 'Centres') + ' vs. purity floor';
+    }
+    covEl.removeAllListeners && covEl.removeAllListeners('plotly_click');
+    covEl.on('plotly_click', ev => {
         const pt = ev.points && ev.points[0];
         if (!pt || pt.curveNumber >= dims.length) return;
         openTauPoint(dims[pt.curveNumber], pt.pointNumber, 0);
@@ -4034,9 +4232,118 @@ function renderTauCurves() {
     if (note) {
         const p0 = (data.anchor * 100).toFixed(1);
         const nfam = dims.map(d => `${d}D: ${data.curves[String(d)].n_family}`).join(', ');
-        note.textContent = `${data.x === 'mass' ? 'Mass certified free' : 'Coverage'} of the best schema per dimensionality at every whole-percent purity floor above the base rate `
-            + `(${p0}%)${data.rule === 'certified' ? ', certified rule (100% is not certifiable)' : ''}. Schemas scored — ${nfam}. `
-            + 'Dotted line: the current boundary. Click a point for its schemas.';
+        note.innerHTML = `${data.x === 'mass' ? 'Mass certified free' : 'Coverage'} of the best schema per dimensionality at
+            every whole-percent purity floor above the base rate (${p0}%)${data.rule === 'certified' ? ', certified rule (100% is not certifiable)' : ''},
+            and what that schema costs to write down — ${costNoun}.${unit === 'conditions'
+                ? ' A d-schema spells out d (column = value) pairs per centre, so this is the unit that puts the four'
+                  + ' dimensionalities on one scale: in centres the 4D envelope is 5× the 2D one on these data, in conditions 10×.'
+                : ' Centres count rules, not their length: a 4D rule fixes four columns where a 1D rule fixes one, so switch'
+                  + ' Cost in to conditions to compare the four lines on one scale.'} Schemas scored — ${nfam}. Dotted line: the current boundary;
+            click a point on the upper panel for the schemas behind it.
+            ${track === 'branch'
+                ? 'Both panels follow the selected branch, drawn only at the floors where it is its dimensionality’s best schema.'
+                : `<strong>The schema changes along each line</strong> — ${totalChanges} times in all, ticked under the centres
+                   panel: a step there at a tick is a different schema, not a cost that moved.`}
+            The band under them is the argmax of the upper panel — which dimensionality leads at each floor, in that d's colour,
+            ${segs.length} stretch${segs.length === 1 ? '' : 'es'} in all${segs.length && segs.length <= 6 ? `: ${escHtml(segs.map(g => `${g.d}D`).join(' → '))}` : ''};
+            at equal coverage the smaller d wins the band, since the shorter description is the better one.${segs.length > 6 ? ' Many short alternating stretches mean the lines run together there, not that the answer changes that often.' : ''}
+            All of it is maxima over a family scored and then chosen by looking, so the values are optimistic and are
+            not out-of-sample estimates.`;
+    }
+}
+
+// ---- The cost-coverage frontier at the current floor ----------------------
+let frontierState = { key: null, data: null };
+
+function frontierKey() {
+    const p = landscapeParams();
+    if (!p) return null;
+    const el = document.getElementById('toCost');
+    return JSON.stringify([p, el ? el.value : 'centers']);
+}
+
+async function refreshFrontier(force) {
+    const p = landscapeParams();
+    if (!p) return;
+    const key = frontierKey();
+    if (!force && frontierState.data && frontierState.key === key) { renderFrontier(); return; }
+    const el = document.getElementById('toCost');
+    try {
+        const res = await fetch('/api/landscape/frontier', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(Object.assign({}, p, { cost: el ? el.value : 'centers' })),
+        });
+        const data = await res.json();
+        if (!res.ok) { showAnalysisError('Frontier: ' + (data.error || res.status)); return; }
+        frontierState = { key, data };
+        renderFrontier();
+    } catch (err) {
+        showAnalysisError('Frontier request failed: ' + err.message);
+    }
+}
+
+function renderFrontier() {
+    const data = frontierState.data;
+    const el = document.getElementById('to-frontier-plot');
+    const note = document.getElementById('toFrontierNote');
+    if (!data || !el || typeof Plotly === 'undefined') return;
+    const dims = Object.keys(data.dims).map(Number).sort((a, b) => a - b);
+    const costWord = data.cost === 'conditions' ? 'conditions' : 'centres';
+    const traces = [];
+    dims.forEach(d => {
+        const steps = data.dims[String(d)].steps;
+        if (!steps.length) return;
+        const colour = TAU_CURVE_COLORS[d] || '#e2e8f0';
+        traces.push({
+            type: 'scatter', mode: 'lines+markers', name: `${d}D`,
+            x: steps.map(s => s.cost), y: steps.map(s => s.coverage * 100),
+            customdata: steps.map(s => [s.feature_names.join(' + '), s.n_centers, s.conditions]),
+            line: { color: colour, width: 1.5, shape: 'hv' }, marker: { size: 6, color: colour },
+            hovertemplate: `<b>${d}D</b> at %{x} ${costWord}: ${data.x} %{y:.1f}%<br>`
+                + '%{customdata[0]}<br>%{customdata[1]} centres, %{customdata[2]} conditions<extra></extra>',
+        });
+    });
+    const feats = centerGroupsBranchFeatures();
+    if (feats && feats.length) {
+        const want = feats.slice().sort((a, b) => a - b).join(',');
+        let here = null;
+        dims.forEach(d => data.dims[String(d)].steps.forEach(s => {
+            if (s.features.slice().sort((a, b) => a - b).join(',') === want) here = s;
+        }));
+        if (here) {
+            traces.push({
+                type: 'scatter', mode: 'markers', name: 'selected branch',
+                x: [here.cost], y: [here.coverage * 100],
+                marker: { size: 13, color: 'rgba(0,0,0,0)', line: { color: '#f8fafc', width: 2 } },
+                hovertemplate: `selected branch: %{x} ${costWord}, ${data.x} %{y:.1f}%<extra></extra>`,
+            });
+        }
+    }
+    Plotly.react(el, traces, toLayout(data, {
+        ytitle: data.x === 'mass' ? 'mass certified free, %' : 'coverage of the value, %',
+        xtitle: `cost of the description: ${costWord} (a step means "with at most this many")`,
+        yrange: [0, 102], legend: true,
+    }), TO_PLOT_CFG);
+    if (note) {
+        const best = [];
+        dims.forEach(d => {
+            const steps = data.dims[String(d)].steps;
+            if (steps.length) {
+                const top = steps[steps.length - 1];
+                const knee = steps.find(s => s.coverage >= top.coverage * 0.9);
+                if (knee && knee.cost < top.cost) {
+                    best.push(`${d}D reaches ${pct(top.coverage)} at ${top.cost} ${costWord}, but ${pct(knee.coverage)} — `
+                        + `${((knee.coverage / top.coverage) * 100).toFixed(0)}% of it — already at ${knee.cost}`);
+                }
+            }
+        });
+        note.innerHTML = `At the current purity floor, the most ${data.x === 'mass' ? 'mass' : 'coverage'} any schema of each
+            dimensionality certifies with at most that many ${costWord}. A schema is on the staircase only if no schema of its
+            dimensionality beats it on both axes at once. The search ranks by ${data.x} alone, so everything left of each line's
+            right end is invisible in the branch list.
+            ${best.length ? '<br>' + escHtml(best.join('; ')) + '.' : ''}
+            <br>These are maxima over ${data.n_candidates} scored schemas, read after looking at them: the values are optimistic
+            and carry no uncorrected p-value. Opening a schema still reports out-of-sample coverage.`;
     }
 }
 
@@ -4076,7 +4383,7 @@ function closeTauPoint() {
     curvesState.pointData = null;
     const panel = document.getElementById('tauPointPanel');
     if (panel) panel.style.display = 'none';
-    if (viewMode === 'landscape' && curvesState.data) renderTauCurves();
+    if (viewMode === 'tradeoffs' && curvesState.data) renderTauCurves();
 }
 
 function renderTauPoint() {

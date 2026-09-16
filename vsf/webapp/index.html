@@ -16,8 +16,8 @@
     <!-- Plotly.js -->
     <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
 
-    <link rel="stylesheet" href="/static/css/styles.css?v=5031">
-    <script src="/static/js/app.js?v=5031" defer></script>
+    <link rel="stylesheet" href="/static/css/styles.css?v=5035">
+    <script src="/static/js/app.js?v=5035" defer></script>
 </head>
 
 <body>
@@ -145,6 +145,7 @@
                             <button type="button" class="view-mode-btn" data-mode="landscape" onclick="setViewMode('landscape')">Landscape</button>
                             <button type="button" class="view-mode-btn" data-mode="screen" onclick="setViewMode('screen')" title="The dataset screen: what each column is, which columns (nearly) determine each other, and which columns are excluded from the search.">Data</button>
                             <button type="button" class="view-mode-btn" data-mode="redundancy" onclick="setViewMode('redundancy')" title="Which centres of other schemas hold (almost) the same rows as the centres of the selected branch - or, on request, of every scored schema.">Redundancy</button>
+                            <button type="button" class="view-mode-btn" data-mode="tradeoffs" onclick="setViewMode('tradeoffs')" title="What coverage costs: how it moves with the purity floor, how many centres the schema that reaches it needs, and how much coverage is available at a given number of rules.">Trade-offs</button>
                         </div>
                     </div>
                     <div style="font-size: 0.85rem; color: var(--text-dim);"
@@ -261,6 +262,66 @@
                  exclusions and the leakage report for the current target. -->
             <div id="screenArea" style="display: none;">
                 <div id="screenPanel" class="sc-panel"></div>
+            </div>
+
+            <!-- Trade-offs (Project_Master_Document.md Section 4.9; hidden
+                 unless the Trade-offs view mode is on). What coverage costs,
+                 in three panels on two shared axes: the envelope over the
+                 purity floor, the centre count of the schema that reaches it
+                 (same x, so the two are read together), and - at the current
+                 floor - the Pareto staircase of coverage against the number
+                 of rules. All three are maxima over a scored family chosen by
+                 looking; the note under them says so. -->
+            <div id="tradeoffsArea" style="display: none;">
+                <div class="to-panel">
+                    <div class="to-controls">
+                        <label title="Envelope: the best schema of each dimensionality at every floor - the schema changes along the line, and the marks on the axis say where. Selected branch: the branch on screen, one fixed schema, so both panels describe the same thing throughout.">
+                            Track
+                            <select id="toTrack" onchange="renderTauCurves()">
+                                <option value="envelope">the best schema at each floor</option>
+                                <option value="branch">the selected branch</option>
+                            </select>
+                        </label>
+                        <label title="The unit both the centres panel and the staircase measure the description in. Centres: one rule per certified cell — but a 4D rule is longer than a 1D one, so the four dimensionalities are not on one scale. Conditions: the (column = value) pairs actually spelled out, d per centre, which puts them on one scale.">
+                            Cost in
+                            <select id="toCost" onchange="onCostChange()">
+                                <option value="centers">centres</option>
+                                <option value="conditions">conditions</option>
+                            </select>
+                        </label>
+                    </div>
+                    <div class="to-grid">
+                        <div class="to-chart">
+                            <div class="to-title" id="toCoverageTitle">Coverage vs. purity floor</div>
+                            <div id="to-coverage-plot" class="to-plot"></div>
+                        </div>
+                        <div class="to-chart">
+                            <div class="to-title" id="toCentresTitle">Centres vs. purity floor</div>
+                            <div id="to-centres-plot" class="to-plot"></div>
+                        </div>
+                        <!-- Which dimensionality leads, as one band on the same
+                             axis: the argmax of the panels above, so the
+                             crossings are read off directly instead of being
+                             eyeballed where the lines run close. -->
+                        <div class="to-chart">
+                            <div id="to-lead-plot" class="to-plot to-plot-strip"></div>
+                        </div>
+                    </div>
+                    <div id="toCurveNote" class="to-note">—</div>
+                    <div id="tauPointPanel" class="tau-point-panel" style="display: none;">
+                        <div class="landscape-cell-head">
+                            <span id="tauPointTitle">—</span>
+                            <button type="button" class="landscape-close" onclick="closeTauPoint()" title="Close">✕</button>
+                        </div>
+                        <div id="tauPointList" class="landscape-cell-list"></div>
+                        <div id="tauPointMore" class="landscape-cell-more"></div>
+                    </div>
+                    <div class="to-chart to-chart-wide">
+                        <div class="to-title" id="toFrontierTitle">Coverage vs. cost, at the current floor</div>
+                        <div id="to-frontier-plot" class="to-plot to-plot-tall"></div>
+                    </div>
+                    <div id="toFrontierNote" class="to-note">—</div>
+                </div>
             </div>
 
             <!-- 4D Slice Controller -->
@@ -468,23 +529,6 @@
                  schemas of that d whose coverage at that floor falls in the
                  point's ten-percent category; "open" renders one at that
                  floor (the boundary is moved to it). -->
-            <div id="tauCurvePanel" style="display: none;">
-                <div style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 8px;"
-                    title="For each dimensionality d, the best coverage any d-axis schema reaches as the certified boundary is raised, one percent at a time, from the base rate to 100%. Where a line for a larger d stops lying above the line for a smaller d, the extra axis has stopped paying for itself. The vertical line is the current boundary. Click a point to list the schemas behind it.">📈 Coverage vs. purity floor</div>
-                <div class="tau-curve-panel">
-                    <div id="tauCurveNote" class="tau-curve-note">—</div>
-                    <div id="tau-curve-plot"></div>
-                    <div id="tauPointPanel" class="tau-point-panel" style="display: none;">
-                        <div class="landscape-cell-head">
-                            <span id="tauPointTitle">—</span>
-                            <button type="button" class="landscape-close" onclick="closeTauPoint()" title="Close">✕</button>
-                        </div>
-                        <div id="tauPointList" class="landscape-cell-list"></div>
-                        <div id="tauPointMore" class="landscape-cell-more"></div>
-                    </div>
-                </div>
-            </div>
-
             <!-- Stroke Settings -->
             <div id="contourPanel">
                 <div style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 8px;">✨ Purity Contour (Focus)</div>

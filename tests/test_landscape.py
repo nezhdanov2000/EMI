@@ -400,3 +400,87 @@ def test_tau_curve_endpoints():
         assert status == 200 and absent["x"] == "mass" and absent["anchor"] == pytest.approx(1 - curves["anchor"])
     finally:
         srv.close()
+
+
+# ---------------------------------------------------------------------------
+# Cost-coverage frontier (Section 4.9)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("cost", ["centers", "conditions"])
+@pytest.mark.parametrize("direction", ["presence", "absence"])
+def test_frontier_is_the_pareto_staircase_of_the_landscape(cost, direction):
+    """
+    Every step must be Pareto-optimal for its dimensionality — no scored
+    schema of that d reaches at least as much x at no greater cost — the
+    staircase must be strictly increasing on both axes, and the last step
+    must carry the family's best x, the number the branch list reports.
+    """
+    df = _df(5)
+    X = df.drop(columns=["target"]).values
+    z = (df["target"].values == "yes").astype(int)
+    names = list(df.drop(columns=["target"]).columns)
+    spec = CenterSpec(tau=0.8)
+    L = compute_landscape(X, z, names, positive_class=1, center_spec=spec, direction=direction)
+    out = L.frontier(cost)
+    assert out["cost"] == cost
+    assert out["x"] == ("mass" if direction == "absence" else "coverage")
+    x = L.x_values()
+    c = L.n_centers if cost == "centers" else L.n_centers * L.d
+    seen = 0
+    for d_str, blk in out["dims"].items():
+        d = int(d_str)
+        fam = (L.d == d) & (L.n_centers > 0)
+        assert blk["n_family"] == int(np.count_nonzero(L.d == d))
+        assert blk["n_certifying"] == int(np.count_nonzero(fam))
+        steps = blk["steps"]
+        seen += len(steps)
+        if not np.any(fam):
+            assert steps == []
+            continue
+        assert steps, "a certifying dimensionality must have at least one step"
+        costs = [s["cost"] for s in steps]
+        covs = [s["coverage"] if direction == "presence" else s["mass"] for s in steps]
+        assert costs == sorted(costs) and len(set(costs)) == len(costs)
+        assert all(covs[i] < covs[i + 1] for i in range(len(covs) - 1))
+        assert max(covs) == pytest.approx(float(x[fam].max()))
+        for s in steps:
+            i = L.features.index(tuple(s["features"]))
+            assert int(c[i]) == s["cost"]
+            assert s["conditions"] == s["n_centers"] * d
+            # Pareto: no schema of this d dominates the step — none is at
+            # least as good on both axes and strictly better on one
+            others = fam.copy()
+            others[i] = False
+            dominates = ((x[others] >= x[i] - 1e-12) & (c[others] < c[i])) | (
+                (x[others] > x[i] + 1e-12) & (c[others] <= c[i]))
+            assert not np.any(dominates)
+            # and the step is the cheapest schema reaching at least this x
+            assert int(c[i]) == int(c[fam & (x >= x[i] - 1e-12)].min())
+    assert seen > 0
+    with pytest.raises(ValueError):
+        L.frontier("rows")
+
+
+def test_frontier_endpoint():
+    df = _df(6)
+    srv = _Server(df)
+    base = {"target": "target", "criterion": "yes", "tau": 0.8}
+    try:
+        status, out = srv.post("/api/landscape/frontier", base)
+        assert status == 200, out
+        assert out["cost"] == "centers" and out["x"] == "coverage"
+        assert out["n_candidates"] == 30 and out["tau"] == 0.8
+        status, cond = srv.post("/api/landscape/frontier", dict(base, cost="conditions"))
+        assert status == 200
+        # the same schemas, charged d times as much
+        for d_str in out["dims"]:
+            a = {tuple(s["features"]): s for s in out["dims"][d_str]["steps"]}
+            b = {tuple(s["features"]): s for s in cond["dims"][d_str]["steps"]}
+            for f, s in b.items():
+                assert s["cost"] == s["n_centers"] * int(d_str)
+            assert {round(s["coverage"], 12) for s in a.values()} == {round(s["coverage"], 12) for s in b.values()}
+        assert len(srv.httpd.landscape_cache) == 1  # served from the cached landscape
+        assert srv.post("/api/landscape/frontier", dict(base, cost="rows"))[0] == 400
+        assert srv.post("/api/landscape/frontier", dict(base, tau=0.01))[0] == 400
+    finally:
+        srv.close()

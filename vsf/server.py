@@ -676,6 +676,8 @@ class VSFRequestHandler(http.server.BaseHTTPRequestHandler):
             self._handle_landscape_api(cell=False)
         elif path == "/api/landscape/cell":
             self._handle_landscape_api(cell=True)
+        elif path == "/api/landscape/frontier":
+            self._handle_frontier_api()
         elif path == "/api/landscape/curves":
             self._handle_curves_api(at=False)
         elif path == "/api/landscape/at":
@@ -1068,6 +1070,39 @@ class VSFRequestHandler(http.server.BaseHTTPRequestHandler):
         except ValueError as exc:
             self._send_json_response(400, {"error": str(exc)})
         except Exception as e:
+            self._send_json_response(500, {"error": str(e)})
+
+    def _handle_frontier_api(self) -> None:
+        """
+        `/api/landscape/frontier`: the cost-coverage Pareto staircase of
+        every dimensionality at the request's certificate
+        (`vsf.avr.Landscape.frontier`). `cost` is "centers" (default) or
+        "conditions" (`d` x centres - what the description actually spells
+        out). Reads the cached landscape, so it costs a sort, not a search.
+        """
+        try:
+            req = self._read_json_body()
+            parsed = self._parse_landscape_request(req)
+            if parsed is None:
+                return
+            params, center_spec, _ = parsed
+            cost = req.get("cost", "centers")
+            if cost not in ("centers", "conditions"):
+                self._send_json_response(400, {"error": "cost must be 'centers' or 'conditions'"})
+                return
+            landscape = self.server.get_landscape(params, center_spec, params["_target"])
+            out = landscape.frontier(cost)
+            out.update({
+                "target": params["target_col"], "criterion": params["criterion"],
+                "direction": params["direction"], "tau": params["tau"], "rule": params["rule"],
+                "also": [list(p) for p in params["_target"].also],
+                "n_candidates": len(landscape),
+                "feature_names": landscape.feature_names,
+            })
+            self._send_json_response(200, out)
+        except ValueError as exc:
+            self._send_json_response(400, {"error": str(exc)})
+        except Exception as e:  # pragma: no cover - defensive
             self._send_json_response(500, {"error": str(e)})
 
     def _handle_screen_api(self) -> None:

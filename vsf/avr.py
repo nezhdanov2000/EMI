@@ -660,6 +660,59 @@ class Landscape:
             "schemas": [self._schema_dict(i) for i in page.tolist()],
         }
 
+    def frontier(self, cost: str = "centers") -> Dict[str, object]:
+        """
+        The cost-coverage PARETO STAIRCASE of every dimensionality at the
+        certificate this landscape was computed with: for each d, the
+        schemas that are not beaten on both axes at once - no other schema
+        of that d reaches at least as much x (coverage, or mass under
+        absence) at no greater cost. Reading a step: "with at most this
+        many rules, this is the most of the value any d-schema certifies".
+
+        The search ranks by x alone, so a schema that gives almost as much
+        for a fraction of the description never appears in the branch list;
+        this is where it does. `cost` is "centers" - one rule per certified
+        cell - or "conditions", the total number of (column = value) pairs
+        the description spells out, which is `d * n_centers` because every
+        centre of a d-schema fixes exactly d columns. The two orders differ:
+        a 2D schema with 6 centres costs 12 conditions, a 4D one with 4
+        costs 16.
+
+        Schemas certifying nothing are excluded (cost 0, coverage 0 is not
+        a trade-off). Ties on cost keep the highest x, then the lexically
+        first feature set, so the staircase is deterministic.
+        """
+        if cost not in ("centers", "conditions"):
+            raise ValueError(f"cost must be 'centers' or 'conditions', got {cost!r}")
+        x = self.x_values()
+        c = self.n_centers if cost == "centers" else self.n_centers * self.d
+        out: Dict[str, object] = {
+            "cost": cost,
+            "x": "mass" if self.direction == "absence" else "coverage",
+            "dims": {},
+        }
+        for d in sorted({int(v) for v in self.d.tolist()}):
+            idx = np.nonzero((self.d == d) & (self.n_centers > 0))[0]
+            steps: List[Dict[str, object]] = []
+            if idx.size:
+                order = np.lexsort((self.n_centers[idx], -x[idx], c[idx]))
+                idx = idx[order]
+                best = -1.0
+                for i in idx.tolist():
+                    if x[i] > best + 1e-12:
+                        best = float(x[i])
+                        steps.append(dict(
+                            self._schema_dict(i),
+                            cost=int(c[i]),
+                            conditions=int(self.n_centers[i]) * int(self.d[i]),
+                        ))
+            out["dims"][str(d)] = {
+                "steps": steps,
+                "n_family": int(np.count_nonzero(self.d == d)),
+                "n_certifying": int(np.count_nonzero((self.d == d) & (self.n_centers > 0))),
+            }
+        return out
+
     def _schema_dict(self, i: int) -> Dict[str, object]:
         feats = self.features[i]
         return {
