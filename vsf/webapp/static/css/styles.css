@@ -1256,3 +1256,79 @@ body.absence-mode .color-scale-handle--red { --handle-color: #64748b; }
 .crit-add:hover { background: rgba(99, 102, 241, 0.35); color: #fff; }
 .crit-item.conjunct > .crit-header { background: rgba(99, 102, 241, 0.10); }
 .crit-item.conjunct .crit-add { color: #fff; background: rgba(99, 102, 241, 0.45); }
+
+/* Post-selection check (Branches accordion) */
+.validation-panel {
+    margin: 0 1rem 1rem 1rem;
+    padding: 0.7rem 0.8rem;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 12px;
+    background: rgba(255, 255, 255, 0.02);
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+}
+
+.validation-title {
+    font-family: 'Outfit', sans-serif;
+    font-weight: 600;
+    font-size: 0.85rem;
+    color: var(--text-main, #e2e8f0);
+}
+
+.validation-controls {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.validation-controls select,
+.validation-controls input {
+    background: rgba(15, 23, 42, 0.8);
+    color: white;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 4px;
+    padding: 2px 6px;
+}
+
+.validation-controls input { width: 44px; }
+.validation-controls button { padding: 4px 10px; }
+.validation-controls button:disabled { opacity: 0.55; cursor: default; }
+
+.validation-body {
+    display: flex;
+    flex-direction: column;
+    gap: 0.55rem;
+    line-height: 1.45;
+}
+
+.validation-branch {
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
+    padding-top: 0.45rem;
+}
+
+.validation-branch-head {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    margin-bottom: 0.2rem;
+    color: var(--text-main, #e2e8f0);
+}
+
+.validation-warn { color: #f59e0b; }
+.validation-ok { color: var(--green); }
+.validation-dim { color: var(--text-dim); }
+
+.validation-cells {
+    margin: 0.2rem 0 0 0;
+    padding-left: 1rem;
+}
+
+.branch-validation-line {
+    margin-top: 0.3rem;
+    font-size: 0.72rem;
+    color: var(--text-dim);
+}

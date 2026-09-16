@@ -88,7 +88,7 @@ import math
 from collections import Counter
 from dataclasses import dataclass
 from itertools import combinations
-from typing import Dict, Final, List, Literal, Optional, Sequence, Tuple
+from typing import Callable, Dict, Final, List, Literal, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -123,9 +123,11 @@ __all__ = [
     "SchemaStability",
     "SelectiveCertificate",
     "SelectiveDiscovery",
+    "certification_passes",
     "certify_discovery",
     "exact_upper_tail",
     "family_test_count",
+    "nested_passes",
     "nested_crossvalidation",
     "random_halves",
     "schema_stability",
@@ -134,6 +136,8 @@ __all__ = [
 CertificationMethod = Literal["family_bonferroni", "split"]
 BranchMultiplicity = Literal["all_branches", "per_branch"]
 ScreenRule = Literal["purity", "all"]
+#: `(done, total)` callback, counted in exhaustive passes over the family.
+Progress = Callable[[int, int], None]
 
 _TAIL_MEMO_MAX_ENTRIES: Final[int] = 20_000
 _TAIL_MEMO: Dict[Tuple[float, int], np.ndarray] = {}
@@ -333,6 +337,16 @@ def family_test_count(factory: _CandidateFactory, max_d: int, min_samples: int) 
     return total
 
 
+def certification_passes(method: CertificationMethod) -> int:
+    """Exhaustive passes over the candidate family `certify_discovery` makes."""
+    return 2 if method == "family_bonferroni" else 1
+
+
+def nested_passes(n_splits: int, n_repeats: int) -> int:
+    """Exhaustive searches `nested_crossvalidation` runs: all rows, then every split."""
+    return 1 + n_splits * n_repeats
+
+
 def schema_stability(
     winners: Sequence[Tuple[int, ...]], reference: Tuple[int, ...]
 ) -> SchemaStability:
@@ -451,6 +465,7 @@ def certify_discovery(
     random_state: Optional[int] = 0,
     direction: Direction = "presence",
     prune_dependent: bool = False,
+    progress: Optional[Progress] = None,
 ) -> SelectiveDiscovery:
     """
     Branch discovery whose certificates hold for the REPORTED schemas.
@@ -461,6 +476,10 @@ def certify_discovery(
     (default) makes one family of the tests of all reported dimensionalities
     under `"split"`, since the display shows them together;
     `"family_bonferroni"` always covers every dimensionality.
+
+    `progress` is called after each exhaustive pass over the candidate
+    family: two passes for `"family_bonferroni"` (count, search), one for
+    `"split"` (`certification_passes`).
     """
     spec = center_spec if center_spec is not None else CenterSpec()
     _require_certifiable(spec)
@@ -481,14 +500,22 @@ def certify_discovery(
     z64 = z.astype(np.int64)
     m = max(1, spec.min_samples)
 
+    total_passes = certification_passes(method)
+
+    def tick(done: int) -> None:
+        if progress is not None:
+            progress(done, total_passes)
+
     if method == "family_bonferroni":
         t_family = family_test_count(factory, eff_d, m)
+        tick(1)
         level = spec.alpha / t_family if t_family > 0 else spec.alpha
         search_spec = CenterSpec(
             tau=spec.tau, alpha=level, rule="certified", min_samples=m,
             method="clopper-pearson", multiplicity="none",
         )
         best = _exhaustive_search(factory, z64, 2, [1], search_spec, eff_d)[0]
+        tick(2)
         branches: Dict[int, SelectiveCertificate] = {}
         for d, (_, combo) in sorted(best.items()):
             codes, n_cells = factory.codes(tuple(combo))
@@ -515,6 +542,7 @@ def certify_discovery(
     # ---- split -------------------------------------------------------------
     rows_a, rows_b = random_halves(factory.n_samples, random_state)
     best = _exhaustive_search(factory, z64, 2, [1], spec, eff_d, rows=rows_a)[0]
+    tick(1)
     z_a, z_b = z[rows_a], z[rows_b]
     per_branch: Dict[int, Tuple[Tuple[int, ...], np.ndarray, np.ndarray, np.ndarray, np.ndarray]] = {}
     for d, (_, combo) in sorted(best.items()):
@@ -575,6 +603,7 @@ def nested_crossvalidation(
     random_state: Optional[int] = 0,
     direction: Direction = "presence",
     prune_dependent: bool = False,
+    progress: Optional[Progress] = None,
 ) -> NestedCVResult:
     """
     Out-of-sample coverage of the whole procedure "search, then select
@@ -589,7 +618,8 @@ def nested_crossvalidation(
     target). `fixed_schema` is the existing estimate for the full-data
     winner on the same folds, so `nested` and `fixed_schema` are paired.
 
-    Cost: n_splits x n_repeats full searches.
+    Cost: 1 + n_splits x n_repeats full searches (`nested_passes`);
+    `progress` is called after each.
     """
     spec = center_spec if center_spec is not None else CenterSpec()
     if not (1 <= max_d <= MAX_BRANCH_D):
@@ -613,6 +643,9 @@ def nested_crossvalidation(
 
     full = _exhaustive_search(factory, z64, 2, [1], spec, eff_d)[0]
     splits = stratified_repeated_kfold(z, n_splits, n_repeats, random_state)
+    total_passes = nested_passes(n_splits, n_repeats)
+    if progress is not None:
+        progress(1, total_passes)
     n_obs = len(splits)
     cov: Dict[int, np.ndarray] = {d: np.zeros(n_obs) for d in full}
     pur: Dict[int, np.ndarray] = {d: np.full(n_obs, np.nan) for d in full}
@@ -641,6 +674,8 @@ def nested_crossvalidation(
             cov[d][i] = (k_sel / pos_te) if pos_te > 0 else 0.0
             if n_sel > 0:
                 pur[d][i] = k_sel / n_sel
+        if progress is not None:
+            progress(i + 2, total_passes)
 
     branches: Dict[int, NestedCVBranch] = {}
     for d, (_, combo) in sorted(full.items()):

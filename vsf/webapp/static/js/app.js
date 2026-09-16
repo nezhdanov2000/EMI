@@ -810,6 +810,13 @@ function renderCertificateSummary(response) {
     const el = document.getElementById('certSummary');
     if (!el) return;
     el.innerHTML = '';
+    if (readCertRule() === 'certified' && !(response && response.schema && response.schema.selected_from_landscape)) {
+        // Section 4.5: the per-schema certificate assumes the schema was
+        // fixed in advance; the search chose it among many.
+        el.textContent = 'Strict mode certifies the cells of each branch as if its schema had been chosen in advance. '
+            + 'The search chose it among many, so these certificates are optimistic; '
+            + '“Validate” under Branches gives one that stays valid after the search.';
+    }
     if (response && response.schema && response.schema.selected_from_landscape) {
         let note = 'Schema opened from the landscape: '
             + (response.schema.feature_names || []).join(' + ')
@@ -966,6 +973,7 @@ function loadBranchesResponse(data, preserveBranch = false) {
     currentBranchesResponse = data;
     renderCertificateSummary(data);
     onAnalysisLoadedForLandscape(data);
+    onAnalysisLoadedForValidation(data);
     stopSlicePlayback();
     activeSliceIndex = null;
     currentRenderedDim = null;
@@ -1041,6 +1049,7 @@ function renderBranchSelector(response) {
                 ${headline}
             </div>
             <div class="branch-features">${features || '—'}</div>
+            ${validationCardLine(dKey)}
         `;
         card.onclick = () => selectBranch(dKey);
         container.appendChild(card);
@@ -4444,4 +4453,230 @@ async function openSchemaAtTau(features, tau) {
         syncColorScaleFromInputs();
     }
     await runAnalysis(lastTargetCol, lastCriterion, features.slice());
+}
+
+// ---------------------------------------------------------------------------
+// Post-selection check (/api/validate; Project_Master_Document.md 4.14)
+//
+// The branch cards and the lattice report numbers computed on the rows that
+// chose the schema. The check repeats the search on held-out folds (nested
+// cross-validation, with how often the same schema wins) and certifies
+// cells with a method that stays valid after the search. It runs on the
+// server in the background; the page polls with the same request body.
+// ---------------------------------------------------------------------------
+let validationState = { key: null, data: null, timer: null, error: null };
+const VALIDATION_POLL_MS = 700;
+const VALIDATION_UNSTABLE_SHARE = 0.5;
+
+function validationBody() {
+    const p = landscapeParams();
+    if (!p || p.criterion === null || p.criterion === undefined) return null;
+    const sel = document.getElementById('validationMethod');
+    const rep = document.getElementById('validationRepeats');
+    const repeats = rep ? Math.max(1, Math.min(10, Math.round(Number(rep.value)) || 5)) : 5;
+    return Object.assign({}, p, { method: sel ? sel.value : 'split', repeats });
+}
+
+function stopValidationPolling() {
+    if (validationState.timer !== null) {
+        clearTimeout(validationState.timer);
+        validationState.timer = null;
+    }
+}
+
+function resetValidationFor(body) {
+    stopValidationPolling();
+    validationState = { key: body ? JSON.stringify(body) : null, data: null, timer: null, error: null };
+}
+
+function onAnalysisLoadedForValidation(data) {
+    const panel = document.getElementById('validationPanel');
+    const opened = Boolean(data && data.schema && data.schema.selected_from_landscape);
+    const body = validationBody();
+    if (panel) panel.style.display = (!opened && body) ? '' : 'none';
+    const key = body ? JSON.stringify(body) : null;
+    if (key !== validationState.key) resetValidationFor(body);
+    renderValidation();
+}
+
+function onValidationOptionsChange() {
+    resetValidationFor(validationBody());
+    renderValidation();
+    if (currentBranchesResponse) renderBranchSelector(currentBranchesResponse);
+}
+
+async function runValidation() {
+    const body = validationBody();
+    if (!body) return;
+    const key = JSON.stringify(body);
+    if (key !== validationState.key) resetValidationFor(body);
+    stopValidationPolling();
+    validationState.error = null;
+    // The button restarts a failed job; the polls that follow do not.
+    await pollValidation(key, body, true);
+}
+
+async function pollValidation(key, body, retry = false) {
+    validationState.timer = null;
+    try {
+        const res = await fetch('/api/validate', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(retry ? Object.assign({ retry: true }, body) : body),
+        });
+        const data = await res.json();
+        if (key !== validationState.key) return; // the analysis changed meanwhile
+        if (!res.ok) {
+            validationState.error = data.error || `HTTP ${res.status}`;
+            validationState.data = null;
+        } else {
+            validationState.error = data.status === 'error' ? data.error : null;
+            validationState.data = data;
+            if (data.status === 'running') {
+                validationState.timer = setTimeout(() => pollValidation(key, body), VALIDATION_POLL_MS);
+            }
+        }
+    } catch (err) {
+        if (key !== validationState.key) return;
+        validationState.error = 'Validation request failed: ' + err.message;
+    }
+    renderValidation();
+    if (validationState.data && validationState.data.status === 'done' && currentBranchesResponse) {
+        renderBranchSelector(currentBranchesResponse);
+    }
+}
+
+function fmtCV(cv) {
+    if (!cv) return '—';
+    return `${pct(cv.mean)} ± ${pct(cv.se)}`;
+}
+
+function conditionsText(conditions) {
+    return (conditions || []).map(c => {
+        const vals = c.values || [];
+        return vals.length === 1
+            ? `${c.column} = ${vals[0]}`
+            : `${c.column} ∈ {${vals.join(', ')}}`;
+    }).join(' ∧ ');
+}
+
+function validationResult() {
+    const d = validationState.data;
+    return (d && d.status === 'done' && d.result) ? d.result : null;
+}
+
+// One line under a branch card, once the check has finished.
+function validationCardLine(dKey) {
+    const r = validationResult();
+    if (!r || !r.nested || !r.nested.branches) return '';
+    const nb = r.nested.branches[dKey];
+    if (!nb) return '';
+    const st = nb.stability || {};
+    const unstable = st.share_same < VALIDATION_UNSTABLE_SHARE;
+    const cb = r.certificate && r.certificate.branches ? r.certificate.branches[dKey] : null;
+    const certText = cb
+        ? (cb.n_certified > 0 ? `${cb.n_certified} valid certificate${cb.n_certified === 1 ? '' : 's'}` : 'no valid certificate')
+        : '';
+    return `<div class="branch-validation-line" title="Held-out coverage of the whole search (nested cross-validation) and how often the same schema wins on a training fold.">
+        held-out ${escHtml(pct(nb.nested.mean))}
+        · <span class="${unstable ? 'validation-warn' : 'validation-ok'}">same schema ${escHtml(pct(st.share_same, 0))}</span>
+        ${certText ? '· ' + escHtml(certText) : ''}
+    </div>`;
+}
+
+function renderValidation() {
+    const btn = document.getElementById('btnValidate');
+    const prog = document.getElementById('validationProgress');
+    const fill = document.getElementById('validationProgressFill');
+    const label = document.getElementById('validationProgressLabel');
+    const bodyEl = document.getElementById('validationBody');
+    if (!bodyEl) return;
+    const data = validationState.data;
+    const running = Boolean(data && data.status === 'running');
+    if (btn) {
+        const done = Boolean(validationResult());
+        // A finished check is cached on the server for these settings; change
+        // the method, the repeats or the analysis to run another one.
+        btn.disabled = running || done;
+        btn.textContent = running ? 'Checking…' : (done ? 'Checked' : (validationState.error ? 'Retry' : 'Validate'));
+    }
+    if (prog) prog.style.display = running ? '' : 'none';
+    if (running && data.progress) {
+        const frac = data.progress.total ? data.progress.done / data.progress.total : 0;
+        if (fill) fill.style.width = `${(frac * 100).toFixed(0)}%`;
+        if (label) label.textContent = `${data.progress.done} / ${data.progress.total} searches · ${(data.elapsed || 0).toFixed(0)} s`;
+    }
+    if (validationState.error) {
+        bodyEl.innerHTML = `<div class="validation-warn">${escHtml(validationState.error)}</div>`;
+        return;
+    }
+    const r = validationResult();
+    if (!r) {
+        bodyEl.innerHTML = running ? '' : `<div class="validation-dim">
+            Repeats the search on held-out folds (${escHtml(String((validationBody() || {}).repeats || 5))} × 5 folds)
+            and certifies cells with a guarantee that holds after the search. Costs several full searches.</div>`;
+        return;
+    }
+    const nested = r.nested || {};
+    const cert = r.certificate || {};
+    const parts = [];
+    if (nested.undetermined_reason) {
+        parts.push(`<div class="validation-warn">Held-out coverage undetermined: ${escHtml(nested.undetermined_reason)}</div>`);
+    } else {
+        const dStar = (nested.d_star === null || nested.d_star === undefined)
+            ? 'none — no dimensionality has held-out coverage distinguishable from zero'
+            : `${nested.d_star}D`;
+        parts.push(`<div>Smallest sufficient dimensionality on held-out data: <strong>${escHtml(dStar)}</strong></div>`);
+    }
+    const methodName = cert.method === 'split' ? 'split halves' : 'all schemas (Bonferroni)';
+    parts.push(`<div class="validation-dim">Certificate (${escHtml(methodName)}): ${escHtml(cert.guarantee || '')}</div>`);
+
+    const dims = (currentBranchesResponse && currentBranchesResponse.branch_dims) || [];
+    dims.map(String).forEach(dKey => {
+        const nb = nested.branches ? nested.branches[dKey] : null;
+        const cb = cert.branches ? cert.branches[dKey] : null;
+        const shown = currentBranchesResponse.branches[dKey];
+        const inSample = shown && shown.centers ? shown.centers.coverage : null;
+        const lines = [];
+        if (nb) {
+            const st = nb.stability || {};
+            const unstable = st.share_same < VALIDATION_UNSTABLE_SHARE;
+            lines.push(`<div title="The search is repeated on every training fold and that fold's own winner is applied to its held-out fold.">
+                Held-out coverage <strong>${escHtml(fmtCV(nb.nested))}</strong>, purity ${escHtml(pct(nb.nested.purity))}</div>`);
+            lines.push(`<div class="validation-dim" title="The schema on screen with its centres re-selected on each training fold, and its coverage on all rows (the number on the card).">
+                This schema re-fitted: ${escHtml(fmtCV(nb.fixed_schema))} · on all rows: ${escHtml(pct(inSample))}</div>`);
+            const shownSet = JSON.stringify([...((shown && shown.selected_features) || [])].sort());
+            const modalSet = JSON.stringify([...(st.modal || [])].sort());
+            const modalNote = (unstable && modalSet !== shownSet)
+                ? `; most often: ${escHtml((st.modal || []).join(' + '))} (${escHtml(pct(st.modal_share, 0))})` : '';
+            lines.push(`<div class="${unstable ? 'validation-warn' : 'validation-ok'}">
+                Same schema on ${escHtml(pct(st.share_same, 0))} of ${escHtml(String(st.n_resamples))} training folds
+                (${escHtml(String(st.n_distinct))} distinct${modalNote})</div>`);
+        }
+        if (cb) {
+            const shownFeatures = (shown && shown.selected_features) || [];
+            const sameSchema = JSON.stringify(cb.features) === JSON.stringify(shownFeatures);
+            const where = cert.method === 'split'
+                ? `schema chosen on half A (${escHtml(String(cert.search_rows))} rows)${sameSchema ? '' : `: <span class="validation-warn">${escHtml(cb.features.join(' + '))}</span>`}, tested on half B (${escHtml(String(cert.eval_rows))} rows)`
+                : `schema ${sameSchema ? 'as shown' : `<span class="validation-warn">${escHtml(cb.features.join(' + '))}</span>`}, tested on all rows`;
+            const scope = cert.method === 'split' ? ' in half B' : '';
+            let certLine = `<div>Certified: <strong>${escHtml(String(cb.n_certified))}</strong> of ${escHtml(String(cb.n_tested))} tested cell${cb.n_tested === 1 ? '' : 's'}`
+                + (cb.n_certified > 0 ? `, covering ${escHtml(pct(cb.coverage_eval))} of the target value${scope}` : '')
+                + `; ${where}.</div>`;
+            if (cb.cells && cb.cells.length) {
+                certLine += '<ul class="validation-cells">' + cb.cells.map(c =>
+                    `<li>${escHtml(conditionsText(c.conditions))} — ${escHtml(String(c.k))}/${escHtml(String(c.n))}
+                     (${escHtml(pct(c.purity))}, at least ${escHtml(pct(c.purity_lower))}; adjusted p ${escHtml(c.p_adjusted.toExponential(1))})</li>`
+                ).join('') + (cb.cells_truncated ? '<li class="validation-dim">…</li>' : '') + '</ul>';
+            }
+            lines.push(certLine);
+        }
+        if (lines.length) {
+            parts.push(`<div class="validation-branch">
+                <div class="validation-branch-head"><span class="branch-dim-badge">${escHtml(dKey)}D</span>
+                ${escHtml((shown && shown.selected_features || []).join(' + '))}</div>
+                ${lines.join('')}
+            </div>`);
+        }
+    });
+    bodyEl.innerHTML = parts.join('');
 }

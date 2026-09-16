@@ -71,6 +71,30 @@
                 <div id="branchList" class="branch-list">
 
                 </div>
+                <!-- Post-selection check of the analysis on screen
+                     (vsf.selective, Project_Master_Document.md Section 4.14). -->
+                <div id="validationPanel" class="validation-panel" style="display: none;">
+                    <div class="validation-title"
+                        title="The green cells and the coverage above are computed on the same rows that chose the schema. This check repeats the whole search on held-out data and certifies cells in a way that stays valid after the search.">
+                        Check this result</div>
+                    <div class="validation-controls">
+                        <select id="validationMethod" onchange="onValidationOptionsChange()"
+                            title="Split: search on a random half, certify on the other (more power on large data). All schemas: Bonferroni over every cell of every scored schema (no data spent on the search).">
+                            <option value="split">Certificate: split halves</option>
+                            <option value="family_bonferroni">Certificate: all schemas</option>
+                        </select>
+                        <label title="Repetitions of the 5-fold split; each costs five full searches.">×
+                            <input type="number" id="validationRepeats" min="1" max="10" step="1" value="5"
+                                onchange="onValidationOptionsChange()">
+                        </label>
+                        <button id="btnValidate" class="filter-btn run-btn" onclick="runValidation()">Validate</button>
+                    </div>
+                    <div id="validationProgress" class="scan-progress-wrap" style="display: none;">
+                        <div class="scan-progress-track"><div class="scan-progress-fill" id="validationProgressFill"></div></div>
+                        <div class="scan-progress-label" id="validationProgressLabel">—</div>
+                    </div>
+                    <div id="validationBody" class="validation-body"></div>
+                </div>
             </div>
         </aside>
 

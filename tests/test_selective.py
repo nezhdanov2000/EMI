@@ -375,3 +375,175 @@ def test_nested_cv_is_undetermined_below_the_power_floor() -> None:
     assert res.undetermined_reason is not None
     assert res.branches == {}
     assert res.select_dimensionality() is None
+
+
+# ---------------------------------------------------------------------------
+# /api/validate
+# ---------------------------------------------------------------------------
+import json  # noqa: E402
+import threading  # noqa: E402
+import time  # noqa: E402
+import urllib.error  # noqa: E402
+import urllib.request  # noqa: E402
+
+import pandas as pd  # noqa: E402
+
+import vsf.server as vsf_server  # noqa: E402
+from vsf.server import _build_server  # noqa: E402
+
+
+def _planted_frame(seed: int = 21, n: int = 900) -> pd.DataFrame:
+    X, Z = _planted(seed, n)
+    df = pd.DataFrame(X, columns=["a", "b", "c", "e"])
+    df["target"] = np.where(Z == "1", "yes", "no")
+    return df
+
+
+class _Server:
+    def __init__(self, df: pd.DataFrame) -> None:
+        self.httpd = _build_server(df, host="127.0.0.1", port=0, prefetch=False)
+        self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+        self.thread.start()
+        self.port = self.httpd.server_address[1]
+
+    def post(self, body: dict) -> Tuple[int, dict]:
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}/api/validate",
+            data=json.dumps(body).encode("utf-8"),
+            headers={"Content-Type": "application/json"}, method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                return r.status, json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read())
+
+    def wait(self, body: dict, timeout: float = 60.0) -> dict:
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            status, data = self.post(body)
+            assert status == 200, data
+            if data["status"] != "running":
+                return data
+            time.sleep(0.05)
+        raise AssertionError("validation did not finish")
+
+    def close(self) -> None:
+        self.httpd.shutdown()
+        self.thread.join(timeout=5)
+        self.httpd.server_close()
+
+
+_BODY = {"target": "target", "criterion": "yes", "tau": 0.8, "alpha": 0.05,
+         "method": "family_bonferroni", "repeats": 1}
+
+
+def test_validate_endpoint_reports_the_library_results() -> None:
+    df = _planted_frame()
+    srv = _Server(df)
+    try:
+        status, first = srv.post(_BODY)
+        assert status == 200 and first["status"] in ("running", "done")
+        assert first["progress"]["total"] == 2 + 1 + 5
+        data = srv.wait(_BODY)
+        assert data["status"] == "done", data["error"]
+        assert data["progress"]["done"] == data["progress"]["total"]
+        result = data["result"]
+    finally:
+        srv.close()
+
+    X = df[["a", "b", "c", "e"]].values
+    Z = (df["target"] == "yes").astype(int).values
+    spec = CenterSpec(tau=0.8, alpha=0.05)
+    cert = certify_discovery(X, Z, ["a", "b", "c", "e"], positive_class=1, center_spec=spec,
+                             method="family_bonferroni")
+    nested = nested_crossvalidation(X, Z, ["a", "b", "c", "e"], positive_class=1,
+                                    center_spec=spec, n_repeats=1)
+    for d, br in cert.branches.items():
+        got = result["certificate"]["branches"][str(d)]
+        assert got["features"] == list(br.feature_names)
+        assert got["n_certified"] == br.n_certified
+        assert got["n_tested"] == len(br.cells)
+        assert got["coverage_eval"] == pytest.approx(br.coverage_eval)
+    assert result["certificate"]["n_tests"]["2"] == cert.n_tests[2]
+    planted = result["certificate"]["branches"]["2"]["cells"][0]
+    assert planted["conditions"] == [
+        {"column": "a", "values": ["0"]}, {"column": "b", "values": ["0"]},
+    ]
+    for d, nb in nested.branches.items():
+        got = result["nested"]["branches"][str(d)]
+        assert got["nested"]["mean"] == pytest.approx(nb.nested.mean)
+        assert got["fixed_schema"]["mean"] == pytest.approx(nb.fixed_schema.mean)
+        assert got["stability"]["share_same"] == pytest.approx(nb.stability.share_equal_to_reference)
+        assert got["winner"] == list(nb.full_data_winner_names)
+    assert result["nested"]["d_star"] == nested.select_dimensionality()
+
+
+def test_validate_endpoint_rejects_invalid_requests() -> None:
+    srv = _Server(_planted_frame())
+    try:
+        for patch in (
+            {"criterion": None},
+            {"method": "westfall_young"},
+            {"repeats": 0},
+            {"repeats": 11},
+            {"alpha": 0.1},
+            {"tau": 1.0},
+            {"target": "nope"},
+        ):
+            status, data = srv.post({**_BODY, **patch})
+            assert status == 400, (patch, data)
+            assert data["error"]
+    finally:
+        srv.close()
+
+
+def test_validate_endpoint_runs_one_job_at_a_time_and_retries_failures(monkeypatch: pytest.MonkeyPatch) -> None:
+    gate = threading.Event()
+    calls = {"n": 0}
+    real = vsf_server.nested_crossvalidation
+
+    def gated(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            gate.wait(timeout=30)
+            raise RuntimeError("injected failure")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(vsf_server, "nested_crossvalidation", gated)
+    srv = _Server(_planted_frame())
+    try:
+        status, data = srv.post(_BODY)
+        assert status == 200 and data["status"] == "running"
+        status, busy = srv.post({**_BODY, "tau": 0.85})
+        assert status == 409 and busy["running"]["tau"] == 0.8
+        status, same = srv.post(_BODY)  # polling the running job is not a conflict
+        assert status == 200 and same["status"] == "running"
+        gate.set()
+        failed = srv.wait(_BODY)
+        assert failed["status"] == "error" and "injected failure" in failed["error"]
+        status, again = srv.post(_BODY)  # a poll keeps reporting the failure
+        assert status == 200 and again["status"] == "error"
+        status, restarted = srv.post({**_BODY, "retry": True})
+        assert status == 200 and restarted["status"] in ("running", "done")
+        retried = srv.wait(_BODY)
+        assert retried["status"] == "done"
+        assert calls["n"] == 2
+    finally:
+        gate.set()
+        srv.close()
+
+
+def test_the_page_ships_the_validation_panel() -> None:
+    srv = _Server(_planted_frame(n=200))
+    try:
+        base = f"http://127.0.0.1:{srv.port}"
+        with urllib.request.urlopen(base + "/", timeout=10) as r:
+            html = r.read().decode("utf-8")
+        with urllib.request.urlopen(base + "/static/js/app.js", timeout=10) as r:
+            js = r.read().decode("utf-8")
+    finally:
+        srv.close()
+    for element_id in ("validationPanel", "validationMethod", "validationRepeats", "btnValidate", "validationBody"):
+        assert f'id="{element_id}"' in html
+    assert "'/api/validate'" in js and "function runValidation" in js and "retry: true" in js

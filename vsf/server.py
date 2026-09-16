@@ -139,6 +139,17 @@ from the feature space (`_Target`, `_resolve_target`, `_target_arrays`).
 any search. This supersedes the v1.0 `composite_target` builder removed
 above: that one neither excluded the target's columns from the features
 nor anchored the certificate to the conjunction's base rate.
+
+Validation (Section 4.14): `/api/validate` checks the analysis the page
+shows with the post-selection machinery of `vsf.selective` - a certificate
+that holds for the reported schemas (`method`: "split" or
+"family_bonferroni") and the nested cross-validated coverage with schema
+stability (`repeats` x 5 folds). It costs several full searches, so it runs
+in a background thread: the first request starts the job and every request
+with the same body returns its current state (`status`, `progress`, and
+`result` once done). One validation runs at a time per server; a request
+for a different analysis while one runs gets 409. Finished results are
+kept per request key.
 """
 
 from __future__ import annotations
@@ -172,6 +183,14 @@ from .avr import (
 from .centers import CenterSpec
 from .metrics import benjamini_hochberg
 from .screen import DEFAULT_MIN_STRENGTH, screen_dataset, target_report
+from .selective import (
+    MAX_ALPHA as _VALIDATE_MAX_ALPHA,
+    certification_passes,
+    certify_discovery,
+    nested_crossvalidation,
+    nested_passes,
+)
+from .avr import _prepare_search
 from .redundancy import DEFAULT_GROUP_THRESHOLD, CenterCatalog, collect_centers
 from .vis import Translations, catalog_from_dataframe, prepare_visualization_payload
 
@@ -215,6 +234,14 @@ _CURVES_CACHE_MAX_ENTRIES = 8
 _CENTERS_CACHE_MAX_ENTRIES = 4
 #: Dataset screens kept per server (one per set of screened columns).
 _SCREEN_CACHE_MAX_ENTRIES = 8
+#: Finished `/api/validate` results kept per server.
+_VALIDATE_CACHE_MAX_ENTRIES = 16
+#: Repetitions of the 5-fold split `/api/validate` accepts (each is five
+#: full searches).
+_VALIDATE_MAX_REPEATS = 10
+_VALIDATE_FOLDS = 5
+#: Certified cells listed per branch in a validation response.
+_VALIDATE_MAX_CELLS = 50
 #: Page sizes the redundant-centres endpoints accept at most.
 _CENTERS_MAX_LIMIT = 500
 #: Grid step of the tau-curves, in percent of purity.
@@ -457,6 +484,11 @@ class _VSFServer(http.server.ThreadingHTTPServer):
         self.scan_lock = threading.Lock()
         self.scan_job: Optional[Dict[str, Any]] = None
         self.scan_cancel_event: Optional[threading.Event] = None
+        # `/api/validate` jobs by request key (running or finished, LRU over
+        # finished ones) and the key of the one running now, if any.
+        self.validate_lock = threading.Lock()
+        self.validate_jobs: "OrderedDict[Tuple[Any, ...], Dict[str, Any]]" = OrderedDict()
+        self.validate_running: Optional[Tuple[Any, ...]] = None
 
     # -- analyze-response cache ---------------------------------------------
     def cache_get(self, key: Tuple[Any, ...]) -> Optional[bytes]:
@@ -692,6 +724,8 @@ class VSFRequestHandler(http.server.BaseHTTPRequestHandler):
             self._handle_centers_api(detail=False, branch=True)
         elif path == "/api/screen":
             self._handle_screen_api()
+        elif path == "/api/validate":
+            self._handle_validate_api()
         else:
             self._read_json_body()
             self.send_error(404, "Endpoint not found")
@@ -1517,6 +1551,97 @@ class VSFRequestHandler(http.server.BaseHTTPRequestHandler):
         except Exception as e:
             self._send_json_response(500, {"error": str(e)})
 
+    def _handle_validate_api(self) -> None:
+        """
+        `/api/validate`: start, or report, the post-selection check of one
+        analysis (see the module docstring). The body is an analysis body
+        (target, criterion, also, tau, alpha, rule, min_samples, direction,
+        drop, prune) plus `method` ("split" default, or
+        "family_bonferroni") and `repeats` (1..10, default 5). A failed job
+        is returned as such until a request carries `retry: true`.
+        """
+        try:
+            req = self._read_json_body()
+            parsed = self._parse_landscape_request(req)
+            if parsed is None:
+                return
+            params, center_spec, _ = parsed
+            target = params["_target"]
+            if target.criterion is None:
+                self._send_json_response(400, {"error": "validation needs an explicit criterion (a named value)"})
+                return
+            method = req.get("method", "split")
+            if method not in ("split", "family_bonferroni"):
+                self._send_json_response(400, {"error": "method must be 'split' or 'family_bonferroni'"})
+                return
+            try:
+                repeats = int(req.get("repeats", 5))
+            except (TypeError, ValueError):
+                self._send_json_response(400, {"error": "repeats must be an integer"})
+                return
+            if not (1 <= repeats <= _VALIDATE_MAX_REPEATS):
+                self._send_json_response(400, {"error": f"repeats must be in [1, {_VALIDATE_MAX_REPEATS}]"})
+                return
+            if not (0.0 < center_spec.tau < 1.0):
+                self._send_json_response(400, {"error": "a certificate needs a purity floor below 100 %"})
+                return
+            if center_spec.alpha > _VALIDATE_MAX_ALPHA:
+                self._send_json_response(400, {"error": f"alpha must be at most {_VALIDATE_MAX_ALPHA} for a valid certificate"})
+                return
+            key = _analyze_key(params) + (("method", method), ("repeats", repeats))
+            server = self.server
+            with server.validate_lock:
+                job = server.validate_jobs.get(key)
+                if job is not None and job["status"] == "error" and bool(req.get("retry", False)):
+                    # A failed job is reported to every poll; only an explicit
+                    # retry (the user pressing the button again) restarts it,
+                    # so a polling page cannot loop on a deterministic failure.
+                    del server.validate_jobs[key]
+                    job = None
+                if job is None:
+                    if server.validate_running is not None:
+                        running = server.validate_jobs.get(server.validate_running, {})
+                        self._send_json_response(409, {
+                            "error": "another validation is running; wait for it to finish",
+                            "running": running.get("request"),
+                        })
+                        return
+                    total = certification_passes(method) + nested_passes(_VALIDATE_FOLDS, repeats)
+                    job = {
+                        "status": "running",
+                        "progress": {"done": 0, "total": total},
+                        "request": {
+                            "target": target.target_col, "criterion": target.criterion,
+                            "also": [list(pair) for pair in target.also],
+                            "tau": center_spec.tau, "alpha": center_spec.alpha,
+                            "rule": center_spec.rule, "min_samples": center_spec.min_samples,
+                            "direction": params["direction"], "drop": list(params["drop"]),
+                            "prune": params["prune"], "method": method, "repeats": repeats,
+                        },
+                        "result": None,
+                        "error": None,
+                        "started": time.time(),
+                        "elapsed": 0.0,
+                    }
+                    server.validate_jobs[key] = job
+                    server.validate_running = key
+                    thread = threading.Thread(
+                        target=_run_validation,
+                        args=(server, key, params, center_spec, target, method, repeats),
+                        daemon=True,
+                    )
+                    thread.start()
+                else:
+                    server.validate_jobs.move_to_end(key)
+                snapshot = dict(job)
+                if snapshot["status"] == "running":
+                    snapshot["elapsed"] = time.time() - snapshot["started"]
+            self._send_json_response(200, snapshot)
+        except ValueError as exc:
+            self._send_json_response(400, {"error": str(exc)})
+        except Exception as e:  # pragma: no cover - defensive
+            self._send_json_response(500, {"error": str(e)})
+
     def _handle_scan_status_api(self) -> None:
         """
         Reports the current/last Global Pattern Scan's status. `{"status":
@@ -1558,6 +1683,162 @@ def _analyze_key(params: Dict[str, Any]) -> Tuple[Any, ...]:
     key material.
     """
     return tuple(sorted((str(k), repr(v)) for k, v in params.items() if not str(k).startswith("_")))
+
+
+def _cell_description(
+    X_df: pd.DataFrame,
+    feature_names: Sequence[str],
+    features: Sequence[int],
+    rows: "_np.ndarray",
+    translations: Optional[Translations],
+) -> List[Dict[str, Any]]:
+    """
+    The (column, values) conditions of one cell, read off its rows. A column
+    the capacity rule coarsened contributes several values ("column in
+    {a, b}"), which is exactly what the cell holds.
+    """
+    out: List[Dict[str, Any]] = []
+    for j in features:
+        col = feature_names[j]
+        raw = pd.unique(X_df[col].values[rows])
+        values = sorted((str(v) for v in raw), key=str)
+        out.append({
+            "column": _vis.humanize_col(col, translations),
+            "values": [_vis.humanize_val(col, v, translations) for v in values],
+        })
+    return out
+
+
+def _cv_dict(cv: Any) -> Dict[str, Any]:
+    return {
+        "mean": float(cv.mean), "se": float(cv.se), "purity": float(cv.purity_mean),
+        "n_splits": int(cv.n_splits), "n_repeats": int(cv.n_repeats),
+    }
+
+
+def _run_validation(
+    server: "_VSFServer",
+    key: Tuple[Any, ...],
+    params: Dict[str, Any],
+    center_spec: CenterSpec,
+    target: _Target,
+    method: str,
+    repeats: int,
+) -> None:
+    """Background worker of `/api/validate`; writes into `server.validate_jobs[key]`."""
+    cert_total = certification_passes(method)  # type: ignore[arg-type]
+    total = cert_total + nested_passes(_VALIDATE_FOLDS, repeats)
+
+    def report(done: int) -> None:
+        with server.validate_lock:
+            job = server.validate_jobs.get(key)
+            if job is not None:
+                job["progress"] = {"done": int(done), "total": total}
+
+    try:
+        X_df, Z, _ = _target_arrays(server.df, target, params.get("drop", ()))
+        names = list(X_df.columns)
+        X = X_df.values
+        direction = params["direction"]
+        prune = bool(params.get("prune", False))
+        cert = certify_discovery(
+            X, Z, names, positive_class=1, center_spec=center_spec,
+            method=method, max_d=_MAX_D,  # type: ignore[arg-type]
+            random_state=_SCAN_RANDOM_STATE, direction=direction,
+            prune_dependent=prune,
+            progress=lambda done, _t: report(done),
+        )
+        nested = nested_crossvalidation(
+            X, Z, names, positive_class=1, center_spec=center_spec, max_d=_MAX_D,
+            n_splits=_VALIDATE_FOLDS, n_repeats=repeats,
+            random_state=_SCAN_RANDOM_STATE, direction=direction,
+            prune_dependent=prune,
+            progress=lambda done, _t: report(cert_total + done),
+        )
+        prepared = _prepare_search(X, Z, names, 1, center_spec, direction, prune)
+        assert prepared is not None
+        factory = prepared[0]
+        translations = server.translations
+
+        cert_branches: Dict[str, Any] = {}
+        for d, br in cert.branches.items():
+            codes, _ = factory.codes(br.features)
+            certified = br.certified_cells
+            cells = []
+            for c in certified[:_VALIDATE_MAX_CELLS]:
+                cells.append({
+                    "conditions": _cell_description(X_df, names, br.features, codes == c.cell, translations),
+                    "n": c.n, "k": c.k,
+                    "purity": (c.k / c.n) if c.n else 0.0,
+                    "purity_lower": c.purity_lower,
+                    "p_value": c.p_value,
+                    "p_adjusted": c.p_adjusted,
+                })
+            cert_branches[str(d)] = {
+                "features": [_vis.humanize_col(names[j], translations) for j in br.features],
+                "n_tested": len(br.cells),
+                "n_certified": len(certified),
+                "cells": cells,
+                "cells_truncated": len(certified) > _VALIDATE_MAX_CELLS,
+                "coverage_eval": br.coverage_eval,
+                "coverage_all_rows": br.coverage_all_rows,
+                "mass_eval": br.mass_eval,
+                "n_eval": br.n_eval,
+                "n_eval_positive": br.n_eval_positive,
+            }
+
+        nested_branches: Dict[str, Any] = {}
+        for d, nb in nested.branches.items():
+            st = nb.stability
+            nested_branches[str(d)] = {
+                "winner": [_vis.humanize_col(n, translations) for n in nb.full_data_winner_names],
+                "nested": _cv_dict(nb.nested),
+                "fixed_schema": _cv_dict(nb.fixed_schema),
+                "stability": {
+                    "share_same": st.share_equal_to_reference,
+                    "n_resamples": st.n_resamples,
+                    "n_distinct": st.n_distinct,
+                    "modal": [_vis.humanize_col(names[j], translations) for j in st.modal_schema],
+                    "modal_share": st.modal_share,
+                    "mean_pairwise_jaccard": st.mean_pairwise_jaccard,
+                },
+            }
+        d_star = nested.select_dimensionality()
+        result = {
+            "certificate": {
+                "method": cert.method,
+                "guarantee": cert.guarantee,
+                "n_tests": {str(d): t for d, t in cert.n_tests.items()},
+                "per_cell_level": {str(d): lv for d, lv in cert.per_cell_level.items()},
+                "search_rows": cert.search_rows,
+                "eval_rows": cert.eval_rows,
+                "branches": cert_branches,
+            },
+            "nested": {
+                "undetermined_reason": nested.undetermined_reason,
+                "n_splits": nested.n_splits,
+                "n_repeats": nested.n_repeats,
+                "d_star": d_star,
+                "branches": nested_branches,
+            },
+        }
+        with server.validate_lock:
+            job = server.validate_jobs.get(key)
+            if job is not None:
+                job.update(status="done", result=result, progress={"done": total, "total": total},
+                           elapsed=time.time() - job["started"])
+    except Exception as exc:  # reported to the client, not raised in a daemon thread
+        with server.validate_lock:
+            job = server.validate_jobs.get(key)
+            if job is not None:
+                job.update(status="error", error=str(exc), elapsed=time.time() - job["started"])
+    finally:
+        with server.validate_lock:
+            if server.validate_running == key:
+                server.validate_running = None
+            finished = [k for k, j in server.validate_jobs.items() if j["status"] != "running"]
+            while len(finished) > _VALIDATE_CACHE_MAX_ENTRIES:
+                server.validate_jobs.pop(finished.pop(0), None)
 
 
 def _build_analyze_response(
