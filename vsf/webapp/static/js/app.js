@@ -796,6 +796,32 @@ function certMaxPct() {
     return readCertRule() === 'certified' ? 99 : 100;
 }
 
+const CERT_MODE_NOTES = {
+    family: 'New rule: certified, valid after the search.',
+    schema: 'Legacy: certified per schema - ignores the search, optimistic.',
+    purity: 'Legacy: observed share - no certificate.',
+};
+
+// Button handler for #certModeToggle: stores the mode in #certMode, marks
+// the pressed button, and re-runs the analysis under the new rule.
+function setCertMode(mode) {
+    const value = (mode === 'schema' || mode === 'purity') ? mode : 'family';
+    const el = document.getElementById('certMode');
+    if (!el || el.value === value) return;
+    el.value = value;
+    document.querySelectorAll('#certModeToggle .cert-mode-btn').forEach(btn => {
+        const on = btn.dataset.mode === value;
+        btn.classList.toggle('active', on);
+        btn.setAttribute('aria-checked', on ? 'true' : 'false');
+    });
+    const note = document.getElementById('certModeNote');
+    if (note) {
+        note.textContent = CERT_MODE_NOTES[value];
+        note.classList.toggle('legacy', value !== 'family');
+    }
+    onCertModeChange();
+}
+
 function onCertModeChange() {
     syncColorScaleFromInputs();
     updateTauLabel();

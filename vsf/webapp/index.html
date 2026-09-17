@@ -16,8 +16,8 @@
     <!-- Plotly.js -->
     <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
 
-    <link rel="stylesheet" href="/static/css/styles.css?v=5035">
-    <script src="/static/js/app.js?v=5035" defer></script>
+    <link rel="stylesheet" href="/static/css/styles.css?v=5036">
+    <script src="/static/js/app.js?v=5036" defer></script>
 </head>
 
 <body>
@@ -480,15 +480,22 @@
                     </div>
                     <div class="scale-axis-caption" id="scaleAxisCaption">axis: share of the chosen value in a cell</div>
 
-                    <div style="display: flex; justify-content: space-between; align-items: center; gap: 6px;">
-                        <label for="certMode" style="color: var(--text-muted);"
-                            title="What a green cell means. Certified (default): the cell is certified to exceed the boundary, and the guarantee holds for the branch the search chose. The two legacy options reproduce the earlier colourings: per-schema certificates (optimistic after a search) and the observed share (no certificate).">Colouring:</label>
-                        <select id="certMode" class="cert-mode-select" onchange="onCertModeChange()">
-                            <option value="family" selected>Certified (valid after search)</option>
-                            <option value="schema">Legacy: certified per schema</option>
-                            <option value="purity">Legacy: observed share</option>
-                        </select>
+                    <!-- Colouring rule: three visible buttons (a <select> was easy to
+                         miss). #certMode keeps the chosen value for readCertMode(). -->
+                    <div class="cert-mode" id="certModeToggle"
+                        title="What a green cell means. After search (default): the cell is certified to exceed the boundary, and the guarantee holds for the branch the search chose. Per schema and Observed reproduce the earlier colourings: a certificate that ignores the search (optimistic), and the observed share with no certificate.">
+                        <span style="font-size: 0.8rem; color: var(--text-muted);">Colouring:</span>
+                        <div class="view-toggle-group cert-mode-group" role="radiogroup" aria-label="Colouring rule">
+                            <button type="button" class="cert-mode-btn active" data-mode="family" role="radio" aria-checked="true"
+                                onclick="setCertMode('family')">After search</button>
+                            <button type="button" class="cert-mode-btn" data-mode="schema" role="radio" aria-checked="false"
+                                onclick="setCertMode('schema')">Per schema</button>
+                            <button type="button" class="cert-mode-btn" data-mode="purity" role="radio" aria-checked="false"
+                                onclick="setCertMode('purity')">Observed</button>
+                        </div>
+                        <input type="hidden" id="certMode" value="family">
                     </div>
+                    <div id="certModeNote" class="cert-mode-note">New rule: certified, valid after the search.</div>
                     <div style="display: flex; justify-content: space-between; align-items: center;">
                         <label id="labelTau" style="color: var(--green);"
                             title="A cell is a discrete centre — and is drawn green — when it is certified to contain more of the target value than this (below 100 %). Coverage is computed from exactly these cells, so moving this re-runs the analysis.">🟢 Green from:</label>
