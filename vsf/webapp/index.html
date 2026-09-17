@@ -16,8 +16,8 @@
     <!-- Plotly.js -->
     <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
 
-    <link rel="stylesheet" href="/static/css/styles.css?v=5037">
-    <script src="/static/js/app.js?v=5037" defer></script>
+    <link rel="stylesheet" href="/static/css/styles.css?v=5038">
+    <script src="/static/js/app.js?v=5038" defer></script>
 </head>
 
 <body>
@@ -70,30 +70,6 @@
                 <div id="analysisError" class="analysis-error" style="display: none;"></div>
                 <div id="branchList" class="branch-list">
 
-                </div>
-                <!-- Post-selection check of the analysis on screen
-                     (vsf.selective, Project_Master_Document.md Section 4.14). -->
-                <div id="validationPanel" class="validation-panel" style="display: none;">
-                    <div class="validation-title"
-                        title="The green cells and the coverage above are computed on the same rows that chose the schema. This check repeats the whole search on held-out data and certifies cells in a way that stays valid after the search.">
-                        Check this result</div>
-                    <div class="validation-controls">
-                        <select id="validationMethod" onchange="onValidationOptionsChange()"
-                            title="Split: search on a random half, certify on the other (more power on large data). All schemas: Bonferroni over every cell of every scored schema (no data spent on the search).">
-                            <option value="split">Certificate: split halves</option>
-                            <option value="family_bonferroni">Certificate: all schemas</option>
-                        </select>
-                        <label title="Repetitions of the 5-fold split; each costs five full searches.">×
-                            <input type="number" id="validationRepeats" min="1" max="10" step="1" value="5"
-                                onchange="onValidationOptionsChange()">
-                        </label>
-                        <button id="btnValidate" class="filter-btn run-btn" onclick="runValidation()">Validate</button>
-                    </div>
-                    <div id="validationProgress" class="scan-progress-wrap" style="display: none;">
-                        <div class="scan-progress-track"><div class="scan-progress-fill" id="validationProgressFill"></div></div>
-                        <div class="scan-progress-label" id="validationProgressLabel">—</div>
-                    </div>
-                    <div id="validationBody" class="validation-body"></div>
                 </div>
             </div>
         </aside>
@@ -480,25 +456,9 @@
                     </div>
                     <div class="scale-axis-caption" id="scaleAxisCaption">axis: share of the chosen value in a cell</div>
 
-                    <!-- Colouring rule: three visible buttons (a <select> was easy to
-                         miss). #certMode keeps the chosen value for readCertMode(). -->
-                    <div class="cert-mode" id="certModeToggle"
-                        title="What a green cell means. Share (default): the share of the chosen value among the cell's rows reaches the boundary, and the cell has at least Min. objects rows - a statement about this dataset. The two other options add a test for carrying the share over to new data: After search is valid for the branch the search chose; Per schema treats the branch as chosen in advance.">
-                        <span style="font-size: 0.8rem; color: var(--text-muted);">Colouring:</span>
-                        <div class="view-toggle-group cert-mode-group" role="radiogroup" aria-label="Colouring rule">
-                            <button type="button" class="cert-mode-btn active" data-mode="purity" role="radio" aria-checked="true"
-                                onclick="setCertMode('purity')">Share</button>
-                            <button type="button" class="cert-mode-btn" data-mode="family" role="radio" aria-checked="false"
-                                onclick="setCertMode('family')">After search</button>
-                            <button type="button" class="cert-mode-btn" data-mode="schema" role="radio" aria-checked="false"
-                                onclick="setCertMode('schema')">Per schema</button>
-                        </div>
-                        <input type="hidden" id="certMode" value="purity">
-                    </div>
-                    <div id="certModeNote" class="cert-mode-note">Share in the data reaches the boundary.</div>
                     <div style="display: flex; justify-content: space-between; align-items: center;">
                         <label id="labelTau" style="color: var(--green);"
-                            title="A cell is a discrete centre — and is drawn green — when it is certified to contain more of the target value than this (below 100 %). Coverage is computed from exactly these cells, so moving this re-runs the analysis.">🟢 Green from:</label>
+                            title="A cell is a discrete centre — and is drawn green — when its share of the target value reaches this. Coverage is computed from exactly these cells, so moving this re-runs the analysis. 100% is allowed and means 'only cells that are entirely the target value'.">🟢 Green from:</label>
                         <div style="display: flex; align-items: center; gap: 4px;">
                             <input type="number" id="certTau" min="0" max="100" step="1" value="90"
                                 onchange="syncColorScaleFromInputs(); applyCertificate()"

@@ -174,7 +174,7 @@ def _render_html(
 
 #: The certificate an export is built under when the caller names none: the
 #: same one the live application colours by by default.
-DEFAULT_EXPORT_SPEC = CenterSpec(tau=0.90, alpha=0.05)
+DEFAULT_EXPORT_SPEC = CenterSpec()
 
 
 def export_full_dashboard(
@@ -216,11 +216,8 @@ def export_full_dashboard(
         center_spec: the discrete-centre certificate (`vsf.centers.CenterSpec`)
             baked into this export: the purity floor `tau`, the simultaneous
             error rate `alpha`, and the multiplicity policy. Defaults to
-            `DEFAULT_EXPORT_SPEC`: tau = 0.90, observed share (a cell is
-            green when the share of the value among its rows reaches tau).
-            Pass `CenterSpec(rule="certified", multiplicity="family")` for
-            a certificate that holds for the branches the search chose
-            (Project_Master_Document.md Section 4.14). A static page
+            `DEFAULT_EXPORT_SPEC` = `CenterSpec()`: a cell is green when
+            the share of the value among its rows reaches tau. A static page
             cannot be re-certified after the fact, so this value is final
             for the exported document and is stated in its legend.
         direction: `"presence"` (default) or `"absence"` — see
