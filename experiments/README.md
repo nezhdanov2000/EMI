@@ -11,6 +11,7 @@ Run from the repository root with the versions in `requirements-lock.txt`.
 |---|---|---|
 | `datasets.py` | verifies `benchmark_data/` against `MANIFEST.csv` | done |
 | `build_adult.py` | builds `data/adult_census.csv` (PMD Section 3.2) from UCI | done; needs network |
+| `build_cancer_benchmarks.py` | builds the six cancer benchmark files (3 low-, 3 high-dimensional) in `benchmark_data/` from pinned GitHub sources, with checks against the published facts | done; needs access to raw.githubusercontent.com |
 | `null_certificate.py` | global null: how often the reported winner carries a false certificate - per-schema (current product), family-wide Bonferroni, split | done; 100 runs: per-schema any branch 68 %, corrected 0 % (nominal 5 %) |
 | `certificate_power.py` | strong control and power with a cell exactly at tau beside a true centre | done; one `--sizes` value per call (500, 1000, 3000); power of the default family certificate at N=500 is 1 % |
 | `nested_cv.py` | in-sample vs fixed-schema CV vs nested CV (training-only and all-rows encoding), held-out purity, schema stability | done; one `--only <dataset>` per call |

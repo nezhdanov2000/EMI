@@ -55,13 +55,12 @@ CONFIGS: List[Config] = [
     Config("titanic", "survived", 0.9),
     Config("titanic", "survived", 0.7),
     Config("titanic", "survived", 0.9, min_samples=20),
-    Config("car_evaluation", "acc", 0.9),
-    Config("nursery", "spec_prior", 0.9),
-    Config("nursery", "priority", 0.7),
-    Config("mushroom", "poisonous", 0.9),
-    Config("chess_krkp", "won", 0.9, max_d=3),
-    Config("splice_junction", "EI", 0.9, max_d=2),
+    Config("breast_cancer", "recurrence-events", 0.7),
+    Config("thyroid_recurrence", "Yes", 0.9),
+    Config("breast_cancer_wisconsin", "malignant", 0.9),
 ]
+# The high-dimensional files (lung_discrete, colon, leukemia) are not listed:
+# exhaustive search over d <= 4 on 325-7070 columns needs a feature pre-filter.
 
 
 def run(cfg: Config, seed: int) -> List[Dict[str, object]]:

@@ -27,9 +27,7 @@ import pandas as pd
 RESULTS = Path(__file__).resolve().parent / "results"
 METHOD_ORDER = ("vsf", "vsf_greedy", "rules_pure", "rules", "tree")
 MIN_INFORMATIVE = 0.01
-EXCLUDED: Dict[str, str] = {
-    "splice_junction": "at d <= 2 almost no group reaches tau; every method is near 0",
-}
+EXCLUDED: Dict[str, str] = {}
 
 
 def _mark(diff: pd.Series, se: pd.Series) -> pd.Series:

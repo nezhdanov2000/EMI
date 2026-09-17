@@ -720,7 +720,8 @@ def test_validate_endpoint_runs_one_job_at_a_time_and_retries_failures(monkeypat
         srv.close()
 
 
-def test_the_page_ships_the_validation_panel() -> None:
+def test_the_page_colours_by_observed_share_only() -> None:
+    """The interface offers no certificate colouring (decision of 2026-09-17)."""
     srv = _Server(_planted_frame(n=200))
     try:
         base = f"http://127.0.0.1:{srv.port}"
@@ -730,14 +731,9 @@ def test_the_page_ships_the_validation_panel() -> None:
             js = r.read().decode("utf-8")
     finally:
         srv.close()
-    for element_id in ("validationPanel", "validationMethod", "validationRepeats", "btnValidate", "validationBody"):
-        assert f'id="{element_id}"' in html
-    assert "'/api/validate'" in js and "function runValidation" in js and "retry: true" in js
-    # the colouring defaults to the certificate that holds after the search
-    assert '<option value="family" selected>' in html
-    assert "multiplicity: readCertMultiplicity()" in js
-    # a stale server (old Python, new page) is refused, not drawn
-    assert "certificateMismatch(reqBody, data)" in js
+    assert 'id="certMode"' not in html and 'id="validationPanel"' not in html
+    assert "'/api/validate'" not in js
+    assert "readCertMultiplicity" not in js
 
 
 # ---------------------------------------------------------------------------

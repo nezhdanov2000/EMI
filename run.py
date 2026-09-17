@@ -39,10 +39,10 @@ Usage:
 
 Examples:
   python run.py
-  python run.py mushroom
+  python run.py breast_cancer
   python run.py titanic.csv
   python run.py 2
-  python run.py benchmark_data/car_evaluation.csv
+  python run.py benchmark_data/thyroid_recurrence.csv
   python run.py C:/path/to/my_data.csv
 """)
 

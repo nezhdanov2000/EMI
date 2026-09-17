@@ -35,17 +35,42 @@ def test_entry_matches_file(name: str) -> None:
 
 
 def test_load_dataset_refuses_modified_bytes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    entry = ENTRIES["car_evaluation"]
+    entry = ENTRIES["breast_cancer"]
     copy = tmp_path / entry.file
     copy.write_bytes(entry.path.read_bytes().replace(b"\n", b"\r\n"))
     monkeypatch.setattr(datasets, "DATA_DIR", tmp_path)
     with pytest.raises(datasets.DatasetIntegrityError):
-        datasets.load_dataset("car_evaluation")
+        datasets.load_dataset("breast_cancer")
 
 
-def test_soybean_header_is_the_uci_attribute_list() -> None:
-    frame, _ = datasets.load_dataset("soybean_large")
-    assert list(frame.columns[:3]) == ["disease", "date", "plant_stand"]
-    assert list(frame.columns[-2:]) == ["shriveling", "roots"]
-    # fruit_spots is the one attribute whose code 3 is unused in soybean-large.names
-    assert set(frame["fruit_spots"]) == {"0", "1", "2", "4", "?"}
+@pytest.mark.parametrize(
+    ("name", "shape", "counts"),
+    [
+        ("breast_cancer", (286, 10), {"no-recurrence-events": 201, "recurrence-events": 85}),
+        ("thyroid_recurrence", (383, 17), {"No": 275, "Yes": 108}),
+        ("breast_cancer_wisconsin", (699, 10), {"benign": 458, "malignant": 241}),
+        ("lung_discrete", (73, 326), {"c1": 6, "c2": 5, "c3": 5, "c4": 16, "c5": 7, "c6": 13, "c7": 21}),
+        ("colon", (62, 2001), {"tumor": 40, "normal": 22}),
+        ("leukemia", (72, 7071), {"ALL": 47, "AML": 25}),
+    ],
+)
+def test_cancer_benchmarks_match_the_published_facts(name: str, shape: tuple, counts: dict) -> None:
+    frame, entry = datasets.load_dataset(name)
+    assert frame.shape == shape
+    assert frame.columns[0] == entry.target
+    assert frame[entry.target].value_counts().to_dict() == counts
+
+
+def test_missing_markers_of_the_uci_copies() -> None:
+    breast, _ = datasets.load_dataset("breast_cancer")
+    assert (breast == "?").sum().to_dict() == {c: {"node_caps": 8, "breast_quad": 1}.get(c, 0) for c in breast.columns}
+    wisconsin, _ = datasets.load_dataset("breast_cancer_wisconsin")
+    assert int((wisconsin["bare_nuclei"] == "?").sum()) == 16
+    assert int((wisconsin.drop(columns="bare_nuclei") == "?").to_numpy().sum()) == 0
+
+
+def test_high_dimensional_values_are_ternary() -> None:
+    for name in ("lung_discrete", "colon", "leukemia"):
+        frame, entry = datasets.load_dataset(name)
+        values = set(frame.drop(columns=entry.target).to_numpy().ravel().tolist())
+        assert values <= {"-2", "0", "2"}
