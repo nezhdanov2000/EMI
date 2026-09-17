@@ -20,6 +20,7 @@ Run from the repository root with the versions in `requirements-lock.txt`.
 | `compare_baselines.py` | held-out coverage, purity, net coverage, description stability and selection time at condition budgets B = 1..32, 5x5 repeated stratified CV, paired differences to VSF (Nadeau-Bengio SE); selection by observed purity or by the family certificate | done; one `--only <dataset>` or `--synthetic <name> [--n N]` per call, repeat until done (per-split cache in results/cache) |
 | `summarize_comparison.py` | pivot of all compare_*.csv, +/=/- counts per selection rule (uninformative configurations left out) | done |
 | `colouring_strictness.py` | one cell under the default colouring: p-value, largest family that would certify it, lower bounds (single / per schema / family / Tarone), cells certified by Bonferroni, Tarone, BH, BY | done |
+| `noise_highdim.py` | the product (`discover_branches`, d <= 2) on pure noise shaped like colon (62 rows, 40 positives): observed-share rule vs default certificate, and all cells that pass the observed rule | done; M = 500 about 1 min |
 
 The PMD tables in Section 4.14 are these scripts' output at the default
 arguments (seed 0). Every call stays under three minutes on a laptop.
