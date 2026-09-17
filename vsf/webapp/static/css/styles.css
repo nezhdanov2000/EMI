@@ -1355,8 +1355,8 @@ body.absence-mode .color-scale-handle--red { --handle-color: #64748b; }
     white-space: nowrap;
 }
 .cert-mode-btn:hover { color: var(--text-main, #e2e8f0); }
-.cert-mode-btn.active[data-mode="family"] { background: rgba(34, 197, 94, 0.18); color: #22c55e; }
-.cert-mode-btn.active[data-mode="schema"],
-.cert-mode-btn.active[data-mode="purity"] { background: rgba(245, 158, 11, 0.18); color: #f59e0b; }
+.cert-mode-btn.active[data-mode="purity"] { background: rgba(34, 197, 94, 0.18); color: #22c55e; }
+.cert-mode-btn.active[data-mode="family"],
+.cert-mode-btn.active[data-mode="schema"] { background: rgba(245, 158, 11, 0.18); color: #f59e0b; }
 .cert-mode-note { font-size: 0.72rem; color: var(--text-dim); margin: 0 0 4px 0; }
 .cert-mode-note.legacy { color: #f59e0b; }

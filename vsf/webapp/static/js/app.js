@@ -768,18 +768,19 @@ function readCertMinSamples() {
 }
 
 // What the green (or, under absence, red) cells mean - #certMode:
-//   'family'  (default) certified above the boundary, with a guarantee that
-//             holds for the branch the search chose: Bonferroni over every
-//             cell of every partition the search could show
-//             (Project_Master_Document.md Section 4.14);
-//   'schema'  certified as if the branch had been chosen in advance - the
-//             earlier strict mode, optimistic after a search (Section 4.5);
-//   'purity'  the observed share reaches the boundary; nothing is certified
-//             (the earlier default).
+//   'purity'  (default) the share of the value among the cell's rows reaches
+//             the boundary and the cell has >= Min. objects rows: a
+//             statement about this dataset, no test;
+//   'family'  certified above the boundary for new data, valid for the
+//             branch the search chose: Bonferroni over every cell of every
+//             partition the search could show (Project_Master_Document.md
+//             Section 4.14);
+//   'schema'  certified as if the branch had been chosen in advance,
+//             optimistic after a search (Section 4.5).
 function readCertMode() {
     const el = document.getElementById('certMode');
-    const v = el ? el.value : 'family';
-    return (v === 'schema' || v === 'purity') ? v : 'family';
+    const v = el ? el.value : 'purity';
+    return (v === 'schema' || v === 'family') ? v : 'purity';
 }
 
 function readCertRule() {
@@ -797,15 +798,15 @@ function certMaxPct() {
 }
 
 const CERT_MODE_NOTES = {
-    family: 'New rule: certified, valid after the search.',
-    schema: 'Legacy: certified per schema - ignores the search, optimistic.',
-    purity: 'Legacy: observed share - no certificate.',
+    purity: 'Share in the data reaches the boundary.',
+    family: 'Test for new data, valid after the search (strict).',
+    schema: 'Test for new data, ignores the search (optimistic).',
 };
 
 // Button handler for #certModeToggle: stores the mode in #certMode, marks
 // the pressed button, and re-runs the analysis under the new rule.
 function setCertMode(mode) {
-    const value = (mode === 'schema' || mode === 'purity') ? mode : 'family';
+    const value = (mode === 'schema' || mode === 'family') ? mode : 'purity';
     const el = document.getElementById('certMode');
     if (!el || el.value === value) return;
     el.value = value;
@@ -817,7 +818,7 @@ function setCertMode(mode) {
     const note = document.getElementById('certModeNote');
     if (note) {
         note.textContent = CERT_MODE_NOTES[value];
-        note.classList.toggle('legacy', value !== 'family');
+        note.classList.toggle('legacy', value !== 'purity');
     }
     onCertModeChange();
 }
@@ -906,8 +907,8 @@ function certificateModeNote(response) {
     const cert = (response && response.certificate) || {};
     const coloured = activeDirection === 'absence' ? 'Red' : 'Green';
     if (cert.rule === 'purity') {
-        return `${coloured} = the observed share reaches the boundary. Nothing is certified: `
-            + 'the search chose these cells by looking at them. “Check this result” under Branches tests them.';
+        return `${coloured} = the share of the chosen value among the cell's rows reaches the boundary `
+            + '(at least Min. objects rows). This describes the dataset; “Check this result” under Branches tests how it holds on new data.';
     }
     if (cert.multiplicity === 'family') {
         const t = (cert.family_tests !== null && cert.family_tests !== undefined) ? cert.family_tests.toLocaleString() : '—';
@@ -917,7 +918,7 @@ function certificateModeNote(response) {
         return `${coloured} = certified above the boundary, valid for the branches the search chose: `
             + `Bonferroni over all ${t} cells it could show (per-cell level ${lvl}, family-wise ${((cert.alpha || 0.05) * 100).toFixed(0)}%).${nMin}`;
     }
-    return `${coloured} = certified as if this branch had been chosen in advance (legacy). `
+    return `${coloured} = certified as if this branch had been chosen in advance. `
         + 'The search chose it among many, so these certificates are optimistic.';
 }
 
