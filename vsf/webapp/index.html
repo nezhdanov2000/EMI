@@ -16,8 +16,8 @@
     <!-- Plotly.js -->
     <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
 
-    <link rel="stylesheet" href="/static/css/styles.css?v=5038">
-    <script src="/static/js/app.js?v=5038" defer></script>
+    <link rel="stylesheet" href="/static/css/styles.css?v=5040">
+    <script src="/static/js/app.js?v=5040" defer></script>
 </head>
 
 <body>
@@ -145,6 +145,7 @@
                             <button type="button" class="view-mode-btn" data-mode="landscape" onclick="setViewMode('landscape')">Landscape</button>
                             <button type="button" class="view-mode-btn" data-mode="screen" onclick="setViewMode('screen')" title="The dataset screen: what each column is, which columns (nearly) determine each other, and which columns are excluded from the search.">Data</button>
                             <button type="button" class="view-mode-btn" data-mode="redundancy" onclick="setViewMode('redundancy')" title="Which centres of other schemas hold (almost) the same rows as the centres of the selected branch - or, on request, of every scored schema.">Redundancy</button>
+                            <button type="button" class="view-mode-btn" data-mode="rules" onclick="setViewMode('rules')" title="Every cell of the winning schemas as a rule: its conditions, its rows and the share of the value among them. Filter the rules by the conditions they contain; the bars count them by purity.">Rules</button>
                             <button type="button" class="view-mode-btn" data-mode="tradeoffs" onclick="setViewMode('tradeoffs')" title="What coverage costs: how it moves with the purity floor, how many centres the schema that reaches it needs, and how much coverage is available at a given number of rules.">Trade-offs</button>
                         </div>
                     </div>
@@ -253,6 +254,59 @@
                     </div>
                     <div id="cgList" class="cg-list"></div>
                     <div id="cgMore" class="landscape-cell-more"></div>
+                </div>
+            </div>
+
+            <!-- Rules (Project_Master_Document.md Section 4.15; hidden unless
+                 the Rules view mode is on). Every occupied cell of the winning
+                 1D-4D schemas read as a conjunctive rule. Left: a cascading
+                 filter over the conditions a rule contains - characteristic,
+                 then value, then the next characteristic - applied with
+                 "Show"; a partly filled filter shows every rule that contains
+                 the fixed conditions, the bare rule and its refinements
+                 alike. Right: the rules binned by purity, each bar split by
+                 dimensionality, and the cards. -->
+            <div id="rulesArea" style="display: none;">
+                <div class="cg-panel ru-panel">
+                    <div class="cg-controls">
+                        <span class="ru-dims" id="ruDims" title="Which winning schemas' cells are listed. Any combination.">
+                            <label><input type="checkbox" value="1" checked onchange="onRulesControl()"> 1D</label>
+                            <label><input type="checkbox" value="2" checked onchange="onRulesControl()"> 2D</label>
+                            <label><input type="checkbox" value="3" checked onchange="onRulesControl()"> 3D</label>
+                            <label><input type="checkbox" value="4" checked onchange="onRulesControl()"> 4D</label>
+                        </span>
+                        <label title="Cells with fewer rows are not listed as rules: a rule that holds for two objects is an anecdote.">
+                            Min rows
+                            <input type="number" id="ruMinRows" min="1" step="1" value="1" onchange="onRulesMinRowsChange()">
+                        </label>
+                        <span id="ruSummary" class="ru-summary">—</span>
+                    </div>
+                    <div id="ruNote" class="cg-explain"></div>
+                    <div class="ru-body">
+                        <div class="ru-filter">
+                            <div class="ru-filter-head">
+                                <span>Filter by conditions</span>
+                                <span class="ru-filter-actions">
+                                    <button type="button" class="landscape-open" onclick="applyRulesFilter()" title="List the rules that contain every fixed condition - with or without further conditions.">Show</button>
+                                    <button type="button" class="landscape-open" onclick="clearRulesFilter()" title="Drop every fixed condition and list all rules.">Show all</button>
+                                </span>
+                            </div>
+                            <div id="ruChips" class="ru-chips"></div>
+                            <div id="ruFacets" class="ru-facets"></div>
+                        </div>
+                        <div class="ru-main">
+                            <div class="ru-bars-head">
+                                <span id="ruBarsTitle" title="Click a coloured segment to erase its schema from every interval; click an interval's label to list only its rules.">Rules by share of the value</span>
+                                <span class="ru-legend" id="ruLegend"></span>
+                            </div>
+                            <div id="ruBars" class="ru-bars"></div>
+                            <div class="ru-total" id="ruTotal">Total centres: —</div>
+                            <!-- Erased schemas (click on a bar segment), Undo / Reset, last notice. -->
+                            <div id="ruErased" class="ru-erased" style="display: none;"></div>
+                            <div id="ruCards" class="cg-list"></div>
+                            <div id="ruMore" class="landscape-cell-more"></div>
+                        </div>
+                    </div>
                 </div>
             </div>
 
@@ -395,7 +449,53 @@
                  see vsf/server.py's module docstring) so it runs as a
                  polled background job with a cancel button, not a blocking
                  request. -->
-            <div>
+            <!-- Rules view (Section 4.15): in place of the scan and contour
+                 panels, the tau-curves as an eraser. Pick the branch above,
+                 click a point on either curve: the schema that is that
+                 branch's best at that floor leaves the family - the curves
+                 are recomputed without it (the best of the rest takes its
+                 place), and its rules leave the Rules tab. -->
+            <div id="rulesSidePanel" style="display: none;">
+                <div style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 8px;"
+                    title="The best coverage per dimensionality at every purity floor, as in Trade-offs, but here each point is a schema you can erase. Pick the branch, then click a point.">🧹 Erase schemas on the curves</div>
+                <div class="tau-curve-panel">
+                    <div class="ru-branch-pick" id="ruBranchPick" title="Which branch's point a click erases. The lines overlap; without this choice a click would be ambiguous.">
+                        <span>Erase from:</span>
+                        <label><input type="radio" name="ruBranch" value="1" onchange="renderRulesCurves()"> 1D</label>
+                        <label><input type="radio" name="ruBranch" value="2" checked onchange="renderRulesCurves()"> 2D</label>
+                        <label><input type="radio" name="ruBranch" value="3" onchange="renderRulesCurves()"> 3D</label>
+                        <label><input type="radio" name="ruBranch" value="4" onchange="renderRulesCurves()"> 4D</label>
+                    </div>
+                    <!-- The other branches are dimmed so the clickable one is
+                         unmistakable. This shows every surviving schema at full
+                         strength instead - for reading the four lines against
+                         each other. A click still erases from the branch picked
+                         above, whatever is on screen. -->
+                    <label class="ru-showall" title="Off: the three branches you are not erasing from are dimmed, so the clickable line is unmistakable. On: every line that still has schemas is drawn at full strength, for comparing them. The click target does not change - it is always the branch picked above.">
+                        <input type="checkbox" id="ruShowAll" onchange="renderRulesCurves()">
+                        Show all branches at full strength
+                    </label>
+                    <!-- The erased points drawn back in as ghosts: the gaps of
+                         the curves filled from the unmasked data, dotted and
+                         hollow. Display only - the schemas stay erased and
+                         their rules stay out of the list. -->
+                    <label class="ru-showall" title="Draws the points you have erased back in, dotted and hollow, exactly in the gaps they left. Reference only: those schemas stay erased, their rules stay out of the Rules tab, and a click on a ghost still reports that floor as already erased. Use Undo or Reset below to bring one back for real.">
+                        <input type="checkbox" id="ruShowGone" onchange="renderRulesCurves()">
+                        Show erased schemas too (ghosts)
+                    </label>
+                    <div id="ruCurveNote" class="tau-curve-note">—</div>
+                    <div id="ruCurveHover" class="ru-curve-hover">&nbsp;</div>
+                    <div class="to-title" style="font-size: 0.78rem;">Coverage vs. purity floor</div>
+                    <div id="ru-coverage-plot" class="ru-side-plot"></div>
+                    <div class="to-title" style="font-size: 0.78rem;">Centres vs. purity floor</div>
+                    <div id="ru-centres-plot" class="ru-side-plot"></div>
+                    <div class="to-title" style="font-size: 0.78rem;">Which dimensionality leads</div>
+                    <div id="ruLeadStrip" class="ru-lead-strip" title="At each floor, the dimensionality with the best coverage (ties to the smaller d)."></div>
+                    <div id="ruErasedSide" class="ru-erased" style="display: none;"></div>
+                </div>
+            </div>
+
+            <div id="scanBlock">
                 <div style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 8px;">🔍 Global Pattern Scan</div>
                 <div class="scan-panel">
 

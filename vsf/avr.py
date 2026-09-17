@@ -1514,10 +1514,14 @@ def compute_tau_curves(
     direction: Direction = "presence",
     step_pct: float = 1.0,
     prune_dependent: bool = False,
+    exclude: Optional[Sequence[Sequence[int]]] = None,
 ) -> Dict[str, object]:
     """
     The per-dimensionality ENVELOPE of the solution landscape over the
-    purity floor: for every d <= max_d and every tau on `tau_grid`
+    purity floor (schemas listed in `exclude` - feature-index lists - are
+    left out of the family, so the envelope is the best of the REST: the
+    Rules view erases schemas this way; `n_excluded` reports how many
+    were skipped): for every d <= max_d and every tau on `tau_grid`
     (base rate of the searched indicator up to 100 %, in `step_pct`
     steps), the best coverage any d-subset reaches at that tau, with the
     subset that reaches it, its centre count and mass, and how many of the
@@ -1580,9 +1584,14 @@ def compute_tau_curves(
     n_family = {d: 0 for d in range(1, effective_max_d + 1)}
     n_certifying = {d: np.zeros(T, dtype=np.int64) for d in range(1, effective_max_d + 1)}
 
+    excluded = {tuple(sorted(int(j) for j in sc)) for sc in (exclude or ())}
+    n_excluded = 0
     for combo, codes, n_cells in factory.iter_candidates(effective_max_d):
         d = len(combo)
         n_family[d] += 1
+        if excluded and tuple(sorted(int(j) for j in combo)) in excluded:
+            n_excluded += 1
+            continue
         if n_cells == 0 or n_positive == 0:
             continue
         table = np.bincount(codes * 2 + z64, minlength=2 * n_cells).reshape(n_cells, 2)
@@ -1655,6 +1664,7 @@ def compute_tau_curves(
         "anchor": float(anchor),
         "step_pct": float(step_pct),
         "x": "mass" if use_mass else "coverage",
+        "n_excluded": int(n_excluded),
         "n_positive": n_positive,
         "n_samples": n_samples,
         "curves": curves,

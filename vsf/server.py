@@ -130,6 +130,13 @@ group, paged) and `/api/centers/branch` (the centres of one schema, each
 with every centre of another schema that holds almost the same rows). The centre catalogue and its similarity graph are computed
 once per (landscape key, min_rows) and cached; the threshold only regroups.
 
+Rules (Section 4.15): `/api/rules` lists every occupied cell of the given
+schemas (the winning 1D-4D schemas of the current analysis) as a
+conjunctive rule with its rows, purity, certificate status and
+generalisations (`vsf.rules.enumerate_rules`); cached per parameters,
+schemas and `min_rows`. The filtering, the purity bars and the cards are
+client-side.
+
 Composite targets (Section 4.10): `/api/analyze` and the landscape family
 accept `also=[[column, value], ...]` - up to two further (column, value)
 pairs conjoined with the primary (target, criterion). The indicator
@@ -191,6 +198,7 @@ from .selective import (
 )
 from .avr import _prepare_search
 from .redundancy import DEFAULT_GROUP_THRESHOLD, CenterCatalog, collect_centers
+from .rules import enumerate_rules
 from .vis import Translations, catalog_from_dataframe, prepare_visualization_payload
 
 __all__ = ["serve"]
@@ -243,6 +251,14 @@ _VALIDATE_FOLDS = 5
 _VALIDATE_MAX_CELLS = 50
 #: Page sizes the redundant-centres endpoints accept at most.
 _CENTERS_MAX_LIMIT = 500
+#: Rule listings (`vsf.rules.enumerate_rules`) kept per server, keyed by the
+#: analyze parameters plus the schemas listed and `min_rows`.
+_RULES_CACHE_MAX_ENTRIES = 16
+#: Largest number of schemas a tau-curve request may exclude (Rules view).
+_CURVES_MAX_EXCLUDE = 200
+#: Largest number of schemas `/api/rules` lists at once: the schemas on the
+#: envelope (one per floor and dimensionality, tens on a real dataset).
+_RULES_MAX_SCHEMAS = 400
 #: Grid step of the tau-curves, in percent of purity.
 _CURVES_STEP_PCT = 1.0
 #: Largest number of (column, value) conjuncts a composite target may have:
@@ -542,6 +558,8 @@ class _VSFServer(http.server.ThreadingHTTPServer):
         # `centers_lock`, so two requests for one key (e.g. the group list
         # and a member list opened at once) compute it once.
         self.centers_cache: "OrderedDict[Tuple[Any, ...], CenterCatalog]" = OrderedDict()
+        # Rule listings of the winning schemas (`/api/rules`).
+        self.rules_cache: "OrderedDict[Tuple[Any, ...], Dict[str, Any]]" = OrderedDict()
         self.centers_lock = threading.Lock()
         # Dataset screens (`vsf.screen.screen_dataset`) per (columns, min_strength).
         self.screen_cache: "OrderedDict[Tuple[Any, ...], Any]" = OrderedDict()
@@ -680,13 +698,48 @@ class _VSFServer(http.server.ThreadingHTTPServer):
                 self.centers_cache.popitem(last=False)
             return catalog
 
-    def get_tau_curves(self, params: Dict[str, Any], center_spec: CenterSpec, target: _Target) -> Dict[str, Any]:
+    def get_rules(
+        self, params: Dict[str, Any], center_spec: CenterSpec, target: _Target,
+        schemas: List[List[int]], min_rows: int,
+    ) -> Dict[str, Any]:
+        """The rules of `schemas` (`enumerate_rules`) for a parameter set, computed once."""
+        key = _analyze_key(params) + (("schemas", repr(schemas)), ("min_rows", repr(int(min_rows))))
+        with self.cache_lock:
+            hit = self.rules_cache.get(key)
+            if hit is not None:
+                self.rules_cache.move_to_end(key)
+                return hit
+        X_df, Z, _ = _target_arrays(self.df, target, params.get("drop", ()))
+        if target.criterion is None:
+            raise ValueError("the rules view needs an explicit target value (criterion)")
+        Z = _np.asarray(Z).astype(int)
+        if params["direction"] == "absence":
+            Z = 1 - Z
+        out = enumerate_rules(
+            X_df.values, Z, schemas, list(X_df.columns), center_spec,
+            translations=self.translations, min_rows=int(min_rows),
+        )
+        out["feature_names"] = list(X_df.columns)
+        with self.cache_lock:
+            self.rules_cache[key] = out
+            while len(self.rules_cache) > _RULES_CACHE_MAX_ENTRIES:
+                self.rules_cache.popitem(last=False)
+        return out
+
+    def get_tau_curves(
+        self, params: Dict[str, Any], center_spec: CenterSpec, target: _Target,
+        exclude: Optional[List[List[int]]] = None,
+    ) -> Dict[str, Any]:
         """
         The tau-curves (`compute_tau_curves`) for an analyze parameter set,
         computed once per parameters-without-tau: `center_spec.tau` does not
-        enter the key, the curve is the dependence on it.
+        enter the key, the curve is the dependence on it. `exclude` (schemas
+        left out of the family, Rules view) is part of the key.
         """
+        exclude = sorted({tuple(sorted(int(j) for j in sc)) for sc in (exclude or [])})
         key = _analyze_key({k: v for k, v in params.items() if k != "tau"})  # `_target` is dropped by `_analyze_key`
+        if exclude:
+            key = key + (("exclude", repr(exclude)),)
         with self.cache_lock:
             hit = self.curves_cache.get(key)
             if hit is not None:
@@ -699,7 +752,9 @@ class _VSFServer(http.server.ThreadingHTTPServer):
             center_spec=center_spec, direction=params["direction"],
             step_pct=_CURVES_STEP_PCT,
             prune_dependent=bool(params.get("prune", False)),
+            exclude=[list(sc) for sc in exclude] or None,
         )
+        curves["exclude"] = [list(sc) for sc in exclude]
         with self.cache_lock:
             self.curves_cache[key] = curves
             while len(self.curves_cache) > _CURVES_CACHE_MAX_ENTRIES:
@@ -795,6 +850,8 @@ class VSFRequestHandler(http.server.BaseHTTPRequestHandler):
             self._handle_curves_api(at=True)
         elif path == "/api/target":
             self._handle_target_api()
+        elif path == "/api/rules":
+            self._handle_rules_api()
         elif path == "/api/centers/groups":
             self._handle_centers_api(detail=False)
         elif path == "/api/centers/group":
@@ -1246,6 +1303,50 @@ class VSFRequestHandler(http.server.BaseHTTPRequestHandler):
         except Exception as e:
             self._send_json_response(500, {"error": str(e)})
 
+    def _handle_rules_api(self) -> None:
+        """
+        `/api/rules`: every occupied cell of the given `schemas` (feature-index
+        lists - the schemas on the tau-curves' envelope, the winners among them)
+        as a conjunctive rule with its purity, rows, certificate status and
+        generalisations (`vsf.rules.enumerate_rules`, Section 4.15). The
+        certificate parameters and target are those of an analyze request;
+        `min_rows` (default 1) drops smaller cells. Cached.
+        """
+        try:
+            req = self._read_json_body()
+            parsed = self._parse_landscape_request(req)
+            if parsed is None:
+                return
+            params, center_spec, _ = parsed
+            schemas = req.get("schemas")
+            if not isinstance(schemas, list) or not schemas or len(schemas) > _RULES_MAX_SCHEMAS:
+                self._send_json_response(400, {"error": f"schemas must be a non-empty list of at most {_RULES_MAX_SCHEMAS} feature-index lists"})
+                return
+            try:
+                schemas_i = [[int(j) for j in sc] for sc in schemas]
+                min_rows = int(req.get("min_rows", 1))
+            except (TypeError, ValueError):
+                self._send_json_response(400, {"error": "schemas must hold integer indices; min_rows an integer"})
+                return
+            if min_rows < 1 or any(not sc or len(sc) > _MAX_D or len(set(sc)) != len(sc) for sc in schemas_i):
+                self._send_json_response(400, {"error": f"each schema must be 1 to {_MAX_D} distinct indices; min_rows >= 1"})
+                return
+            n_features = int(_target_arrays(self.server.df, params["_target"], params.get("drop", ()))[0].shape[1])
+            if any(j < 0 or j >= n_features for sc in schemas_i for j in sc):
+                self._send_json_response(400, {"error": f"schema indices must lie in [0, {n_features})"})
+                return
+            out = dict(self.server.get_rules(params, center_spec, params["_target"], schemas_i, min_rows))
+            out.update({
+                "target": params["target_col"], "criterion": params["criterion"],
+                "direction": params["direction"], "tau": params["tau"], "rule": params["rule"],
+                "also": [list(p) for p in params["_target"].also],
+            })
+            self._send_json_response(200, out)
+        except ValueError as exc:
+            self._send_json_response(400, {"error": str(exc)})
+        except Exception as e:
+            self._send_json_response(500, {"error": str(e)})
+
     def _handle_centers_api(self, detail: bool, branch: bool = False) -> None:
         """
         `/api/centers/groups`: the centres of every schema the search scored
@@ -1415,7 +1516,19 @@ class VSFRequestHandler(http.server.BaseHTTPRequestHandler):
             params, center_spec, d = parsed
             target_col, criterion, direction = params["target_col"], params["criterion"], params["direction"]
             if not at:
-                curves = self.server.get_tau_curves(params, center_spec, params["_target"])
+                exclude = req.get("exclude", None) or []
+                if not isinstance(exclude, list) or len(exclude) > _CURVES_MAX_EXCLUDE:
+                    self._send_json_response(400, {"error": f"exclude must be a list of at most {_CURVES_MAX_EXCLUDE} feature-index lists"})
+                    return
+                try:
+                    exclude_i = [[int(j) for j in sc] for sc in exclude]
+                except (TypeError, ValueError):
+                    self._send_json_response(400, {"error": "exclude must hold integer feature indices"})
+                    return
+                if any(not sc or len(sc) > _MAX_D or len(set(sc)) != len(sc) for sc in exclude_i):
+                    self._send_json_response(400, {"error": f"each excluded schema must be 1 to {_MAX_D} distinct indices"})
+                    return
+                curves = self.server.get_tau_curves(params, center_spec, params["_target"], exclude_i)
                 out = dict(curves)
                 out.update({"target": target_col, "criterion": criterion, "direction": direction,
                             "also": [list(p) for p in params["_target"].also], "rule": params["rule"]})

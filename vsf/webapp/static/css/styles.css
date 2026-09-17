@@ -1,6 +1,6 @@
 :root {
     --bg-dark: #070a13;
-    --bg-panel: rgba(15, 23, 42, 0.75);
+    --bg-panel: rgba(15, 23, 42, 0.9);
     --bg-card: rgba(30, 41, 59, 0.6);
     --border-color: rgba(255, 255, 255, 0.08);
     --border-glow: rgba(99, 102, 241, 0.4);
@@ -102,7 +102,7 @@ main {
 
 .viz-viewport {
     background: var(--bg-panel);
-    backdrop-filter: blur(16px);
+    /* no backdrop-filter: it re-blurred the background on every repaint inside the panel (~45 ms per pointer move) */
     border: 1px solid var(--border-color);
     border-radius: 20px;
     display: flex;
@@ -114,7 +114,7 @@ main {
 
 .settings-sidebar {
     background: var(--bg-panel);
-    backdrop-filter: blur(16px);
+    /* no backdrop-filter: it re-blurred the background on every repaint inside the panel (~45 ms per pointer move) */
     border: 1px solid var(--border-color);
     border-radius: 20px;
     padding: 1.5rem;
@@ -232,7 +232,7 @@ main {
     flex-direction: column;
     gap: 0;
     background: var(--bg-panel);
-    backdrop-filter: blur(16px);
+    /* no backdrop-filter: it re-blurred the background on every repaint inside the panel (~45 ms per pointer move) */
     border: 1px solid var(--border-color);
     border-radius: 20px;
     box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
@@ -1256,3 +1256,89 @@ body.absence-mode .color-scale-handle--red { --handle-color: #64748b; }
 .crit-add:hover { background: rgba(99, 102, 241, 0.35); color: #fff; }
 .crit-item.conjunct > .crit-header { background: rgba(99, 102, 241, 0.10); }
 .crit-item.conjunct .crit-add { color: #fff; background: rgba(99, 102, 241, 0.45); }
+
+
+/* ---- Rules view (Section 4.15) ---------------------------------------- */
+#rulesArea { flex: 1; display: flex; flex-direction: column; min-height: 560px; overflow: auto; }
+.ru-panel { flex: 1; }
+.ru-dims { display: inline-flex; gap: 10px; }
+.ru-dims label { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
+.ru-summary { color: var(--text-dim); margin-left: auto; }
+.ru-body { display: flex; gap: 16px; align-items: flex-start; min-height: 0; }
+.ru-filter {
+    flex: 0 0 300px; display: flex; flex-direction: column; gap: 8px;
+    background: rgba(15, 23, 42, 0.4); border: 1px solid var(--border-color); border-radius: 10px; padding: 10px;
+}
+.ru-filter-head { display: flex; justify-content: space-between; align-items: center; color: #f8fafc; }
+.ru-filter-actions { display: inline-flex; gap: 6px; }
+.ru-chips { display: flex; flex-wrap: wrap; gap: 4px; min-height: 1em; }
+.ru-chips .target-chip { background: rgba(245, 158, 11, 0.18); color: #fde68a; }
+.ru-chips .target-chip .chip-col { color: #fcd34d; }
+.ru-chips .target-chip button { color: #fde68a; }
+.ru-facets { display: flex; flex-direction: column; gap: 8px; }
+.ru-facet { border-top: 1px solid var(--border-color); padding-top: 6px; }
+.ru-facet-title { color: var(--text-dim); font-size: 0.72rem; margin-bottom: 4px; }
+.ru-row {
+    display: flex; justify-content: space-between; align-items: center; gap: 8px;
+    padding: 4px 8px; border-radius: 6px; cursor: pointer; color: #e2e8f0;
+}
+.ru-row:hover { background: rgba(99, 102, 241, 0.15); }
+.ru-row.selected { background: rgba(99, 102, 241, 0.22); color: #c7d2fe; }
+.ru-row.fixed { text-decoration: line-through; color: var(--text-dim); cursor: default; }
+.ru-row.fixed:hover { background: transparent; }
+.ru-row .ru-count { color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.ru-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+.ru-bars-head { display: flex; justify-content: space-between; align-items: center; color: #f8fafc; }
+.ru-legend { display: inline-flex; gap: 10px; color: var(--text-dim); font-size: 0.72rem; }
+.ru-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
+.ru-bars { display: grid; grid-template-columns: 80px 1fr 56px; row-gap: 4px; column-gap: 8px; align-items: center; }
+.ru-bar-label { color: var(--text-dim); font-variant-numeric: tabular-nums; text-align: right; }
+.ru-bar-label.below-anchor { opacity: 0.55; }
+.ru-bar-label.at-tau { color: #86efac; }
+.ru-bar { display: flex; height: 18px; border-radius: 4px; overflow: hidden; cursor: pointer; background: rgba(255,255,255,0.03); }
+.ru-bar:hover { outline: 1px solid rgba(99, 102, 241, 0.55); }
+.ru-bar.selected { outline: 1px solid #f59e0b; }
+.ru-bar.empty { cursor: default; }
+.ru-seg { height: 100%; }
+.ru-bar-count { color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.ru-total { color: #f8fafc; font-weight: 600; }
+.ru-card { cursor: default; }
+.ru-card .ru-purity { font-size: 1.05rem; color: #f8fafc; font-variant-numeric: tabular-nums; display: flex; justify-content: space-between; align-items: baseline; }
+.ru-card .ru-purity .ru-d { font-size: 0.7rem; padding: 1px 6px; border-radius: 999px; color: #0f172a; font-weight: 600; }
+.ru-card .ru-cond { color: #e2e8f0; line-height: 1.4; }
+.ru-card .ru-cond b { color: #c7d2fe; font-weight: 500; }
+.ru-card .ru-meta { color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.ru-card .ru-cert { color: #86efac; }
+.ru-card .ru-cert.absence { color: #fca5a5; }
+.ru-card .ru-parents { color: var(--text-dim); font-size: 0.72rem; line-height: 1.4; }
+.ru-card .ru-parents .up { color: #86efac; }
+.ru-card .ru-parents .down { color: #fca5a5; }
+.ru-card .ru-actions { display: flex; justify-content: flex-end; }
+
+.ru-bar-label { cursor: pointer; }
+.ru-bar-label.selected { color: #fbbf24; }
+.ru-seg { cursor: pointer; }
+.ru-seg:hover { filter: brightness(1.25); outline: 1px solid rgba(255,255,255,0.7); outline-offset: -1px; }
+.ru-bar { cursor: default; }
+.ru-erased { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border-radius: 10px; background: rgba(245, 158, 11, 0.07); border: 1px solid rgba(245, 158, 11, 0.3); }
+.ru-erased-head { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 6px; color: #fde68a; }
+.ru-erased .ru-filter-actions { display: flex; gap: 6px; }
+.ru-erased .landscape-open:disabled { opacity: 0.4; cursor: default; }
+.ru-notice { color: var(--text-muted); line-height: 1.4; }
+
+.ru-branch-pick { display: flex; gap: 8px; align-items: center; color: var(--text-dim); flex-wrap: wrap; }
+.ru-branch-pick label { display: inline-flex; align-items: center; gap: 3px; cursor: pointer; color: #e2e8f0; }
+.ru-showall { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; color: var(--text-muted); }
+.ru-showall input { cursor: pointer; }
+.ru-side-plot { width: 100%; height: 210px; }
+.ru-lead-strip { height: 14px; border-radius: 4px; border: 1px solid rgba(255,255,255,0.12); background: #334155; position: relative; }
+.ru-lead-strip .ru-lead-cursor { position: absolute; top: -3px; bottom: -3px; width: 0; border-left: 1px dotted #f8fafc; }
+
+.ru-curve-hover { min-height: 2.6em; color: #e2e8f0; font-size: 0.74rem; line-height: 1.3; padding: 4px 6px; border-radius: 6px; background: rgba(99, 102, 241, 0.12); }
+
+/* Stepped, not eased: two repaints per cycle instead of sixty per second. */
+@keyframes ruBlink { 0% { opacity: 1; } 50% { opacity: 0.1; } 100% { opacity: 1; } }
+.ru-side-plot { position: relative; }
+.ru-overlay { position: absolute; left: 0; top: 0; width: 100%; height: 100%; pointer-events: none; overflow: visible; }
+.ru-overlay circle { fill: none; stroke: #f8fafc; stroke-width: 2; animation: ruBlink 0.9s steps(1, end) infinite; }
+.ru-overlay line.ru-cursor { stroke: rgba(248,250,252,0.55); stroke-width: 1; }

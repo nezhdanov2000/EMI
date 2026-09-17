@@ -2483,6 +2483,11 @@ function landscapeParams() {
         min_samples: readCertMinSamples(), direction: readDirection(),
     });
     if (currentBranchesResponse.also && currentBranchesResponse.also.length) p.also = currentBranchesResponse.also;
+    // The feature space the BRANCHES were computed in, not the screen's
+    // live exclusions: a column excluded after the analysis (and not yet
+    // re-run) must not shift the feature indices the branches refer to.
+    if (Array.isArray(currentBranchesResponse.dropped_columns)) p.drop = currentBranchesResponse.dropped_columns.slice();
+    if (typeof currentBranchesResponse.prune_dependent === 'boolean') p.prune = currentBranchesResponse.prune_dependent;
     return p;
 }
 
@@ -2500,8 +2505,16 @@ function onAnalysisLoadedForLandscape(data) {
     if (ck !== curvesState.key) {
         curvesState = { key: ck, data: null, point: null, pointData: null };
     }
+    const rk = rulesKey();
+    if (rk !== rulesState.key) {
+        rulesState.key = rk; rulesState.data = null; rulesState.bar = null; rulesState.page = 0;
+        rulesState.erased = []; rulesState.history = []; rulesState.notice = null;
+        rulesCurves = { key: null, data: null };
+    }
     if (data && data.schema && data.schema.selected_from_landscape) {
         setViewMode('lattice');
+    } else if (viewMode === 'rules') {
+        refreshRules();   // fetches the curves first, then the rules
     } else if (viewMode === 'landscape') {
         refreshLandscape();
     } else if (viewMode === 'tradeoffs') {
@@ -2515,7 +2528,7 @@ function onAnalysisLoadedForLandscape(data) {
 }
 
 function setViewMode(mode) {
-    viewMode = (mode === 'landscape' || mode === 'redundancy' || mode === 'screen' || mode === 'tradeoffs')
+    viewMode = (mode === 'landscape' || mode === 'redundancy' || mode === 'screen' || mode === 'tradeoffs' || mode === 'rules')
         ? mode : 'lattice';
     document.querySelectorAll('.view-mode-btn').forEach(btn => {
         btn.classList.toggle('active', btn.dataset.mode === viewMode);
@@ -2526,8 +2539,10 @@ function setViewMode(mode) {
     const dup = document.getElementById('redundancyArea');
     const scr = document.getElementById('screenArea');
     const tro = document.getElementById('tradeoffsArea');
+    const rul = document.getElementById('rulesArea');
     const slices = document.getElementById('slice-controller');
     if (plot) plot.style.display = lattice ? '' : 'none';
+    if (rul) rul.style.display = viewMode === 'rules' ? 'flex' : 'none';
     if (area) area.style.display = viewMode === 'landscape' ? 'flex' : 'none';
     if (dup) dup.style.display = viewMode === 'redundancy' ? 'flex' : 'none';
     if (scr) scr.style.display = viewMode === 'screen' ? 'flex' : 'none';
@@ -2537,8 +2552,13 @@ function setViewMode(mode) {
     // lattice; every other tab keeps only the certificate controls.
     const scanRows = document.getElementById('scanOnlyRows');
     const contour = document.getElementById('contourPanel');
+    const scanBlock = document.getElementById('scanBlock');
+    const rulesSide = document.getElementById('rulesSidePanel');
     if (scanRows) scanRows.style.display = lattice ? 'contents' : 'none';
     if (contour) contour.style.display = lattice ? '' : 'none';
+    // Rules: the certificate controls step aside for the erasing curves.
+    if (scanBlock) scanBlock.style.display = viewMode === 'rules' ? 'none' : '';
+    if (rulesSide) rulesSide.style.display = viewMode === 'rules' ? '' : 'none';
     if (viewMode === 'landscape') {
         refreshLandscape();
     } else if (viewMode === 'tradeoffs') {
@@ -2546,6 +2566,8 @@ function setViewMode(mode) {
         refreshFrontier(false);
     } else if (viewMode === 'redundancy') {
         refreshCenterGroups(0);
+    } else if (viewMode === 'rules') {
+        refreshRules();   // fetches the curves first, then the rules
     } else if (viewMode === 'screen') {
         refreshScreen(false);
         renderScreen();
@@ -2845,6 +2867,862 @@ function renderLandscapeCell() {
 async function openSchemaFromLandscape(features) {
     if (lastTargetCol === null) return;
     await runAnalysis(lastTargetCol, lastCriterion, features.slice());
+}
+
+// ---------------------------------------------------------------------------
+// Rules: the cells of the winning schemas as conjunctive rules (Section 4.15)
+// ---------------------------------------------------------------------------
+// Every occupied cell of the winning 1D-4D schemas of the current analysis
+// is a rule "col_1 = v_1 ∧ ... ∧ col_d = v_d" with its rows, its share of
+// the value (purity) and whether the certificate makes it a centre. The
+// server (`/api/rules`) lists them once per analysis; everything below is
+// client-side: the dimensionality checkboxes, the cascading filter over
+// conditions (characteristic → value → next characteristic), the purity
+// bars split by dimensionality, and the cards. A rule "contains" a fixed
+// condition when one of its own conditions is that (column, value); a
+// partly filled filter therefore lists the bare rule and every refinement
+// of it. No rule is hidden for being a refinement whose purity fell: the
+// card shows the parents' purity so the reader sees the change.
+let rulesState = {
+    key: null,          // JSON of the analysis parameters + schemas the rules belong to
+    data: null,         // /api/rules response
+    fixed: [],          // conditions being composed in the filter [{feature, value, column_label, value_label}]
+    applied: [],        // conditions in force for the bars and cards ("Show")
+    facet: null,        // feature whose values are open in the filter, or null
+    bar: null,          // selected purity interval (0..9) or null
+    page: 0,
+    erased: [],         // schemas erased from the view: [{features, d, names, n_rules, intervals}]
+    history: [],        // erase operations, for Undo (each entry = one erased schema)
+    notice: null,       // text of the last erase, shown under the bars
+};
+const RULES_PAGE = 30;
+const RULES_N_BINS = 10;
+
+// The schemas whose cells are the rules: every schema on the tau-curves
+// (the best of its dimensionality at some floor - the "systems" the reader
+// sees and erases there), plus the four winners of the current analysis
+// (which are the curves' schemas at the current boundary). Sorted by key
+// so the request, and its cache key, do not depend on discovery order.
+function rulesSchemas() {
+    const seen = new Map();
+    const add = f => { if (Array.isArray(f) && f.length) seen.set(rulesSchemaKey(f), f.slice().sort((a, b) => a - b)); };
+    if (currentBranchesResponse && currentBranchesResponse.branches) {
+        (currentBranchesResponse.branch_dims || []).forEach(d => {
+            const b = currentBranchesResponse.branches[String(d)];
+            if (b) add(b.selected_feature_indices);
+        });
+    }
+    const cd = rulesCurves.data;
+    if (cd && cd.curves) Object.values(cd.curves).forEach(c => (c.features || []).forEach(add));
+    return Array.from(seen.keys()).sort().map(k => seen.get(k));
+}
+
+function rulesMinRows() {
+    const el = document.getElementById('ruMinRows');
+    const v = el ? Math.round(Number(el.value)) : 1;
+    return (Number.isFinite(v) && v >= 1) ? v : 1;
+}
+
+function rulesKey() {
+    const p = landscapeParams();
+    if (!p) return null;
+    return JSON.stringify(Object.assign({}, p, { schemas: rulesSchemas(), min_rows: rulesMinRows() }));
+}
+
+function rulesDims() {
+    const out = {};
+    document.querySelectorAll('#ruDims input[type="checkbox"]').forEach(cb => { out[Number(cb.value)] = cb.checked; });
+    return out;
+}
+
+function onRulesControl() {
+    rulesState.bar = null;
+    rulesState.page = 0;
+    // A dimensionality change can strand a fixed condition (its column no
+    // longer occurs); keep it - the counts say 0 and the user sees why.
+    renderRules();
+}
+
+function onRulesMinRowsChange() {
+    rulesState.bar = null;
+    rulesState.page = 0;
+    refreshRules();
+}
+
+async function refreshRules() {
+    const p = landscapeParams();
+    if (!p || !currentBranchesResponse || currentBranchesResponse.criterion === null) {
+        const note = document.getElementById('ruNote');
+        if (note) note.textContent = 'The rules view needs a specific target value: pick one in the catalog.';
+        return;
+    }
+    // The curves name the schemas; without them only the winners would be
+    // listed, so they are fetched first (once per analysis).
+    if (!rulesCurves.data || rulesCurves.key !== rulesCurvesKey()) {
+        await refreshRulesCurves(true);
+        if (!rulesCurves.data) return;
+    }
+    const schemas = rulesSchemas();
+    if (!schemas.length) return;
+    const key = rulesKey();
+    if (rulesState.data && rulesState.key === key) {
+        renderRules();
+        return;
+    }
+    const note = document.getElementById('ruNote');
+    if (note) note.textContent = 'Listing the rules…';
+    try {
+        const res = await fetch('/api/rules', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(Object.assign({}, p, { schemas, min_rows: rulesMinRows() })),
+        });
+        const data = await res.json();
+        if (!res.ok) { showAnalysisError('Rules: ' + (data.error || res.status)); return; }
+        rulesState.key = key;
+        rulesState.data = data;
+        rulesState.bar = null;
+        rulesState.page = 0;
+        renderRules();
+    } catch (err) {
+        showAnalysisError('Rules request failed: ' + err.message);
+    }
+}
+
+// The rules of the checked dimensionalities.
+function rulesPool() {
+    const data = rulesState.data;
+    if (!data) return [];
+    const dims = rulesDims();
+    return data.rules.filter(r => dims[r.d] && !rulesIsErased(r.features));
+}
+
+function rulesSchemaKey(features) {
+    return features.slice().sort((a, b) => a - b).join(',');
+}
+
+function rulesIsErased(features) {
+    const k = rulesSchemaKey(features);
+    return rulesState.erased.some(e => e.key === k);
+}
+
+// Erasing a schema from the Rules view: clicking a segment of a purity bar
+// removes the SCHEMA the segment's rules belong to - not just the rules in
+// that interval - from every interval, the cards and the facet counts. A
+// schema is one description; its cells at 30 % and at 100 % are the same
+// description read at different places, so it leaves whole. The notice
+// under the bars says where else it was. Undo takes back the last erase;
+// Reset restores every schema. Nothing statistical changes: this is what
+// is shown, not what was certified.
+function eraseRulesSchema(features, d) {
+    if (rulesIsErased(features)) return;
+    const data = rulesState.data;
+    const cdata = rulesCurves.data;
+    const featNames = (data && data.feature_names) || (cdata && cdata.curves && cdata.curves[String(d)] && cdata.feature_names) || null;
+    const key = rulesSchemaKey(features);
+    const names = featNames ? features.map(j => featNames[j]) : features.map(String);
+    const rules = data ? data.rules.filter(r => rulesSchemaKey(r.features) === key) : [];
+    const intervals = Array.from(new Set(rules.map(r => rulesBinIndex(r.purity)))).sort((a, b) => a - b);
+    // Where the schema stood on the envelope of its dimensionality.
+    const stretches = rulesEnvelopeStretches(features, d);
+    const entry = { key, features: features.slice(), d, names, n_rules: rules.length, intervals, stretches };
+    rulesState.erased.push(entry);
+    rulesState.history.push(entry);
+    const parts = [`Erased the ${d}D schema ${names.join(' + ')}.`];
+    if (stretches.length) {
+        parts.push(`Its points at ${stretches.map(s => `${s.lo}–${s.hi}%`).join(', ')} are gone from the curves.`);
+    }
+    if (rules.length) {
+        const where = intervals.map(ix => `${ix === 0 ? '[' : '('}${ix * 10},${(ix + 1) * 10}]%`).join(', ');
+        parts.push(`Its ${rules.length} rule${rules.length === 1 ? '' : 's'} left ${intervals.length === 1 ? 'the interval' : 'the intervals'} ${where}.`);
+    }
+    rulesState.notice = parts.join(' ');
+    if (rulesState.bar !== null) rulesState.page = 0;
+    renderRules();
+    renderRulesCurves();
+}
+
+function rulesEnvelopeStretches(features, d) {
+    const cdata = rulesCurves.data;
+    const c = cdata && cdata.curves && cdata.curves[String(d)];
+    if (!c) return [];
+    const key = rulesSchemaKey(features);
+    const out = [];
+    for (let i = 0; i < cdata.taus.length; i++) {
+        const here = c.features[i] && c.features[i].length && rulesSchemaKey(c.features[i]) === key;
+        const pct = Math.round(cdata.taus[i] * 100);
+        if (here) {
+            const last = out[out.length - 1];
+            if (last && last.iEnd === i - 1) { last.hi = pct; last.iEnd = i; }
+            else out.push({ lo: pct, hi: pct, iEnd: i });
+        }
+    }
+    return out;
+}
+
+function undoRulesErase() {
+    const last = rulesState.history.pop();
+    if (!last) return;
+    rulesState.erased = rulesState.erased.filter(e => e !== last);
+    rulesState.notice = `Restored the ${last.d}D schema ${last.names.join(' + ')}${last.n_rules ? ` (${last.n_rules} rule${last.n_rules === 1 ? '' : 's'})` : ''}.`;
+    renderRules();
+    renderRulesCurves();
+}
+
+function resetRulesErase() {
+    if (!rulesState.erased.length) return;
+    const n = rulesState.erased.length;
+    rulesState.erased = [];
+    rulesState.history = [];
+    rulesState.notice = `Restored ${n} erased schema${n === 1 ? '' : 's'}.`;
+    renderRules();
+    renderRulesCurves();
+}
+
+// ---- The erasing curves in the sidebar ---------------------------------
+// The tau-curves of Trade-offs (the best coverage per dimensionality at every
+// floor) as a map of the schemas - each stretch of a line is one schema. A
+// click on a point erases the schema that the chosen branch (radio above the
+// plots) has at that floor: its points become GAPS in the curves - nothing
+// takes their place, the curves are not recomputed - and its rules leave
+// the Rules tab. The branch is chosen first because the four lines overlap
+// and a click on the plot alone could not say which schema was meant.
+let rulesCurves = { key: null, data: null };
+
+function rulesBranchPick() {
+    const el = document.querySelector('input[name="ruBranch"]:checked');
+    const d = el ? Number(el.value) : 2;
+    return Number.isFinite(d) ? d : 2;
+}
+
+// Whether the branches that are NOT the click target are drawn at full
+// strength. Off by default: the dimming is what makes the clickable line
+// unmistakable, and a misdirected click erases a schema. On, the four lines
+// can be read against each other; the click target is unchanged either way,
+// and the picked line stays thicker with larger markers so it is still
+// identifiable without the opacity cue.
+function rulesShowAll() {
+    const el = document.getElementById('ruShowAll');
+    return !!(el && el.checked);
+}
+
+// Whether the points erased so far are drawn back in, as ghosts. The masked
+// curves leave gaps where a schema was erased; this fills exactly those gaps
+// from the UNMASKED data, dashed and hollow, so the reader sees what was
+// removed and where without it re-entering the solid line. It changes nothing
+// about the state: those schemas stay erased, their rules stay out of the
+// list, and a click on a ghost still answers "already erased".
+function rulesShowGone() {
+    const el = document.getElementById('ruShowGone');
+    return !!(el && el.checked);
+}
+
+function rulesCurvesKey() {
+    const p = landscapeParams();
+    if (!p) return null;
+    const q = Object.assign({}, p);
+    delete q.tau;
+    return JSON.stringify(q);
+}
+
+async function refreshRulesCurves(quiet) {
+    if (viewMode !== 'rules') return;
+    const p = landscapeParams();
+    if (!p || !currentBranchesResponse || currentBranchesResponse.criterion === null) return;
+    const key = rulesCurvesKey();
+    if (rulesCurves.data && rulesCurves.key === key) { renderRulesCurves(); return; }
+    const note = document.getElementById('ruCurveNote');
+    if (note) note.textContent = 'Computing the curves…';
+    try {
+        const body = Object.assign({}, p);
+        const res = await fetch('/api/landscape/curves', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+        });
+        const data = await res.json();
+        if (!res.ok) { showAnalysisError('Curves: ' + (data.error || res.status)); return; }
+        data.feature_names = (rulesState.data && rulesState.data.feature_names)
+            || (currentBranchesResponse.branches && Object.values(currentBranchesResponse.branches)[0] && Object.values(currentBranchesResponse.branches)[0].feature_names) || null;
+        rulesCurves = { key, data };
+        renderRulesCurves();
+        if (!quiet) refreshRules();
+    } catch (err) {
+        showAnalysisError('Curves request failed: ' + err.message);
+    }
+}
+
+// The curves with the erased schemas' points taken out: null on the plots
+// (a gap), zero and nameless for the leader strip.
+function rulesMaskedCurves(data) {
+    if (!rulesState.erased.length) return data;
+    const erasedKeys = new Set(rulesState.erased.map(e => e.key));
+    const curves = {};
+    Object.keys(data.curves).forEach(d => {
+        const c = data.curves[d];
+        const gone = c.features.map(f => f && f.length && erasedKeys.has(rulesSchemaKey(f)));
+        curves[d] = Object.assign({}, c, {
+            x: c.x.map((v, i) => gone[i] ? null : v),
+            n_centers: c.n_centers.map((v, i) => gone[i] ? null : v),
+            features: c.features.map((f, i) => gone[i] ? [] : f),
+            feature_names: c.feature_names.map((f, i) => gone[i] ? [] : f),
+            gone,
+        });
+    });
+    return Object.assign({}, data, { curves });
+}
+
+function renderRulesCurves() {
+    const data = rulesCurves.data ? rulesMaskedCurves(rulesCurves.data) : null;
+    const covEl = document.getElementById('ru-coverage-plot');
+    const cenEl = document.getElementById('ru-centres-plot');
+    const strip = document.getElementById('ruLeadStrip');
+    const note = document.getElementById('ruCurveNote');
+    if (!data || !covEl || !cenEl || typeof Plotly === 'undefined') return;
+    const taus = data.taus;
+    const dims = Object.keys(data.curves).map(Number).sort((a, b) => a - b);
+    const raw = rulesCurves.data;
+    const pick = rulesBranchPick();
+    const showAll = rulesShowAll();
+    const showGone = rulesShowGone() && rulesState.erased.length > 0;
+    const cursor = readCertTau() * 100;
+    const xmin = taus.length ? Math.floor(taus[0] * 100) - 1 : 0;
+    const cursorShape = { type: 'line', xref: 'x', yref: 'paper', x0: cursor, x1: cursor, y0: 0, y1: 1, line: { color: '#f8fafc', width: 1, dash: 'dot' } };
+    const covTraces = [], cenTraces = [];
+    // The erased points, if asked for: exactly the gaps of the masked curves,
+    // filled from the unmasked data. Drawn first so the surviving lines stay
+    // on top of them, dashed and hollow so they never read as live points.
+    if (showGone) {
+        dims.forEach(d => {
+            const c = data.curves[String(d)], rc = raw.curves[String(d)];
+            if (!rc || !c.gone || !c.gone.some(Boolean)) return;   // nothing erased in this d
+            const ghost = {
+                x: taus.map(t => t * 100), name: `${d}D erased`, showlegend: false,
+                hoverinfo: 'skip', opacity: 0.55, connectgaps: false,
+                line: { color: TAU_CURVE_COLORS[d] || '#e2e8f0', width: 1, dash: 'dot' },
+                marker: { size: 5, color: 'rgba(0,0,0,0)', line: { color: TAU_CURVE_COLORS[d] || '#e2e8f0', width: 1 } },
+            };
+            covTraces.push(Object.assign({}, ghost, {
+                type: 'scatter', mode: 'lines+markers',
+                y: taus.map((t, i) => (c.gone[i] ? rc.x[i] * 100 : null)),
+            }));
+            cenTraces.push(Object.assign({}, ghost, {
+                type: 'scatter', mode: 'lines+markers',
+                line: Object.assign({}, ghost.line, { shape: 'hv' }),
+                y: taus.map((t, i) => (c.gone[i] ? rc.n_centers[i] : null)),
+            }));
+        });
+    }
+    // The picked branch is drawn last (on top), full opacity, larger
+    // markers; the others are context and take no clicks.
+    dims.filter(d => d !== pick).concat(dims.includes(pick) ? [pick] : []).forEach(d => {
+        const c = data.curves[String(d)];
+        const colour = TAU_CURVE_COLORS[d] || '#e2e8f0';
+        const active = d === pick;
+        const custom = taus.map((t, i) => [c.n_centers[i], c.feature_names[i].join(' + ')]);
+        // No hover boxes: they covered the very points to click. The
+        // picked branch reports hover events (hoverinfo 'none' keeps the
+        // events, drops the label) and a readout line under the plots
+        // says what is under the cursor; the others are silent context.
+        const common = {
+            x: taus.map(t => t * 100), customdata: custom, name: `${d}D`,
+            opacity: (active || showAll) ? 1 : 0.3,
+            hoverinfo: active ? 'none' : 'skip',
+        };
+        covTraces.push(Object.assign({}, common, {
+            type: 'scatter', mode: 'lines+markers', y: c.x.map(v => v === null ? null : v * 100), connectgaps: false,
+            line: { color: colour, width: active ? 2 : 1 }, marker: { size: active ? 6 : 3, color: colour },
+        }));
+        cenTraces.push(Object.assign({}, common, {
+            type: 'scatter', mode: 'lines+markers', y: c.n_centers, showlegend: false, connectgaps: false,
+            line: { color: colour, width: active ? 2 : 1, shape: 'hv' }, marker: { size: active ? 6 : 3, color: colour },
+        }));
+    });
+    const layoutCov = toLayout(data, { ytitle: data.x === 'mass' ? 'mass free, %' : 'coverage, %', xrange: [xmin, 101], yrange: [0, 102], shapes: [cursorShape], legend: true });
+    layoutCov.margin = { l: 40, r: 6, t: 22, b: 24 }; layoutCov.font.size = 9;
+    const layoutCen = toLayout(data, { ytitle: 'certified centres', xrange: [xmin, 101], shapes: [cursorShape] });
+    layoutCen.margin = { l: 40, r: 6, t: 6, b: 24 }; layoutCen.font.size = 9;
+    // An eraser, not a chart to explore: no zoom or pan on drag (a drag
+    // used to zoom in with no visible way back), and a click anywhere in
+    // the plot picks the nearest floor on the x axis - the points are
+    // 1 % apart and too small to be hit one by one.
+    // Plotly's own hover is off: its per-move work made the panel lag.
+    // The pointer is read by our handlers below (floor from the axis
+    // scale), the readout, the cursor line and the rings are drawn on an
+    // overlay of our own.
+    [layoutCov, layoutCen].forEach(l => {
+        l.dragmode = false;
+        l.hovermode = false;
+        l.xaxis.fixedrange = true; l.yaxis.fixedrange = true;
+    });
+    const cfg = { displayModeBar: false, responsive: true, scrollZoom: false, doubleClick: false };
+    Plotly.react(covEl, covTraces, layoutCov, cfg);
+    Plotly.react(cenEl, cenTraces, layoutCen, cfg);
+    covEl.style.cursor = 'crosshair'; cenEl.style.cursor = 'crosshair';
+    const floorIndexOf = pt => {
+        // Under hovermode 'x' every trace reports a point at the same
+        // floor; take the floor from the x value, not a trace's index.
+        let ti = pt.pointNumber;
+        if (typeof pt.x === 'number') {
+            let best = 0;
+            for (let i = 1; i < taus.length; i++) if (Math.abs(taus[i] * 100 - pt.x) < Math.abs(taus[best] * 100 - pt.x)) best = i;
+            ti = best;
+        }
+        return ti;
+    };
+    const readout = document.getElementById('ruCurveHover');
+    const describe = ti => {
+        const c = data.curves[String(pick)];
+        if (!c) return '';
+        const pct = Math.round(taus[ti] * 100);
+        if (c.gone && c.gone[ti]) return `${pick}D at ${pct}%: erased.`;
+        if (!c.features[ti] || !c.features[ti].length) return `${pick}D at ${pct}%: no schema certifies a centre.`;
+        const key = rulesSchemaKey(c.features[ti]);
+        let nPts = 0;
+        for (let i = 0; i < taus.length; i++) if (c.features[i] && c.features[i].length && rulesSchemaKey(c.features[i]) === key) nPts += 1;
+        return `${pick}D at ${pct}%: ${data.x} ${(c.x[ti] * 100).toFixed(1)}%, ${c.n_centers[ti]} centres — ${c.feature_names[ti].join(' + ')}. Click erases its ${nPts} blinking point${nPts === 1 ? '' : 's'}.`;
+    };
+    // Blinking highlight of the hovered schema's points on both plots: SVG
+    // rings drawn on an overlay of our own, placed through Plotly's axis
+    // scales - Plotly itself is not touched, so the highlight costs nothing
+    // to move and the blink is a CSS animation.
+    let hiKey = null;
+    const overlayOf = el => {
+        let ov = el.querySelector(':scope > svg.ru-overlay');
+        if (!ov) {
+            ov = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+            ov.setAttribute('class', 'ru-overlay');
+            el.appendChild(ov);
+        }
+        return ov;
+    };
+    const setCursorLine = (el, ov, ti) => {
+        const fl = el._fullLayout, xa = fl && fl.xaxis, ya = fl && fl.yaxis;
+        let line = ov.querySelector('line.ru-cursor');
+        if (ti === null || !xa || !ya) { if (line) line.remove(); return; }
+        if (!line) {
+            line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+            line.setAttribute('class', 'ru-cursor');
+            ov.appendChild(line);
+        }
+        const px = (xa._offset + xa.d2p(taus[ti] * 100)).toFixed(1);
+        line.setAttribute('x1', px); line.setAttribute('x2', px);
+        line.setAttribute('y1', String(ya._offset)); line.setAttribute('y2', String(ya._offset + ya._length));
+    };
+    const drawRings = (el, ov, xs, ys) => {
+        const fl = el._fullLayout, xa = fl && fl.xaxis, ya = fl && fl.yaxis;
+        Array.from(ov.querySelectorAll('circle')).forEach(c => c.remove());
+        if (!xa || !ya) return;
+        xs.forEach((x, i) => {
+            if (ys[i] === null || ys[i] === undefined) return;
+            const c = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+            c.setAttribute('cx', (xa._offset + xa.d2p(x)).toFixed(1));
+            c.setAttribute('cy', (ya._offset + ya.d2p(ys[i])).toFixed(1));
+            c.setAttribute('r', '6');
+            ov.appendChild(c);
+        });
+    };
+    const ovCov = overlayOf(covEl), ovCen = overlayOf(cenEl);
+    const clearHighlight = () => {
+        hiKey = null;
+        [ovCov, ovCen].forEach(ov => Array.from(ov.querySelectorAll('circle')).forEach(c => c.remove()));
+    };
+    clearHighlight();
+    setCursorLine(covEl, ovCov, null); setCursorLine(cenEl, ovCen, null);
+    const highlightSchema = ti => {
+        const c = data.curves[String(pick)];
+        const f = c && c.features[ti];
+        const key = f && f.length ? rulesSchemaKey(f) : null;
+        if (key === hiKey) return;
+        if (key === null) { clearHighlight(); return; }
+        hiKey = key;
+        const idx = [];
+        for (let i = 0; i < taus.length; i++) if (c.features[i] && c.features[i].length && rulesSchemaKey(c.features[i]) === key) idx.push(i);
+        const xs = idx.map(i => taus[i] * 100);
+        drawRings(covEl, ovCov, xs, idx.map(i => c.x[i] * 100));
+        drawRings(cenEl, ovCen, xs, idx.map(i => c.n_centers[i]));
+    };
+    let lastTi = null;
+    const onMoveAt = (el, clientX) => {
+        const ti = floorAtPixel(el, clientX);
+        if (ti === lastTi) return;   // same floor: nothing to update
+        lastTi = ti;
+        if (readout) readout.textContent = ti === null ? '' : describe(ti);
+        setCursorLine(covEl, ovCov, ti); setCursorLine(cenEl, ovCen, ti);
+        if (ti === null) clearHighlight(); else highlightSchema(ti);
+    };
+    const onLeave = () => { lastTi = null; if (readout) readout.textContent = ''; clearHighlight(); setCursorLine(covEl, ovCov, null); setCursorLine(cenEl, ovCen, null); };
+    // Erase on OUR mouse-up, not on Plotly's click: with dragging off,
+    // Plotly reports its click on mouse-DOWN, so a drag could not be told
+    // from a click. The floor comes from the pointer's x through the axis
+    // (nearest grid point), so a click anywhere in the plot area works.
+    const floorAtPixel = (el, clientX) => {
+        const xa = el._fullLayout && el._fullLayout.xaxis;
+        if (!xa || typeof xa.p2d !== 'function') return null;
+        const bb = el.getBoundingClientRect();
+        const px = clientX - bb.left - xa._offset;
+        if (px < -4 || px > xa._length + 4) return null;
+        const xval = xa.p2d(px);
+        if (!Number.isFinite(xval)) return null;
+        let best = 0;
+        for (let i = 1; i < taus.length; i++) if (Math.abs(taus[i] * 100 - xval) < Math.abs(taus[best] * 100 - xval)) best = i;
+        return best;
+    };
+    const eraseAtFloor = ti => {
+        const c = data.curves[String(pick)];
+        if (!c || !c.features[ti] || !c.features[ti].length) {
+            rulesState.notice = (c && c.gone && c.gone[ti])
+                ? `${pick}D at ${Math.round(taus[ti] * 100)}% is already erased.`
+                : `No ${pick}D schema certifies anything at ${Math.round(taus[ti] * 100)}%: nothing to erase.`;
+            renderRulesErased();
+            return;
+        }
+        eraseRulesSchema(c.features[ti].slice(), pick);
+    };
+    [covEl, cenEl].forEach(el => {
+        if (el.removeAllListeners) { el.removeAllListeners('plotly_click'); el.removeAllListeners('plotly_hover'); el.removeAllListeners('plotly_unhover'); }
+        el.onmousemove = e => onMoveAt(el, e.clientX);
+        el.onmouseleave = onLeave;
+        // Plotly lays a cover over the page while the button is down, so
+        // the move and the release are heard on the document, not on the
+        // plot; the press position is what tells a click from a drag.
+        el.onmousedown = e => {
+            if (e.button !== 0) return;
+            const press = [e.clientX, e.clientY];
+            let moved = false;
+            const onMove = ev => { if (Math.hypot(ev.clientX - press[0], ev.clientY - press[1]) > 4) moved = true; };
+            const onUp = ev => {
+                document.removeEventListener('mousemove', onMove, true);
+                document.removeEventListener('mouseup', onUp, true);
+                if (moved || ev.button !== 0) return;
+                const ti = floorAtPixel(el, ev.clientX);
+                if (ti !== null) eraseAtFloor(ti);
+            };
+            document.addEventListener('mousemove', onMove, true);
+            document.addEventListener('mouseup', onUp, true);
+        };
+    });
+    // The lead strip: which d has the best coverage at each floor.
+    if (strip) {
+        const segs = leadSegments(data, taus, dims);
+        const lo = xmin, span = 101 - xmin;
+        const stops = segs.map(sg => {
+            const half = taus.length > 1 ? (taus[1] - taus[0]) * 50 : 0.5;
+            const a = ((taus[sg.i0] * 100 - half - lo) / span * 100).toFixed(2);
+            const b = ((taus[sg.i1] * 100 + half - lo) / span * 100).toFixed(2);
+            return `${TAU_CURVE_COLORS[sg.d]} ${a}% ${b}%`;
+        });
+        strip.style.background = stops.length ? `linear-gradient(90deg, ${stops.join(', ')})` : '#334155';
+        strip.innerHTML = `<div class="ru-lead-cursor" style="left:${((cursor - lo) / span * 100).toFixed(2)}%"></div>`;
+        strip.title = segs.map(sg => `${sg.d}D leads ${Math.round(taus[sg.i0] * 100)}–${Math.round(taus[sg.i1] * 100)}%`).join('; ') || 'no schema certifies anything';
+    }
+    if (note) {
+        const nEx = rulesState.erased.length;
+        note.textContent = `Pick a branch, click a curve at a floor: the schema there is erased — its points become gaps, its rules leave the list.`
+            + (showAll ? ` All four branches are at full strength; a click still erases from ${pick}D.` : '')
+            + (nEx ? ` ${nEx} erased.` : '')
+            + (showGone ? ' Dotted hollow points are the erased ones, drawn back in for reference only — they stay out of the rules.' : '');
+    }
+    renderRulesErased();
+}
+
+function ruleContains(rule, cond) {
+    return rule.conditions.some(c => c.feature === cond.feature && c.value === cond.value);
+}
+
+function rulesMatching(pool, conds) {
+    if (!conds.length) return pool;
+    return pool.filter(r => conds.every(c => ruleContains(r, c)));
+}
+
+function condLabel(c) {
+    return `${c.column_label} = ${c.value_label}`;
+}
+
+function renderRules() {
+    renderRulesFilter();
+    renderRulesResults();
+}
+
+// --- the cascading filter ----------------------------------------------
+function renderRulesFilter() {
+    const chips = document.getElementById('ruChips');
+    const facets = document.getElementById('ruFacets');
+    const data = rulesState.data;
+    if (!chips || !facets || !data) return;
+    const pool = rulesPool();
+    const fixed = rulesState.fixed;
+    const matching = rulesMatching(pool, fixed);
+
+    chips.innerHTML = '';
+    if (!fixed.length) {
+        const e = document.createElement('span'); e.className = 'ru-facet-title'; e.textContent = 'No condition fixed — pick a characteristic, then a value.';
+        chips.appendChild(e);
+    }
+    fixed.forEach((c, i) => {
+        if (i > 0) { const and = document.createElement('span'); and.className = 'target-and'; and.textContent = '∧'; chips.appendChild(and); }
+        const chip = document.createElement('span');
+        chip.className = 'target-chip';
+        chip.innerHTML = `<span class="chip-col">${c.column_label}</span> = <span>${c.value_label}</span>`;
+        const b = document.createElement('button'); b.type = 'button'; b.textContent = '✕'; b.title = 'Remove this condition';
+        b.onclick = () => { rulesState.fixed = rulesState.fixed.filter(x => x !== c); rulesState.facet = null; renderRulesFilter(); };
+        chip.appendChild(b);
+        chips.appendChild(chip);
+    });
+
+    // Characteristics: every column that occurs in a matching rule, with
+    // the number of matching rules that carry a condition on it.
+    const byFeature = new Map();
+    matching.forEach(r => r.conditions.forEach(c => {
+        const e = byFeature.get(c.feature) || { feature: c.feature, column_label: c.column_label, n: 0, values: new Map() };
+        e.n += 1;
+        const v = e.values.get(c.value) || { value: c.value, value_label: c.value_label, n: 0 };
+        v.n += 1; e.values.set(c.value, v);
+        byFeature.set(c.feature, e);
+    }));
+    const fixedFeatures = new Set(fixed.map(c => c.feature));
+    const features = Array.from(byFeature.values()).sort((a, b) => b.n - a.n || a.column_label.localeCompare(b.column_label));
+
+    facets.innerHTML = '';
+    const f1 = document.createElement('div'); f1.className = 'ru-facet';
+    f1.innerHTML = `<div class="ru-facet-title">Characteristic · rules containing a condition on it (${matching.length} rule${matching.length === 1 ? '' : 's'} match so far)</div>`;
+    if (!features.length) {
+        const e = document.createElement('div'); e.className = 'ru-facet-title'; e.textContent = 'No rule contains all fixed conditions.'; f1.appendChild(e);
+    }
+    features.forEach(f => {
+        const row = document.createElement('div');
+        const isFixed = fixedFeatures.has(f.feature);
+        row.className = 'ru-row' + (isFixed ? ' fixed' : '') + (rulesState.facet === f.feature ? ' selected' : '');
+        row.innerHTML = `<span>${f.column_label}</span><span class="ru-count">${f.n} rule${f.n === 1 ? '' : 's'}</span>`;
+        if (!isFixed) row.onclick = () => { rulesState.facet = (rulesState.facet === f.feature) ? null : f.feature; renderRulesFilter(); };
+        f1.appendChild(row);
+    });
+    facets.appendChild(f1);
+
+    if (rulesState.facet !== null && byFeature.has(rulesState.facet) && !fixedFeatures.has(rulesState.facet)) {
+        const f = byFeature.get(rulesState.facet);
+        const f2 = document.createElement('div'); f2.className = 'ru-facet';
+        f2.innerHTML = `<div class="ru-facet-title">Value of ${f.column_label} · rules containing it</div>`;
+        Array.from(f.values.values()).sort((a, b) => b.n - a.n || a.value_label.localeCompare(b.value_label)).forEach(v => {
+            const row = document.createElement('div');
+            row.className = 'ru-row';
+            row.innerHTML = `<span>${v.value_label}</span><span class="ru-count">${v.n}</span>`;
+            row.onclick = () => {
+                rulesState.fixed = rulesState.fixed.concat([{ feature: f.feature, value: v.value, column_label: f.column_label, value_label: v.value_label }]);
+                rulesState.facet = null;
+                renderRulesFilter();
+            };
+            f2.appendChild(row);
+        });
+        facets.appendChild(f2);
+    }
+}
+
+function applyRulesFilter() {
+    rulesState.applied = rulesState.fixed.slice();
+    rulesState.bar = null;
+    rulesState.page = 0;
+    renderRulesResults();
+}
+
+function clearRulesFilter() {
+    rulesState.fixed = [];
+    rulesState.applied = [];
+    rulesState.facet = null;
+    rulesState.bar = null;
+    rulesState.page = 0;
+    renderRules();
+}
+
+// --- bars and cards -------------------------------------------------------
+function rulesBinIndex(purity) {
+    return landscapeBinIndex(Math.max(purity, 1e-12), RULES_N_BINS);
+}
+
+function renderRulesResults() {
+    const data = rulesState.data;
+    const bars = document.getElementById('ruBars');
+    const total = document.getElementById('ruTotal');
+    const legend = document.getElementById('ruLegend');
+    const note = document.getElementById('ruNote');
+    const summary = document.getElementById('ruSummary');
+    const title = document.getElementById('ruBarsTitle');
+    if (!data || !bars) return;
+    const absence = data.direction === 'absence';
+    const pool = rulesPool();
+    const applied = rulesState.applied;
+    const shown = rulesMatching(pool, applied);
+    const dims = rulesDims();
+    const dimList = [1, 2, 3, 4].filter(d => dims[d]);
+
+    if (title) title.textContent = absence ? 'Rules by share of rows WITHOUT the value' : 'Rules by share of the value';
+    if (legend) {
+        legend.innerHTML = dimList.map(d => `<span><i style="background:${TAU_CURVE_COLORS[d]}"></i>${d}D</span>`).join('');
+    }
+    if (summary) {
+        const perD = [1, 2, 3, 4].filter(d => dims[d]).map(d => `${d}D: ${pool.filter(r => r.d === d).length}`).join(', ');
+        const nSchemas = new Set(pool.map(r => rulesSchemaKey(r.features))).size;
+        summary.textContent = `${pool.length} rule${pool.length === 1 ? '' : 's'} from ${nSchemas} schema${nSchemas === 1 ? '' : 's'} on the curves (${perD}); min rows ${data.min_rows}`;
+    }
+    if (note) {
+        const filt = applied.length ? `Showing the ${shown.length} that contain ${applied.map(condLabel).join(' ∧ ')} — with or without further conditions.` : `Showing all ${shown.length}.`;
+        note.innerHTML = `A rule is one cell of a schema on the curves (the best of its dimensionality at some purity floor; the four winners among them): its conditions, the rows that satisfy them and the share of «${currentValueLabel() || 'the value'}» among those rows${absence ? ' (under Absence: the share of rows without it)' : ''}. `
+            + `Certified at the current boundary (${Math.round(data.tau * 100)}%) marks a discrete centre. ${filt} `
+            + `A refinement whose share is lower than its parent's is kept: learning more changed the probability, and the card says by how much.`;
+    }
+
+    // Purity intervals (0,10], ..., (90,100]; counts per d.
+    const counts = Array.from({ length: RULES_N_BINS }, () => ({}));
+    shown.forEach(r => { const ix = rulesBinIndex(r.purity); counts[ix][r.d] = (counts[ix][r.d] || 0) + 1; });
+    const totals = counts.map(c => Object.values(c).reduce((a, b) => a + b, 0));
+    const maxCount = Math.max(1, ...totals);
+    const anchor = axisAnchorPct();
+    const tauPct = Math.round(data.tau * 100);
+    bars.innerHTML = '';
+    for (let ix = RULES_N_BINS - 1; ix >= 0; ix--) {
+        const lo = ix * 10, hi = (ix + 1) * 10;
+        const label = document.createElement('div');
+        label.className = 'ru-bar-label' + (anchor !== null && hi <= anchor ? ' below-anchor' : '') + (tauPct > lo && tauPct <= hi ? ' at-tau' : '') + (rulesState.bar === ix ? ' selected' : '');
+        label.textContent = `${ix === 0 ? '[' : '('}${lo},${hi}]%`;
+        label.title = ((tauPct > lo && tauPct <= hi) ? `The certified boundary (${tauPct}%) lies in this interval. ` : (anchor !== null && hi <= anchor ? `Below the base rate (${anchor}%). ` : ''))
+            + (totals[ix] ? 'Click: list only this interval\'s rules.' : '');
+        if (totals[ix]) label.onclick = () => { rulesState.bar = (rulesState.bar === ix) ? null : ix; rulesState.page = 0; renderRulesResults(); };
+        const bar = document.createElement('div');
+        bar.className = 'ru-bar' + (totals[ix] === 0 ? ' empty' : '') + (rulesState.bar === ix ? ' selected' : '');
+        bar.style.width = `${(100 * totals[ix] / maxCount).toFixed(2)}%`;
+        dimList.forEach(d => {
+            const n = counts[ix][d] || 0;
+            if (!n) return;
+            // The rules of one d in one interval; the schemas behind them
+            // (one per d today - the winners - but written for any number).
+            const schemas = new Map();
+            shown.filter(r => r.d === d && rulesBinIndex(r.purity) === ix).forEach(r => {
+                const k = rulesSchemaKey(r.features);
+                const e = schemas.get(k) || { features: r.features, n: 0 };
+                e.n += 1; schemas.set(k, e);
+            });
+            const seg = document.createElement('div');
+            seg.className = 'ru-seg';
+            seg.style.width = `${(100 * n / totals[ix]).toFixed(3)}%`;
+            seg.style.background = TAU_CURVE_COLORS[d];
+            const desc = Array.from(schemas.values()).map(e => `${e.features.map(j => data.feature_names[j]).join(' + ')} (${e.n})`).join('; ');
+            seg.title = `${d}D: ${n} rule${n === 1 ? '' : 's'} — ${desc}. Click: erase this schema from every interval.`;
+            seg.onclick = (ev) => {
+                ev.stopPropagation();
+                const list = Array.from(schemas.values());
+                if (list.length === 1) { eraseRulesSchema(list[0].features, d); return; }
+                // Several schemas of one d in one segment: erase the one
+                // with most rules here, and say so.
+                list.sort((a, b) => b.n - a.n);
+                eraseRulesSchema(list[0].features, d);
+            };
+            bar.appendChild(seg);
+        });
+        const count = document.createElement('div');
+        count.className = 'ru-bar-count';
+        count.textContent = totals[ix] ? String(totals[ix]) : '';
+        bars.appendChild(label); bars.appendChild(bar); bars.appendChild(count);
+    }
+
+    const listed = rulesState.bar === null ? shown : shown.filter(r => rulesBinIndex(r.purity) === rulesState.bar);
+    if (total) {
+        total.textContent = `Total centres: ${shown.length}` + (rulesState.bar !== null
+            ? ` · ${listed.length} in (${rulesState.bar * 10},${(rulesState.bar + 1) * 10}]%` : '')
+            + ` · certified: ${listed.filter(r => r.certified).length}`;
+    }
+    renderRulesErased();
+    renderRulesCards(listed, absence);
+}
+
+// The erased schemas as chips (each restorable), Undo / Reset, and the
+// notice of the last erase.
+function renderRulesErased() {
+    ['ruErased', 'ruErasedSide'].forEach(id => renderRulesErasedInto(document.getElementById(id)));
+}
+
+function renderRulesErasedInto(box) {
+    if (!box) return;
+    box.innerHTML = '';
+    const data = rulesState.data;
+    const erased = rulesState.erased;
+    if ((!erased.length && !rulesState.notice) || (!data && !rulesCurves.data)) { box.style.display = 'none'; return; }
+    box.style.display = '';
+    const head = document.createElement('div');
+    head.className = 'ru-erased-head';
+    const nRules = erased.reduce((a, e) => a + e.n_rules, 0);
+    head.innerHTML = `<span>${erased.length ? `Erased: ${erased.length} schema${erased.length === 1 ? '' : 's'} · ${nRules} rule${nRules === 1 ? '' : 's'}` : 'Nothing erased'}</span>`;
+    // The buttons on their own row: beside the text they were pushed out
+    // of the narrow panel whenever the text wrapped.
+    const actions = document.createElement('div');
+    actions.className = 'ru-filter-actions';
+    const undo = document.createElement('button'); undo.className = 'landscape-open'; undo.textContent = 'Undo'; undo.disabled = !rulesState.history.length; undo.onclick = undoRulesErase;
+    const reset = document.createElement('button'); reset.className = 'landscape-open'; reset.textContent = 'Reset'; reset.disabled = !erased.length; reset.onclick = resetRulesErase;
+    actions.appendChild(undo); actions.appendChild(reset);
+    box.appendChild(head);
+    if (erased.length) box.appendChild(actions);
+    if (erased.length) {
+        const chips = document.createElement('div'); chips.className = 'ru-chips';
+        erased.forEach(e => {
+            const chip = document.createElement('span'); chip.className = 'target-chip';
+            chip.innerHTML = `<span class="chip-col" style="color:${TAU_CURVE_COLORS[e.d]}">${e.d}D</span> ${e.names.join(' + ')} <span class="ru-count">(${e.n_rules})</span>`;
+            const b = document.createElement('button'); b.type = 'button'; b.textContent = '✕'; b.title = 'Restore this schema';
+            b.onclick = () => {
+                rulesState.erased = rulesState.erased.filter(x => x !== e);
+                rulesState.history = rulesState.history.filter(x => x !== e);
+                rulesState.notice = `Restored the ${e.d}D schema ${e.names.join(' + ')}.`;
+                renderRules();
+                renderRulesCurves();
+            };
+            chip.appendChild(b); chips.appendChild(chip);
+        });
+        box.appendChild(chips);
+    }
+    if (rulesState.notice) {
+        const n = document.createElement('div'); n.className = 'ru-notice'; n.textContent = rulesState.notice; box.appendChild(n);
+    }
+}
+
+function renderRulesCards(listed, absence) {
+    const cards = document.getElementById('ruCards');
+    const more = document.getElementById('ruMore');
+    if (!cards) return;
+    cards.innerHTML = '';
+    const start = rulesState.page * RULES_PAGE;
+    const page = listed.slice(start, start + RULES_PAGE);
+    page.forEach(r => {
+        const card = document.createElement('div');
+        card.className = 'cg-card ru-card';
+        const cond = r.conditions.map(c => `<b>${c.column_label}</b> = ${c.value_label}`).join(' ∧ ');
+        const parents = (r.parents || []).map((g, p) => {
+            const delta = (r.purity - g.purity) * 100;
+            const cls = delta > 0 ? 'up' : (delta < 0 ? 'down' : '');
+            const sign = delta > 0 ? '+' : '';
+            return `<div>without ${condLabel(r.conditions[p])}: ${(g.purity * 100).toFixed(1)}% of ${g.n.toLocaleString()} rows <span class="${cls}">(${sign}${delta.toFixed(1)} pp)</span></div>`;
+        }).join('');
+        card.innerHTML = `
+            <div class="ru-purity"><span>${(r.purity * 100).toFixed(1)}%</span><span class="ru-d" style="background:${TAU_CURVE_COLORS[r.d]}">${r.d}D</span></div>
+            <div class="ru-cond">${cond}</div>
+            <div class="ru-meta">schema ${r.features.map(j => (rulesState.data.feature_names || [])[j]).join(' + ')}</div>
+            <div class="ru-meta">${r.n.toLocaleString()} rows · ${r.k.toLocaleString()} with the value${r.purity_lower > 0 ? ` · lower bound ${(r.purity_lower * 100).toFixed(1)}%` : ''}</div>
+            <div class="ru-meta">${r.certified ? `<span class="ru-cert${absence ? ' absence' : ''}">● certified centre at the current boundary</span>` : 'not a centre at the current boundary'}</div>
+            ${parents ? `<div class="ru-parents">${parents}</div>` : ''}
+            <div class="ru-actions"><button type="button" class="landscape-open" title="Render this rule's schema as a lattice">open schema</button></div>`;
+        card.querySelector('.landscape-open').onclick = () => openSchemaFromLandscape(r.features);
+        cards.appendChild(card);
+    });
+    if (more) {
+        more.innerHTML = '';
+        if (listed.length) {
+            more.textContent = `${start + 1}–${start + page.length} of ${listed.length}`;
+            if (start > 0) {
+                const b = document.createElement('button'); b.className = 'landscape-open'; b.textContent = '← previous';
+                b.onclick = () => { rulesState.page -= 1; renderRulesResults(); }; more.appendChild(b);
+            }
+            if (start + page.length < listed.length) {
+                const b = document.createElement('button'); b.className = 'landscape-open'; b.textContent = 'next →';
+                b.onclick = () => { rulesState.page += 1; renderRulesResults(); }; more.appendChild(b);
+            }
+        } else {
+            more.textContent = 'No rule matches.';
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -484,3 +484,42 @@ def test_frontier_endpoint():
         assert srv.post("/api/landscape/frontier", dict(base, tau=0.01))[0] == 400
     finally:
         srv.close()
+
+
+def test_tau_curves_exclude_schemas_from_the_family():
+    """
+    `exclude` leaves schemas out of the family: the envelope without a
+    schema is pointwise <= the envelope with it, equals it wherever that
+    schema was not the best, and never names an excluded schema.
+    """
+    df = _df(8, n=500)
+    X = df[["a", "b", "c", "d", "e"]].values
+    Z = (df["target"] == "yes").astype(int).values
+    names = ["a", "b", "c", "d", "e"]
+    full = compute_tau_curves(X, Z, names, max_d=3, positive_class=1, center_spec=CenterSpec(tau=0.5), step_pct=5.0)
+    c2 = full["curves"]["2"]
+    ti = next(i for i, v in enumerate(c2["x"]) if v > 0)
+    schema = c2["features"][ti]
+    part = compute_tau_curves(X, Z, names, max_d=3, positive_class=1, center_spec=CenterSpec(tau=0.5), step_pct=5.0,
+                              exclude=[schema, [0]])
+    assert part["n_excluded"] == 2 and full["n_excluded"] == 0
+    assert part["taus"] == full["taus"]
+    for d in ("1", "2", "3"):
+        for i in range(len(full["taus"])):
+            assert part["curves"][d]["x"][i] <= full["curves"][d]["x"][i] + 1e-12
+            if sorted(full["curves"][d]["features"][i]) not in (sorted(schema), [0]):
+                assert part["curves"][d]["x"][i] == pytest.approx(full["curves"][d]["x"][i])
+            assert sorted(part["curves"][d]["features"][i]) not in (sorted(schema), [0])
+    assert part["curves"]["2"]["n_family"] == full["curves"]["2"]["n_family"]   # counted, not scored
+    # endpoint: exclude is part of the cache key and echoed back
+    srv = _Server(df)
+    base = {"target": "target", "criterion": "yes", "tau": 0.6}
+    try:
+        status, a = srv.post("/api/landscape/curves", base)
+        status, b = srv.post("/api/landscape/curves", dict(base, exclude=[schema]))
+        assert status == 200 and b["exclude"] == [sorted(schema)] and b["n_excluded"] == 1
+        assert a["exclude"] == [] and len(srv.httpd.curves_cache) == 2
+        assert srv.post("/api/landscape/curves", dict(base, exclude=[[0, 0]]))[0] == 400
+        assert srv.post("/api/landscape/curves", dict(base, exclude="x"))[0] == 400
+    finally:
+        srv.close()

@@ -87,6 +87,7 @@ from .screen import (
     screen_dataset,
     target_report,
 )
+from .rules import enumerate_rules
 from .redundancy import (
     DEFAULT_GROUP_THRESHOLD,
     PAIR_FLOOR,
@@ -136,6 +137,7 @@ __all__ = [
     "DEFAULT_GROUP_THRESHOLD",
     "PAIR_FLOOR",
     "collect_centers",
+    "enumerate_rules",
     "ColumnProfile",
     "DatasetScreen",
     "DependencyPair",
