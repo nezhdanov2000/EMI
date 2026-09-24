@@ -280,3 +280,68 @@ def test_certified_selection_is_a_stricter_filter_and_rejects_noise() -> None:
             assert out[mth][b].conditions == 0
     with pytest.raises(ValueError):
         bl.run_split(Xn, zn, 1, 0.8, 1, split_index=0, n_repeats=1, selection="bonferroni")
+
+
+def _train_split(X, z, seed=0):
+    factory, zb, names = _factory(X, z, tau=0.9, m=5)
+    X_all = factory._raw.astype(np.int64, copy=False)
+    n = z.shape[0]
+    rng = np.random.default_rng(seed)
+    train = np.sort(rng.choice(n, size=int(0.8 * n), replace=False))
+    fit = _CandidateFactory(X_all[train], factory.bin_counts, int(train.size), ordered=factory.ordered)
+    return factory, fit, X_all, train, zb[train], names
+
+
+def test_vsf_partial_dominates_full_grid_and_keeps_groups_disjoint() -> None:
+    X, z = _two_region_data(0)
+    _, fit, X_all, train, z_train, names = _train_split(X, z)
+    budgets = [2, 4, 8, 16]
+    full = bl.select_vsf(fit, X_all, train, z_train, 0.9, 5, budgets, names)
+    part = bl.select_vsf_partial(fit, X_all, train, z_train, 0.9, 5, budgets, names)
+    for b in budgets:
+        assert part.train_coverage[b] >= full.train_coverage[b] - 1e-12
+        assert sum(g.cost for g in part.groups[b]) <= b
+        # disjoint on training rows, purity of the union >= tau on training rows
+        union_tr = np.zeros(train.size, dtype=bool)
+        for g in part.groups[b]:
+            m_tr = g.members[train]
+            assert not np.any(union_tr & m_tr)
+            union_tr |= m_tr
+        if union_tr.any():
+            assert z_train[union_tr].mean() >= 0.9 - 1e-12
+    # The two rules overlap on rows satisfying both, so a disjoint packing
+    # takes the second as sub-grid pieces: at 8 conditions partial centres
+    # hold both regions, while the full 4D grid (4 conditions per cell,
+    # 9 cells per rule) never leaves the first region's 2D cell.
+    assert part.train_coverage[8] > full.train_coverage[8] + 0.25
+    assert part.train_coverage[16] > 0.85
+
+
+def test_rules_disjoint_groups_do_not_overlap_and_never_beat_rules() -> None:
+    X, z = _two_region_data(1)
+    _, fit, X_all, train, z_train, names = _train_split(X, z)
+    budgets = [2, 4, 8, 16]
+    free = bl.select_rules(X_all, train, z_train, 0.9, 5, budgets, names)
+    disj = bl.select_rules(X_all, train, z_train, 0.9, 5, budgets, names, disjoint=True)
+    for b in budgets:
+        union_tr = np.zeros(train.size, dtype=bool)
+        for g in disj.groups[b]:
+            m_tr = g.members[train]
+            assert not np.any(union_tr & m_tr)
+            union_tr |= m_tr
+        if union_tr.any():
+            assert z_train[union_tr].mean() >= 0.9 - 1e-12
+        assert disj.train_coverage[b] <= free.train_coverage[b] + 1e-12
+
+
+def test_vsf_partial_candidates_are_a_subset_of_free_rules() -> None:
+    """Partial centres of one schema are rules on its sub-schemas: disjoint rules bound them."""
+    X, z = _two_region_data(2)
+    _, fit, X_all, train, z_train, names = _train_split(X, z)
+    budgets = [4, 8, 32]
+    part = bl.select_vsf_partial(fit, X_all, train, z_train, 0.9, 5, budgets, names)
+    disj = bl.select_rules(X_all, train, z_train, 0.9, 5, budgets, names, disjoint=True)
+    # Same greedy on a superset pool cannot be worse than on the subset pool
+    # except through greedy non-monotonicity; on this planted data they tie.
+    for b in budgets:
+        assert abs(part.train_coverage[b] - disj.train_coverage[b]) < 0.05

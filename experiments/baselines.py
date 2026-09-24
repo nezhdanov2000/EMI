@@ -34,6 +34,21 @@ Methods
                that are each >= tau can form a union below tau; groups of
                the other methods are disjoint, so their unions stay >= tau
                by construction. This is the like-for-like rule baseline.
+`vsf_partial`  one schema of d <= 4 as `vsf`, but a centre may fix only a
+               subset of the schema's axes (a cell of a sub-grid; a bar,
+               plate or layer of the same cube - `vsf.partial`). Cost =
+               axes fixed. Disjoint greedy packing under the budget, so the
+               union of the chosen centres keeps purity >= tau by
+               construction. Candidate row sets all belong to the VSF family
+               (they are cells of schemas of d <= 4), so the certificate
+               applies unchanged.
+`rules_disjoint` `rules` with the constraint that chosen rules share no
+               training row: the same candidate family as `rules`, selected
+               like `vsf` / `vsf_partial`. This is the like-for-like free
+               baseline for a method whose groups are disjoint: `rules` and
+               `rules_pure` may overlap, and an overlapping union of rules
+               each >= tau can fall below tau (rules_pure guards this on the
+               training fold only).
 `tree`         one CART tree (scikit-learn) on one-hot training rows,
                min_samples_leaf = m; qualifying leaves selected by the same
                greedy. At each budget the tree with the most covered
@@ -104,6 +119,7 @@ __all__ = [
     "select_rules",
     "select_tree",
     "select_vsf",
+    "select_vsf_partial",
     "TREE_GRID",
 ]
 
@@ -143,7 +159,7 @@ class _Candidate:
 # --------------------------------------------------------------------------
 def budgeted_greedy(
     candidates: Sequence[_Candidate], budgets: Sequence[int], n_train: int,
-    min_union_purity: Optional[float] = None,
+    min_union_purity: Optional[float] = None, disjoint: bool = False,
 ) -> Dict[int, Tuple[List[int], int]]:
     """
     Budgeted maximum coverage by the cost-effectiveness greedy with lazy
@@ -157,15 +173,20 @@ def budgeted_greedy(
     `min_union_purity`: a candidate whose addition would take the union's
     training purity below it is skipped for the rest of that budget's run
     (a heuristic: the guarantee above no longer applies).
+
+    `disjoint`: a candidate sharing any training row (positive or negative)
+    with an already chosen one is skipped. Needs the candidates' negatives.
+    The union of disjoint groups of purity >= tau has purity >= tau.
     """
-    if min_union_purity is not None and any(c.negatives is None for c in candidates):
-        raise ValueError("min_union_purity needs the candidates' negatives")
+    if (min_union_purity is not None or disjoint) and any(c.negatives is None for c in candidates):
+        raise ValueError("min_union_purity / disjoint need the candidates' negatives")
     out: Dict[int, Tuple[List[int], int]] = {}
     sizes = np.array([c.positives.size for c in candidates], dtype=np.int64)
     costs = np.array([c.cost for c in candidates], dtype=np.int64)
     for budget in budgets:
         covered = np.zeros(n_train, dtype=bool)
         covered_neg = np.zeros(n_train, dtype=bool)
+        occupied = np.zeros(n_train, dtype=bool)
         n_neg = 0
         heap: List[Tuple[float, int, int]] = [
             (-(sizes[i] / costs[i]), -int(sizes[i]), i)
@@ -179,6 +200,11 @@ def budgeted_greedy(
             neg_ratio, _, i = heapq.heappop(heap)
             if costs[i] > budget - spent:
                 continue
+            if disjoint:
+                neg_d = candidates[i].negatives
+                assert neg_d is not None
+                if occupied[candidates[i].positives].any() or occupied[neg_d].any():
+                    continue
             gain = int(np.count_nonzero(~covered[candidates[i].positives]))
             if gain == 0:
                 continue
@@ -196,6 +222,9 @@ def budgeted_greedy(
                 n_neg += new_neg
             chosen.append(i)
             covered[candidates[i].positives] = True
+            if disjoint:
+                occupied[candidates[i].positives] = True
+                occupied[candidates[i].negatives] = True  # type: ignore[index]
             spent += int(costs[i])
             total += gain
         affordable = np.flatnonzero((costs <= budget) & (sizes > 0))
@@ -324,6 +353,92 @@ def select_vsf(
     return result
 
 
+def select_vsf_partial(
+    fit: _CandidateFactory, X_all: np.ndarray, train: np.ndarray, z_train: np.ndarray,
+    tau: float, m: int, budgets: Sequence[int], names: Sequence[str],
+    max_d: int = MAX_BRANCH_D, threshold: Optional[np.ndarray] = None,
+) -> MethodResult:
+    """
+    Best single schema per budget with PARTIAL centres: the candidates of a
+    schema S are the qualifying cells of every sub-schema S' of S (cost |S'|),
+    packed disjointly by `budgeted_greedy(disjoint=True)`; at each budget the
+    schema whose packing holds the most training positives (ties: fewer
+    centres, enumeration order). Every candidate is a cell of a schema of
+    d <= max_d, i.e. a member of the family the certificate counts.
+    """
+    z64 = z_train.astype(np.int64)
+    n_train = int(train.size)
+    n_pos = max(1, int(z64.sum()))
+    max_d = min(max_d, fit.n_features)
+    # qualifying cells per combo, as _Candidate lists (empty when none)
+    per_combo: Dict[Tuple[int, ...], List[_Candidate]] = {}
+    for combo, codes, n_cells in fit.iter_candidates(max_d):
+        combo = tuple(combo)
+        if n_cells == 0:
+            per_combo[combo] = []
+            continue
+        cells, _ = _schema_table(fit, z64, combo, codes, n_cells, tau, m, threshold)
+        if cells.size == 0:
+            per_combo[combo] = []
+            continue
+        order = np.argsort(codes, kind="stable")
+        bounds = np.searchsorted(codes[order], np.arange(n_cells + 1))
+        lst: List[_Candidate] = []
+        for c in cells.tolist():
+            rows = order[bounds[c]:bounds[c + 1]]
+            lst.append(_Candidate(
+                positives=rows[z64[rows] == 1], cost=len(combo), key=(combo, int(c)),
+                negatives=rows[z64[rows] == 0],
+            ))
+        per_combo[combo] = lst
+    best: Dict[int, Tuple[Tuple[int, int], Tuple[int, ...], List[_Candidate]]] = {}
+    seen_pools: set = set()
+    for d in range(1, max_d + 1):
+        for combo in itertools.combinations(range(fit.n_features), d):
+            live = tuple(
+                sub for r in range(1, d + 1) for sub in itertools.combinations(combo, r)
+                if per_combo.get(sub)
+            )
+            if not live or live in seen_pools:
+                continue
+            seen_pools.add(live)
+            pool: List[_Candidate] = []
+            seen_rows: Dict[bytes, int] = {}
+            for sub in live:
+                for cand in per_combo[sub]:
+                    rows = np.sort(np.concatenate([cand.positives, cand.negatives]))  # type: ignore[list-item]
+                    key = rows.tobytes()
+                    j = seen_rows.get(key)
+                    if j is None:
+                        seen_rows[key] = len(pool)
+                        pool.append(cand)
+                    elif cand.cost < pool[j].cost:
+                        pool[j] = cand
+            chosen = budgeted_greedy(pool, budgets, n_train, disjoint=True)
+            for budget, (idx, covered) in chosen.items():
+                if not idx:
+                    continue
+                score = (int(covered), -len(idx))
+                inc = best.get(int(budget))
+                if inc is None or score > inc[0]:
+                    best[int(budget)] = (score, combo, [pool[i] for i in idx])
+    result = MethodResult()
+    for budget in budgets:
+        hit = best.get(int(budget))
+        if hit is None:
+            result.groups[int(budget)] = []
+            result.train_coverage[int(budget)] = 0.0
+            continue
+        (covered, _), _, cands = hit
+        groups: List[Group] = []
+        for cand in cands:
+            sub, cell = cand.key  # type: ignore[misc]
+            groups.extend(_vsf_groups(fit, X_all, train, tuple(sub), np.array([cell]), names))
+        result.groups[int(budget)] = groups
+        result.train_coverage[int(budget)] = covered / n_pos
+    return result
+
+
 def greedy_chain(
     fit: _CandidateFactory, z_train: np.ndarray, spec: CenterSpec, max_d: int = MAX_BRANCH_D,
 ) -> List[Tuple[int, ...]]:
@@ -353,7 +468,7 @@ def greedy_chain(
 def select_rules(
     X_all: np.ndarray, train: np.ndarray, z_train: np.ndarray, tau: float, m: int,
     budgets: Sequence[int], names: Sequence[str], max_len: int = MAX_BRANCH_D,
-    pure_union: bool = False, threshold: Optional[np.ndarray] = None,
+    pure_union: bool = False, threshold: Optional[np.ndarray] = None, disjoint: bool = False,
 ) -> MethodResult:
     """Qualifying conjunctions of <= max_len (column = value) conditions, greedy under budget."""
     n_train = int(train.size)
@@ -384,7 +499,7 @@ def select_rules(
                     negatives=rows[z64[rows] == 0],
                 ))
     chosen = budgeted_greedy(candidates, budgets, n_train,
-                             min_union_purity=tau if pure_union else None)
+                             min_union_purity=tau if pure_union else None, disjoint=disjoint)
     n_pos = max(1, int(z64.sum()))
     result = MethodResult()
     for budget, (idx, covered) in chosen.items():
@@ -492,7 +607,7 @@ def evaluate_groups(groups: Sequence[Group], z: np.ndarray, test: np.ndarray) ->
             int(sum(g.cost for g in groups)))
 
 
-METHODS: Tuple[str, ...] = ("vsf", "vsf_greedy", "rules", "rules_pure", "tree")
+METHODS: Tuple[str, ...] = ("vsf", "vsf_partial", "vsf_greedy", "rules", "rules_pure", "rules_disjoint", "tree")
 
 
 @dataclass(frozen=True, eq=False)
@@ -618,6 +733,8 @@ def run_split(
     selectors: Dict[str, Callable[[], MethodResult]] = {
         "vsf": lambda: select_vsf(fit, X_all, train, z_train, tau, m, budgets, names, max_d=max_d,
                                   threshold=threshold),
+        "vsf_partial": lambda: select_vsf_partial(fit, X_all, train, z_train, tau, m, budgets, names,
+                                                  max_d=max_d, threshold=threshold),
         "vsf_greedy": lambda: select_vsf(fit, X_all, train, z_train, tau, m, budgets, names,
                                          combos=greedy_chain(fit, z_train, chain_spec, max_d),
                                          threshold=threshold),
@@ -625,6 +742,8 @@ def run_split(
                                       threshold=threshold),
         "rules_pure": lambda: select_rules(X_all, train, z_train, tau, m, budgets, names, max_d,
                                            pure_union=True, threshold=threshold),
+        "rules_disjoint": lambda: select_rules(X_all, train, z_train, tau, m, budgets, names, max_d,
+                                               threshold=threshold, disjoint=True),
         "tree": lambda: select_tree(X_all, train, z_train, tau, m, budgets, random_state, max_d,
                                     threshold=threshold),
     }

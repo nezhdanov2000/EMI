@@ -69,9 +69,26 @@ CONFIGS: List[Config] = [
     Config("titanic", "survived", 0.9),
     Config("titanic", "survived", 0.7),
     Config("titanic", "survived", 0.9, min_samples=20),
+    Config("titanic", "survived", 0.7, selection="certified"),
     Config("breast_cancer", "recurrence-events", 0.7),
+    Config("breast_cancer", "recurrence-events", 0.7, selection="certified"),
     Config("thyroid_recurrence", "Yes", 0.9),
+    Config("thyroid_recurrence", "Yes", 0.9, selection="certified"),
     Config("breast_cancer_wisconsin", "malignant", 0.9),
+    Config("breast_cancer_wisconsin", "malignant", 0.9, selection="certified"),
+    # 2026-09-24: the four UCI files of the phase-3 runs restored from git
+    # history (cead890) so that the partial-centre comparison is on the same
+    # data as claude/phase3-baselines.md.
+    Config("car_evaluation", "acc", 0.9),
+    Config("car_evaluation", "acc", 0.9, selection="certified"),
+    Config("nursery", "spec_prior", 0.9),
+    Config("nursery", "priority", 0.7),
+    Config("nursery", "spec_prior", 0.9, selection="certified"),
+    Config("nursery", "priority", 0.7, selection="certified"),
+    Config("mushroom", "poisonous", 0.9, n_repeats=2),
+    Config("mushroom", "poisonous", 0.9, n_repeats=2, selection="certified"),
+    Config("chess_krkp", "won", 0.9, n_repeats=1),
+    Config("chess_krkp", "won", 0.9, n_repeats=1, selection="certified"),
 ]
 # The high-dimensional files (lung_discrete, colon, leukemia) are not listed:
 # exhaustive search over d <= 4 on 325-7070 columns needs a feature pre-filter.
@@ -99,7 +116,7 @@ def synthetic(name: str, seed: int = 0, n: int = 2000) -> Tuple[np.ndarray, np.n
 N_SPLITS = 5
 CACHE = RESULTS / "cache"
 #: Bump when a method's selection or the cached fields change: old splits are then recomputed.
-CACHE_VERSION = 2
+CACHE_VERSION = 3
 
 
 def _cache_path(tag: str, cfg: Config, X: np.ndarray, Z: np.ndarray, seed: int, split: int) -> Path:
