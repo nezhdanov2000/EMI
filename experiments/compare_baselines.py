@@ -106,6 +106,15 @@ CONFIGS: List[Config] = [
     Config("wa_churn", "Yes", 0.7, min_samples=20, selection="certified"),
     Config("mlc_churn", "yes", 0.7, min_samples=20),
     Config("mlc_churn", "yes", 0.7, min_samples=20, selection="certified"),
+    # 2026-09-24: the two wide PMLB tables (build_pmlb_benchmarks.py). splice has
+    # M = 60: exhaustive families of size 4 are too large for every method, so
+    # max_d = 3 for all methods alike (schema size, rule length, tree depth).
+    Config("connect_4", "loss", 0.7, min_samples=20, n_repeats=1),
+    Config("connect_4", "loss", 0.7, min_samples=20, n_repeats=1, selection="certified"),
+    Config("connect_4", "win", 0.9, min_samples=20, n_repeats=1),
+    Config("connect_4", "win", 0.9, min_samples=20, n_repeats=1, selection="certified"),
+    Config("splice", "site_b", 0.9, min_samples=20, n_repeats=1, max_d=3),
+    Config("splice", "site_b", 0.9, min_samples=20, n_repeats=1, max_d=3, selection="certified"),
 ]
 # The high-dimensional files (lung_discrete, colon, leukemia) are not listed:
 # exhaustive search over d <= 4 on 325-7070 columns needs a feature pre-filter.
