@@ -142,7 +142,7 @@ def synthetic(name: str, seed: int = 0, n: int = 2000) -> Tuple[np.ndarray, np.n
 N_SPLITS = 5
 CACHE = RESULTS / "cache"
 #: Bump when a method's selection or the cached fields change: old splits are then recomputed.
-CACHE_VERSION = 4
+CACHE_VERSION = 5
 
 
 def _cache_path(tag: str, cfg: Config, X: np.ndarray, Z: np.ndarray, seed: int, split: int) -> Path:

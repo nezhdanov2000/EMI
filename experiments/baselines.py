@@ -50,8 +50,8 @@ Methods
                each >= tau can fall below tau (rules_pure guards this on the
                training fold only).
 `ssdpp`        SSD++ (Proenca et al., 2022; package `rulelist`): an MDL rule
-               list for the two-class target on the training rows, beam 50,
-               depth <= max_d, min_support = m. A rule list is ordered
+               list for the two-class target on the training rows, beam 30,
+               depth <= max_d, min_support = m, at most 40 rules. A rule list is ordered
                ("else if"), so rule i applies to the rows not matched by
                rules 1..i-1: its groups are disjoint by construction. The
                qualifying rules (training purity >= tau, or the certificate
@@ -453,9 +453,15 @@ def select_vsf_partial(
 def select_ssdpp(
     X_all: np.ndarray, train: np.ndarray, z_train: np.ndarray, tau: float, m: int,
     budgets: Sequence[int], names: Sequence[str], max_d: int = MAX_BRANCH_D,
-    threshold: Optional[np.ndarray] = None, beam_width: int = 50,
+    threshold: Optional[np.ndarray] = None, beam_width: int = 30, max_rules: int = 40,
 ) -> MethodResult:
-    """SSD++ rule list (package `rulelist`) on the training rows; see the module docstring."""
+    """
+    SSD++ rule list (package `rulelist`) on the training rows; see the module
+    docstring. `max_rules` caps the list at 40 rules: no budget here exceeds
+    32 conditions, so at most 32 rules can ever be selected, and the MDL
+    search on tables such as nursery otherwise grows lists of 80+ rules at
+    a minute per fit.
+    """
     import pandas as pd
     from rulelist import RuleList
     n_train = int(train.size)
@@ -465,7 +471,7 @@ def select_ssdpp(
     frame = pd.DataFrame({c: X_train[:, j].astype(str) for j, c in enumerate(cols)})
     target = pd.DataFrame({"y": np.where(z64 == 1, "pos", "neg")})
     model = RuleList(target_model="categorical", task="discovery", max_depth=max_d,
-                     beam_width=beam_width, min_support=max(1, m))
+                     beam_width=beam_width, min_support=max(1, m), max_rules=max_rules)
     model.fit(frame, target)
     candidates: List[_Candidate] = []
     members_all: List[np.ndarray] = []
