@@ -1,0 +1,97 @@
+dataset,positive,tau,min_samples,n_repeats,max_d,selection,method,budget,coverage,coverage_se,purity,splits_with_groups,purity_reaches_tau,net_coverage,net_coverage_se,stability,conditions_spent,train_coverage,minus_vsf,minus_vsf_se,net_minus_vsf,net_minus_vsf_se,fold0_groups,selection_seconds
+breast_cancer_wisconsin,malignant,0.9,1,5,4,purity,vsf,1,0.5353,0.037,0.9782,25,1.0,0.423,0.0815,1.0,1.0,0.5353,0.0,0.0,0.0,0.0,X_6#1,0.074
+breast_cancer_wisconsin,malignant,0.9,1,5,4,purity,vsf,2,0.5819,0.0405,0.9661,25,1.0,0.387,0.1066,0.91,2.0,0.5865,0.0,0.0,0.0,0.0,X_6#1 | X_6#9,0.074
+breast_cancer_wisconsin,malignant,0.9,1,5,4,purity,vsf,4,0.6157,0.0454,0.9633,25,0.92,0.3912,0.121,0.579,4.0,0.6413,0.0,0.0,0.0,0.0,X_1#1 | X_1#8 | X_1#7 | X_1#9,0.074
+breast_cancer_wisconsin,malignant,0.9,1,5,4,purity,vsf,8,0.722,0.0277,0.9535,25,0.92,0.3926,0.1457,0.771,6.28,0.7216,0.0,0.0,0.0,0.0,X_2#1 | X_2#5 | X_2#6 | X_2#8 | X_2#7,0.074
+breast_cancer_wisconsin,malignant,0.9,1,5,4,purity,vsf,16,0.7842,0.0406,0.9406,25,0.92,0.3359,0.1333,0.818,14.88,0.794,0.0,0.0,0.0,0.0,X_1+X_2+X_7#45 | X_1+X_2+X_7#37 | X_1+X_2+X_7#19 | X_1+X_2+X_7#12 | X_1+X_2+X_7#36,0.074
+breast_cancer_wisconsin,malignant,0.9,1,5,4,purity,vsf,32,0.8191,0.0377,0.937,25,0.88,0.3113,0.1547,0.831,29.32,0.8432,0.0,0.0,0.0,0.0,X_1+X_2+X_7#45 | X_1+X_2+X_7#37 | X_1+X_2+X_7#19 | X_1+X_2+X_7#12 | X_1+X_2+X_7#36 | X_1+X_2+X_7#24 | X_1+X_2+X_7#34 | X_1+X_2+X_7#11 | X_1+X_2+X_7#35,0.074
+breast_cancer_wisconsin,malignant,0.9,1,5,4,purity,vsf_partial,1,0.5353,0.037,0.9782,25,1.0,0.423,0.0815,1.0,1.0,0.5353,0.0,0.0,0.0,0.0,X_6#1,0.63
+breast_cancer_wisconsin,malignant,0.9,1,5,4,purity,vsf_partial,2,0.5819,0.0405,0.9661,25,1.0,0.387,0.1066,0.91,2.0,0.5865,0.0,0.0,0.0,0.0,X_6#1 | X_6#9,0.63
+breast_cancer_wisconsin,malignant,0.9,1,5,4,purity,vsf_partial,4,0.643,0.0487,0.9563,25,0.92,0.3589,0.1196,0.636,4.0,0.6726,0.0273,0.04,-0.0322,0.0792,X_2#1 | X_1+X_2+X_3#50,0.63
+breast_cancer_wisconsin,malignant,0.9,1,5,4,purity,vsf_partial,8,0.7369,0.0279,0.9522,25,0.92,0.393,0.1448,0.717,7.52,0.7718,0.0149,0.0292,0.0004,0.0766,X_2#1 | X_1+X_2+X_7#45 | X_1+X_2+X_7#19,0.63
+breast_cancer_wisconsin,malignant,0.9,1,5,4,purity,vsf_partial,16,0.8116,0.0271,0.9417,25,0.88,0.3483,0.1535,0.77,15.8,0.8568,0.0274,0.0439,0.0124,0.1232,X_2#1 | X_1+X_2+X_3#50 | X_1+X_2+X_7#19 | X_1+X_3+X_7#43 | X_1+X_2+X_3#47 | X_1+X_2#19,0.63
+breast_cancer_wisconsin,malignant,0.9,1,5,4,purity,vsf_partial,32,0.854,0.0323,0.9208,25,0.68,0.1814,0.201,0.834,31.52,0.9234,0.0349,0.0425,-0.1298,0.1498,X_2#1 | X_1+X_2+X_3#50 | X_1+X_2+X_7#19 | X_1+X_3+X_7#43 | X_1+X_2+X_3#47 | X_1+X_2#19 | X_1+X_3#30 | X_2+X_7#17 | X_1+X_2#3 | X_1+X_2#4 | X_1+X_2#18 | X_1+X_2#27 | X_3+X_7#24 | X_1+X_2+X_3#16,0.63
+breast_cancer_wisconsin,malignant,0.9,1,5,4,purity,vsf_greedy,1,0.2728,0.0364,1.0,25,1.0,0.2728,0.0364,0.786,1.0,0.2666,-0.2626,0.0456,-0.1502,0.0771,X_2#1,0.01
+breast_cancer_wisconsin,malignant,0.9,1,5,4,purity,vsf_greedy,2,0.3765,0.0344,0.981,25,0.96,0.3165,0.0828,0.651,2.0,0.3973,-0.2053,0.0558,-0.0705,0.127,X_2#1 | X_2#5,0.01
+breast_cancer_wisconsin,malignant,0.9,1,5,4,purity,vsf_greedy,4,0.594,0.0337,0.9679,25,0.96,0.4146,0.1154,0.768,4.0,0.6191,-0.0217,0.0526,0.0234,0.1493,X_2#1 | X_2#5 | X_2#6 | X_2#8,0.01
+breast_cancer_wisconsin,malignant,0.9,1,5,4,purity,vsf_greedy,8,0.6996,0.0368,0.9601,25,1.0,0.4302,0.1228,0.838,5.4,0.7062,-0.0224,0.0398,0.0376,0.1099,X_2#1 | X_2#5 | X_2#6 | X_2#8 | X_2#7,0.01
+breast_cancer_wisconsin,malignant,0.9,1,5,4,purity,vsf_greedy,16,0.6996,0.0368,0.9601,25,1.0,0.4302,0.1228,0.838,5.4,0.7062,-0.0847,0.0548,0.0943,0.1613,X_2#1 | X_2#5 | X_2#6 | X_2#8 | X_2#7,0.01
+breast_cancer_wisconsin,malignant,0.9,1,5,4,purity,vsf_greedy,32,0.6971,0.0353,0.9611,25,0.96,0.4274,0.1354,0.772,30.72,0.7546,-0.122,0.0487,0.1162,0.1606,X_2+X_6#44 | X_2+X_6#8 | X_2+X_6#30 | X_2+X_6#37 | X_2+X_6#22 | X_2+X_6#7 | X_2+X_6#10 | X_2+X_6#12 | X_2+X_6#11 | X_2+X_6#41 | X_2+X_6#46 | X_2+X_6#9 | X_2+X_6#13 | X_2+X_6#42 | X_2+X_6#43 | X_2+X_6#45,0.01
+breast_cancer_wisconsin,malignant,0.9,1,5,4,purity,rules,1,0.5353,0.037,0.9782,25,1.0,0.423,0.0815,1.0,1.0,0.5353,0.0,0.0,0.0,0.0,X_6=1,0.092
+breast_cancer_wisconsin,malignant,0.9,1,5,4,purity,rules,2,0.6423,0.0271,0.9811,25,1.0,0.5299,0.0857,0.885,2.0,0.6768,0.0604,0.0319,0.1429,0.067,X_6=1 | X_2=1,0.092
+breast_cancer_wisconsin,malignant,0.9,1,5,4,purity,rules,4,0.7684,0.0253,0.96,25,1.0,0.4767,0.1235,0.866,4.0,0.8201,0.1527,0.0466,0.0855,0.1262,X_6=1 | X_2=1 | X_1=1 | X_1=8,0.092
+breast_cancer_wisconsin,malignant,0.9,1,5,4,purity,rules,8,0.8813,0.0203,0.9441,25,0.84,0.4027,0.1883,0.902,8.0,0.9338,0.1593,0.0332,0.01,0.1564,X_6=1 | X_2=1 | X_1=1 | X_1=8 | X_1=7 | X_2=5 | X_8=1 | X_8=4,0.092
+breast_cancer_wisconsin,malignant,0.9,1,5,4,purity,rules,16,0.9352,0.0198,0.9199,25,0.72,0.1805,0.2571,0.938,15.52,0.9892,0.151,0.036,-0.1554,0.207,X_6=1 | X_2=1 | X_1=1 | X_1=8 | X_1=7 | X_2=5 | X_8=1 | X_8=4 | X_3=5 | X_8=9 | X_2=2 & X_8=6 | X_4=1 | X_9=3 | X_1=2 & X_3=4,0.092
+breast_cancer_wisconsin,malignant,0.9,1,5,4,purity,rules,32,0.9369,0.0198,0.9139,25,0.72,0.1223,0.2515,0.941,19.28,1.0,0.1177,0.0309,-0.189,0.227,X_6=1 | X_2=1 | X_1=1 | X_1=8 | X_1=7 | X_2=5 | X_8=1 | X_8=4 | X_3=5 | X_8=9 | X_2=2 & X_8=6 | X_4=1 | X_9=3 | X_1=2 & X_3=4 | X_1=6 & X_3=2,0.092
+breast_cancer_wisconsin,malignant,0.9,1,5,4,purity,rules_pure,1,0.5353,0.037,0.9782,25,1.0,0.423,0.0815,1.0,1.0,0.5353,0.0,0.0,0.0,0.0,X_6=1,0.094
+breast_cancer_wisconsin,malignant,0.9,1,5,4,purity,rules_pure,2,0.6423,0.0271,0.9811,25,1.0,0.5299,0.0857,0.885,2.0,0.6768,0.0604,0.0319,0.1429,0.067,X_6=1 | X_2=1,0.094
+breast_cancer_wisconsin,malignant,0.9,1,5,4,purity,rules_pure,4,0.7684,0.0253,0.96,25,1.0,0.4767,0.1235,0.866,4.0,0.8201,0.1527,0.0466,0.0855,0.1262,X_6=1 | X_2=1 | X_1=1 | X_1=8,0.094
+breast_cancer_wisconsin,malignant,0.9,1,5,4,purity,rules_pure,8,0.8813,0.0203,0.9441,25,0.84,0.4027,0.1883,0.902,8.0,0.9338,0.1593,0.0332,0.01,0.1564,X_6=1 | X_2=1 | X_1=1 | X_1=8 | X_1=7 | X_2=5 | X_8=1 | X_8=4,0.094
+breast_cancer_wisconsin,malignant,0.9,1,5,4,purity,rules_pure,16,0.9352,0.0198,0.9199,25,0.72,0.1805,0.2571,0.938,15.52,0.9892,0.151,0.036,-0.1554,0.207,X_6=1 | X_2=1 | X_1=1 | X_1=8 | X_1=7 | X_2=5 | X_8=1 | X_8=4 | X_3=5 | X_8=9 | X_2=2 & X_8=6 | X_4=1 | X_9=3 | X_1=2 & X_3=4,0.094
+breast_cancer_wisconsin,malignant,0.9,1,5,4,purity,rules_pure,32,0.9369,0.0198,0.9139,25,0.72,0.1223,0.2515,0.941,19.28,1.0,0.1177,0.0309,-0.189,0.227,X_6=1 | X_2=1 | X_1=1 | X_1=8 | X_1=7 | X_2=5 | X_8=1 | X_8=4 | X_3=5 | X_8=9 | X_2=2 & X_8=6 | X_4=1 | X_9=3 | X_1=2 & X_3=4 | X_1=6 & X_3=2,0.094
+breast_cancer_wisconsin,malignant,0.9,1,5,4,purity,rules_disjoint,1,0.5353,0.037,0.9782,25,1.0,0.423,0.0815,1.0,1.0,0.5353,0.0,0.0,0.0,0.0,X_6=1,0.092
+breast_cancer_wisconsin,malignant,0.9,1,5,4,purity,rules_disjoint,2,0.5819,0.0405,0.9661,25,1.0,0.387,0.1066,0.91,2.0,0.5865,0.0,0.0,0.0,0.0,X_6=1 | X_6=9,0.092
+breast_cancer_wisconsin,malignant,0.9,1,5,4,purity,rules_disjoint,4,0.6142,0.0399,0.9638,25,0.92,0.3893,0.1194,0.895,3.92,0.6315,-0.0015,0.0318,-0.0019,0.0809,X_6=1 | X_6=9 | X_1=1 & X_6=5,0.092
+breast_cancer_wisconsin,malignant,0.9,1,5,4,purity,rules_disjoint,8,0.6482,0.0388,0.9656,25,0.96,0.4233,0.1174,0.879,7.68,0.6944,-0.0738,0.0546,0.0307,0.121,X_6=1 | X_6=9 | X_1=1 & X_6=5 | X_6=8 & X_7=7 | X_2=1 & X_6=0,0.092
+breast_cancer_wisconsin,malignant,0.9,1,5,4,purity,rules_disjoint,16,0.703,0.0366,0.9623,25,0.96,0.4408,0.1224,0.867,15.36,0.785,-0.0813,0.052,0.1048,0.1363,X_6=1 | X_6=9 | X_1=1 & X_6=5 | X_6=8 & X_7=7 | X_2=1 & X_6=0 | X_2=1 & X_6=4 | X_6=7 & X_9=0 | X_6=6 | X_1=9 & X_2=5,0.092
+breast_cancer_wisconsin,malignant,0.9,1,5,4,purity,rules_disjoint,32,0.7502,0.0341,0.9574,25,0.96,0.4433,0.1345,0.861,31.64,0.8938,-0.069,0.0537,0.132,0.1634,X_6=1 | X_6=9 | X_1=1 & X_6=5 | X_6=8 & X_7=7 | X_2=1 & X_6=0 | X_2=1 & X_6=4 | X_6=7 & X_9=0 | X_6=6 | X_1=9 & X_2=5 | X_2=8 & X_5=6 | X_2=1 & X_6=2 | X_3=3 & X_6=3 | X_4=2 & X_6=8 | X_4=5 & X_6=5 | X_1=8 & X_5=5 & X_7=5 | X_1=1 & X_6=2 | X_1=7 & X_6=3,0.092
+breast_cancer_wisconsin,malignant,0.9,1,5,4,purity,tree,1,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,-0.5353,0.037,-0.423,0.0815,,0.06
+breast_cancer_wisconsin,malignant,0.9,1,5,4,purity,tree,2,0.0758,0.1397,0.3612,6,0.0,-0.0892,0.1168,0.072,0.8,0.0756,-0.506,0.1368,-0.4762,0.1444,,0.06
+breast_cancer_wisconsin,malignant,0.9,1,5,4,purity,tree,4,0.8903,0.0261,0.902,25,0.52,0.0016,0.2215,0.938,3.24,0.9058,0.2746,0.0458,-0.3895,0.2243,gini-balanced-depth4-leaf4,0.06
+breast_cancer_wisconsin,malignant,0.9,1,5,4,purity,tree,8,0.8986,0.0237,0.8994,25,0.52,-0.0276,0.2399,0.92,6.16,0.9259,0.1766,0.0375,-0.4202,0.2222,gini-balanced-depth4-leaf4 | gini-balanced-depth4-leaf19,0.06
+breast_cancer_wisconsin,malignant,0.9,1,5,4,purity,tree,16,0.8903,0.0217,0.9048,25,0.56,0.0318,0.237,0.902,12.0,0.9388,0.1061,0.0478,-0.3041,0.2015,gini-balanced-depth4-leaf4 | gini-balanced-depth4-leaf19 | gini-balanced-depth4-leaf17,0.06
+breast_cancer_wisconsin,malignant,0.9,1,5,4,purity,tree,32,0.8903,0.0222,0.9046,25,0.56,0.0244,0.248,0.902,14.0,0.9419,0.0712,0.0466,-0.2868,0.2293,gini-balanced-depth4-leaf4 | gini-balanced-depth4-leaf19 | gini-balanced-depth4-leaf17,0.06
+breast_cancer_wisconsin,malignant,0.9,1,5,4,purity,ssdpp,1,0.2548,0.0508,0.9832,25,1.0,0.195,0.0465,0.41,1.0,0.3153,-0.2805,0.0601,-0.228,0.0576,ssdpp#2,0.186
+breast_cancer_wisconsin,malignant,0.9,1,5,4,purity,ssdpp,2,0.5328,0.042,0.9788,25,1.0,0.4204,0.074,0.687,2.0,0.5747,-0.0491,0.0489,0.0334,0.0759,ssdpp#2 | ssdpp#0,0.186
+breast_cancer_wisconsin,malignant,0.9,1,5,4,purity,ssdpp,4,0.7858,0.0269,0.9825,25,1.0,0.6584,0.1001,0.948,4.0,0.8087,0.1701,0.0497,0.2672,0.1167,ssdpp#2 | ssdpp#0 | ssdpp#1 | ssdpp#3,0.186
+breast_cancer_wisconsin,malignant,0.9,1,5,4,purity,ssdpp,8,0.8106,0.0251,0.981,25,1.0,0.6683,0.1035,0.955,4.72,0.8396,0.0886,0.039,0.2757,0.1392,ssdpp#2 | ssdpp#0 | ssdpp#1 | ssdpp#3 | ssdpp#4,0.186
+breast_cancer_wisconsin,malignant,0.9,1,5,4,purity,ssdpp,16,0.8106,0.0251,0.981,25,1.0,0.6683,0.1035,0.955,4.72,0.8396,0.0264,0.0431,0.3324,0.1318,ssdpp#2 | ssdpp#0 | ssdpp#1 | ssdpp#3 | ssdpp#4,0.186
+breast_cancer_wisconsin,malignant,0.9,1,5,4,purity,ssdpp,32,0.8106,0.0251,0.981,25,1.0,0.6683,0.1035,0.955,4.72,0.8396,-0.0085,0.0443,0.357,0.1666,ssdpp#2 | ssdpp#0 | ssdpp#1 | ssdpp#3 | ssdpp#4,0.186
+breast_cancer_wisconsin,malignant,0.9,1,5,4,certified,vsf,1,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.227
+breast_cancer_wisconsin,malignant,0.9,1,5,4,certified,vsf,2,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.227
+breast_cancer_wisconsin,malignant,0.9,1,5,4,certified,vsf,4,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.227
+breast_cancer_wisconsin,malignant,0.9,1,5,4,certified,vsf,8,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.227
+breast_cancer_wisconsin,malignant,0.9,1,5,4,certified,vsf,16,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.227
+breast_cancer_wisconsin,malignant,0.9,1,5,4,certified,vsf,32,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.227
+breast_cancer_wisconsin,malignant,0.9,1,5,4,certified,vsf_partial,1,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.224
+breast_cancer_wisconsin,malignant,0.9,1,5,4,certified,vsf_partial,2,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.224
+breast_cancer_wisconsin,malignant,0.9,1,5,4,certified,vsf_partial,4,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.224
+breast_cancer_wisconsin,malignant,0.9,1,5,4,certified,vsf_partial,8,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.224
+breast_cancer_wisconsin,malignant,0.9,1,5,4,certified,vsf_partial,16,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.224
+breast_cancer_wisconsin,malignant,0.9,1,5,4,certified,vsf_partial,32,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.224
+breast_cancer_wisconsin,malignant,0.9,1,5,4,certified,vsf_greedy,1,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.167
+breast_cancer_wisconsin,malignant,0.9,1,5,4,certified,vsf_greedy,2,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.167
+breast_cancer_wisconsin,malignant,0.9,1,5,4,certified,vsf_greedy,4,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.167
+breast_cancer_wisconsin,malignant,0.9,1,5,4,certified,vsf_greedy,8,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.167
+breast_cancer_wisconsin,malignant,0.9,1,5,4,certified,vsf_greedy,16,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.167
+breast_cancer_wisconsin,malignant,0.9,1,5,4,certified,vsf_greedy,32,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.167
+breast_cancer_wisconsin,malignant,0.9,1,5,4,certified,rules,1,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.176
+breast_cancer_wisconsin,malignant,0.9,1,5,4,certified,rules,2,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.176
+breast_cancer_wisconsin,malignant,0.9,1,5,4,certified,rules,4,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.176
+breast_cancer_wisconsin,malignant,0.9,1,5,4,certified,rules,8,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.176
+breast_cancer_wisconsin,malignant,0.9,1,5,4,certified,rules,16,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.176
+breast_cancer_wisconsin,malignant,0.9,1,5,4,certified,rules,32,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.176
+breast_cancer_wisconsin,malignant,0.9,1,5,4,certified,rules_pure,1,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.175
+breast_cancer_wisconsin,malignant,0.9,1,5,4,certified,rules_pure,2,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.175
+breast_cancer_wisconsin,malignant,0.9,1,5,4,certified,rules_pure,4,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.175
+breast_cancer_wisconsin,malignant,0.9,1,5,4,certified,rules_pure,8,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.175
+breast_cancer_wisconsin,malignant,0.9,1,5,4,certified,rules_pure,16,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.175
+breast_cancer_wisconsin,malignant,0.9,1,5,4,certified,rules_pure,32,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.175
+breast_cancer_wisconsin,malignant,0.9,1,5,4,certified,rules_disjoint,1,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.176
+breast_cancer_wisconsin,malignant,0.9,1,5,4,certified,rules_disjoint,2,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.176
+breast_cancer_wisconsin,malignant,0.9,1,5,4,certified,rules_disjoint,4,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.176
+breast_cancer_wisconsin,malignant,0.9,1,5,4,certified,rules_disjoint,8,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.176
+breast_cancer_wisconsin,malignant,0.9,1,5,4,certified,rules_disjoint,16,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.176
+breast_cancer_wisconsin,malignant,0.9,1,5,4,certified,rules_disjoint,32,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.176
+breast_cancer_wisconsin,malignant,0.9,1,5,4,certified,tree,1,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.186
+breast_cancer_wisconsin,malignant,0.9,1,5,4,certified,tree,2,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.186
+breast_cancer_wisconsin,malignant,0.9,1,5,4,certified,tree,4,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.186
+breast_cancer_wisconsin,malignant,0.9,1,5,4,certified,tree,8,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.186
+breast_cancer_wisconsin,malignant,0.9,1,5,4,certified,tree,16,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.186
+breast_cancer_wisconsin,malignant,0.9,1,5,4,certified,tree,32,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.186
+breast_cancer_wisconsin,malignant,0.9,1,5,4,certified,ssdpp,1,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.333
+breast_cancer_wisconsin,malignant,0.9,1,5,4,certified,ssdpp,2,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.333
+breast_cancer_wisconsin,malignant,0.9,1,5,4,certified,ssdpp,4,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.333
+breast_cancer_wisconsin,malignant,0.9,1,5,4,certified,ssdpp,8,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.333
+breast_cancer_wisconsin,malignant,0.9,1,5,4,certified,ssdpp,16,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.333
+breast_cancer_wisconsin,malignant,0.9,1,5,4,certified,ssdpp,32,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.333
