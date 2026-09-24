@@ -47,3 +47,9 @@ splice_junction) were removed on 2026-09-17; they remain in the git history.
 - **High-dimensional files** have 325 to 7070 columns and fewer than 75 rows.
   Exhaustive search over schemas of d <= 4 is infeasible there without a
   feature pre-filter.
+
+
+## 2026-09-24 additions
+
+- `car_evaluation.csv`, `chess_krkp.csv`, `mushroom.csv`, `nursery.csv` restored from git history (cead890): they carry the phase-3 comparison numbers and are needed to compare partial-axis centres with them.
+- `adult.csv`, `hmda.csv`, `attrition.csv`, `credit.csv`, `resume.csv`, `wa_churn.csv`, `mlc_churn.csv` built by `experiments/build_external_benchmarks.py` from pinned public copies; numeric columns quantile-binned on all rows (the bins are part of the file).

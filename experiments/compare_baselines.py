@@ -89,6 +89,23 @@ CONFIGS: List[Config] = [
     Config("mushroom", "poisonous", 0.9, n_repeats=2, selection="certified"),
     Config("chess_krkp", "won", 0.9, n_repeats=1),
     Config("chess_krkp", "won", 0.9, n_repeats=1, selection="certified"),
+    # 2026-09-24: seven real tables built by experiments/build_external_benchmarks.py
+    # (N 1 470 - 48 842, M 11 - 24, base rates 8 - 28 %). m = 20 throughout:
+    # m = 1 lets free rules overfit tiny training-pure cells (PMD 4.16).
+    Config("adult", ">50K", 0.7, min_samples=20, n_repeats=2),
+    Config("adult", ">50K", 0.7, min_samples=20, n_repeats=2, selection="certified"),
+    Config("hmda", "yes", 0.5, min_samples=20),
+    Config("hmda", "yes", 0.5, min_samples=20, selection="certified"),
+    Config("attrition", "Yes", 0.5, min_samples=20),
+    Config("attrition", "Yes", 0.5, min_samples=20, selection="certified"),
+    Config("credit", "bad", 0.7, min_samples=20),
+    Config("credit", "bad", 0.7, min_samples=20, selection="certified"),
+    Config("resume", "yes", 0.3, min_samples=20),
+    Config("resume", "yes", 0.3, min_samples=20, selection="certified"),
+    Config("wa_churn", "Yes", 0.7, min_samples=20),
+    Config("wa_churn", "Yes", 0.7, min_samples=20, selection="certified"),
+    Config("mlc_churn", "yes", 0.7, min_samples=20),
+    Config("mlc_churn", "yes", 0.7, min_samples=20, selection="certified"),
 ]
 # The high-dimensional files (lung_discrete, colon, leukemia) are not listed:
 # exhaustive search over d <= 4 on 325-7070 columns needs a feature pre-filter.
