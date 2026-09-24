@@ -1,0 +1,17 @@
+\begin{tabular}{llrrr}
+\toprule
+selection & comparison & better & tie & worse\\
+\midrule
+certified & full grid vs disjoint rules & 2 & 27 & 14\\
+certified & partial centres vs disjoint rules & 2 & 40 & 1\\
+certified & partial centres vs full grid & 15 & 28 & 0\\
+certified & \multicolumn{4}{l}{gap closed by partial centres: median 1.00, mean 1.06 ($n=15$)}\\
+certified & \multicolumn{4}{l}{held-out union purity $\ge\tau$: grid 97\,\%, partial 97\,\%, rules$_{\mathrm{disj}}$ 97\,\%, rules 97\,\%}\\
+\midrule
+purity & full grid vs disjoint rules & 2 & 54 & 39\\
+purity & partial centres vs disjoint rules & 5 & 74 & 16\\
+purity & partial centres vs full grid & 36 & 59 & 0\\
+purity & \multicolumn{4}{l}{gap closed by partial centres: median 0.90, mean 0.80 ($n=49$)}\\
+purity & \multicolumn{4}{l}{held-out union purity $\ge\tau$: grid 80\,\%, partial 80\,\%, rules$_{\mathrm{disj}}$ 77\,\%, rules 61\,\%}\\
+\bottomrule
+\end{tabular}

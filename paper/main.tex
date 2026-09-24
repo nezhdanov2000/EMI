@@ -1,0 +1,180 @@
+\documentclass[11pt]{article}
+\usepackage[a4paper,margin=25mm]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{natbib}
+\usepackage{xcolor}
+\newtheorem{proposition}{Proposition}
+\newtheorem{theorem}{Theorem}
+\newtheorem{definition}{Definition}
+\newcommand{\todo}[1]{\textcolor{red}{[#1]}}
+\newcommand{\cov}{\mathrm{cov}}
+
+\title{Aligned Subgroup Discovery with Partial-Axis Centres:\\
+the Price of One Grid and a Certificate That Survives the Search}
+\author{Gleb Nezhdanov \and Wendy \todo{full name, affiliation} \and \todo{co-authors}}
+\date{Draft of \today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Subgroup discovery returns a list of conjunctive rules; the rules are read one at a time and, unless the method constrains them, they use different columns and overlap.
+We study the \emph{aligned} version of the problem: all groups must be cells of one grid spanned by at most four columns, so that they can be shown together in one picture.
+The constraint has a price. Against free conjunctive rules of the same length at the same budget of conditions, one grid of fully specified cells covers fewer target rows and never more.
+We show that the price is paid for fixing every axis, not for sharing the columns: allowing a centre to leave some axes of the grid free (a \emph{partial-axis centre}, a bar, plate or layer of the same cube) recovers, under a post-selection certificate, the coverage of free disjoint rules (2 wins, 0 losses, 77 ties over 79 configurations on ten datasets outside the study; \todo{in-study numbers}), and closes a median 97\,\% of the gap under the observed-purity rule.
+The candidate partial centres are the cells the exhaustive search over $d\le 4$ already enumerates, so the family-wise certificate (a union bound over every cell the search can show, proved for rows with heterogeneous success probabilities) is unchanged.
+We also show that the standard budgeted-coverage rule baseline is not like for like: overlapping rules each of purity $\ge\tau$ form unions whose held-out purity falls below $\tau$ in half of the splits, and we introduce the disjoint-rule baseline that a method with disjoint groups must be compared against.
+All numbers are produced by scripts with fixed seeds on 18 tables with pinned hashes.
+\end{abstract}
+
+\section{Introduction}
+
+A data analyst asks where a value of a categorical target lives. Subgroup discovery~\citep{klosgen1996,wrobel1997,atzmueller2015} answers with a ranked list of conjunctions $c_1 = v_1 \wedge \dots \wedge c_\ell = v_\ell$. Two properties of such a list make it hard to read as a whole: the rules use different columns, and they overlap. A reader who wants a picture of the target has to hold each rule separately.
+
+The approach studied here fixes the picture first. A \emph{schema} is a set $S$ of at most four columns; the \emph{grid} on $S$ is the joint partition of the rows by the values of those columns; a \emph{centre} is a cell of purity at least $\tau$ with at least $m$ rows. A schema with its centres is one display: a table, a cube, or a cube with a fourth axis stepped through. The search is exhaustive over schemas of every size up to four, so it can find pairs of columns that are jointly informative while neither is alone, which a greedy chain cannot~\citep{krause2005}. \todo{one sentence on the interface, cite the software.}
+
+Two questions decide whether this is a method or merely a constraint:
+
+\begin{enumerate}
+\item \textbf{What does one grid cost?} At an equal budget of conditions, how much target coverage does the alignment lose against free rules, and what mechanism loses it?
+\item \textbf{Is anything shown still true after the search?} The best of $\sum_{d\le 4}\binom{M}{d}$ schemas was chosen by looking at the target; a purity certificate computed for one schema alone is invalid after that choice.
+\end{enumerate}
+
+\paragraph{Contributions.}
+\begin{enumerate}
+\item \emph{Partial-axis centres.} We relax the grid constraint by one step: a centre may fix a subset $S'\subset S$ of the schema's axes. Its candidates are the cells of sub-schemas the search already enumerates; a deterministic disjoint packing keeps coverage a sum and keeps the purity claim for the union. The relaxation removes most of the price of alignment (Section~\ref{sec:results}) and shows where the price came from: fixing all axes, not sharing the columns (Section~\ref{sec:mechanism}).
+\item \emph{A certificate that survives the search.} A cell is certified when its target count reaches $k^*(n,\tau,\alpha/T)$, a heterogeneous-binomial threshold with $T$ the number of distinct row sets among all cells the search can display. The guarantee is a union bound, valid for any rule of schema choice and any dependence between cells, and holds simultaneously for every $\tau$ (Section~\ref{sec:certificate}). Partial centres do not enlarge $T$.
+\item \emph{An evaluation protocol and a corrected baseline.} Nested cross-validation with the encoding (capacity rule, level merging, family size) fitted on the training fold; held-out purity of the \emph{union} of selected groups; and a disjoint-rule baseline, since budgeted maximum coverage over overlapping rules yields unions below $\tau$ in half of the held-out splits (Section~\ref{sec:protocol}).
+\end{enumerate}
+
+What we do not claim: that one grid covers more than free rules (it does not), or that the shared picture is easier to read (that needs a user study, which we leave to future work).
+
+\section{Related work}\label{sec:related}
+
+\paragraph{Subgroup discovery.} SD-Map~\citep{atzmueller2006}, CN2-SD~\citep{lavrac2004}, beam and best-first search in pysubgroup~\citep{lemmerich2018}, diverse top-$k$ (DSSD,~\citealp{vanleeuwen2012}), and MDL-based rule lists (SSD++,~\citealp{proenca2022}). Quality functions are typically size$\times$lift (WRAcc); the task here, maximum coverage subject to a purity floor, is a different objective, and we show in Section~\ref{sec:results} that a WRAcc-ranked list does not solve it (\todo{pysubgroup numbers}).
+
+\paragraph{Statistically sound pattern mining.} Bonferroni over the pattern space~\citep{webb2007}, LAMP and Tarone's trick~\citep{terada2013,llinares2015}, and the two-sample split (exploratory/holdout,~\citealp{webb2007}). Our certificate is of the Bonferroni family with the family taken over row sets rather than descriptions, with a threshold valid for heterogeneous rows~\citep{hoeffding1956}; Tarone's improvement is available only at a fixed $\tau$ and is not used for the interactive setting (Section~\ref{sec:certificate}).
+
+\paragraph{Controlled visual exploration.} Controlling false discoveries during interactive exploration~\citep{zhao2017,zgraggen2018}; visual subgroup discovery in VIKAMINE~\citep{atzmueller2005}; intersectional subgroup analysis with significance in FairVis~\citep{cabrera2019}. Displays of cells of a multi-way table with area and colour go back to mosaic plots~\citep{friendly1994}. We do not claim novelty for the display; the claim is about the search and the certificate behind it.
+
+\paragraph{Optimal trees and slice finding.} A depth-4 decision tree is the most natural competitor for a 4-column description; CART is greedy at the root and loses planted grid structure, while optimal trees~\citep{demirovic2022} would be the stronger baseline (\todo{add or state as limitation}). Slice Finder~\citep{chung2019} looks for underperforming slices of a model with the same conjunctive language.
+
+\section{Problem and method}\label{sec:method}
+
+\subsection{Setting}
+Rows $i=1,\dots,N$ with categorical columns $X_{i1},\dots,X_{iM}$ (numeric columns are binned once, on all rows, and the bins are part of the dataset) and a binary target $z_i\in\{0,1\}$ with $P=\sum_i z_i$ positives. Purity floor $\tau$ above the base rate $P/N$, size floor $m$.
+
+\begin{definition}[Grid, centre, coverage]
+For a schema $S\subseteq\{1,\dots,M\}$, $|S|\le 4$, the grid $\mathcal{G}(S)$ is the partition of rows by the joint value of the columns in $S$, after the capacity rule of Section~\ref{sec:capacity}. A cell $c$ with $n_c$ rows and $k_c$ positives is a centre if $n_c\ge m$ and $k_c/n_c\ge\tau$ (observed-purity rule) or $k_c\ge k^*(n_c,\tau,\alpha/T)$ (certified rule, Section~\ref{sec:certificate}). The coverage of $S$ is $\cov(S)=\sum_{c\text{ centre}} k_c / P$.
+\end{definition}
+
+The full-grid search returns, for each $d\le 4$, $S^*_d=\arg\max_{|S|=d}\cov(S)$, ties broken by fewer centres, then smaller mass, then the best per-cell lower bound. Every $\binom{M}{d}$ subset is scored.
+
+\subsection{Capacity rule and level merging}\label{sec:capacity}
+A grid may occupy at most $\lfloor N/10\rfloor$ cells; when it does not fit, the widest column loses its rarest level into an ``other'' group, one level at a time, until it fits. The rule reads no target and is refitted on the training rows in every fold (Section~\ref{sec:protocol}). \todo{cite PMD Section 2.3 or describe fully.}
+
+\subsection{Partial-axis centres}\label{sec:partial}
+\begin{definition}[Partial centre]
+A partial centre of schema $S$ is a centre of the grid $\mathcal{G}(S')$ for some non-empty $S'\subseteq S$. It fixes $|S'|$ axes of $S$ and leaves $|S|-|S'|$ free; it costs $|S'|$ conditions. On the display of $S$ it is a bar ($|S'|=|S|-1$), a plate, or a layer.
+\end{definition}
+
+Partial centres of different sub-schemas may overlap. We select a disjoint set by a deterministic greedy: candidates in the order (more positives, fewer conditions, fewer rows, enumeration order), each taken if it shares no row with those already taken. The coverage of $S$ with partial centres is then $\cov^{\mathrm{p}}(S)=\sum_{c\text{ chosen}}k_c/P\ \ge\ \cov(S)$, since every full cell is a candidate. The union of disjoint groups each of purity $\ge\tau$ has purity $\ge\tau$.
+
+Three properties make the relaxation free. (i) The candidates of $S$ are the centres of its sub-schemas, which the exhaustive enumeration visits before $S$ ($d=1,\dots,4$ in order); nothing new is computed. (ii) Every candidate is a cell of a partition of some $S'$ with $|S'|\le4$, hence a member of the family $T$ of Section~\ref{sec:certificate}: the certificate is unchanged. (iii) The display is unchanged: a partial centre is a union of cells of the same cube.
+
+Under a budget of $B$ conditions (Section~\ref{sec:protocol}) the packing becomes budgeted maximum coverage over disjoint candidates; we use the cost-effectiveness greedy with lazy evaluation compared against the best single affordable candidate~\citep{khuller1999}, restricted to candidates disjoint from the chosen ones.
+
+\section{A certificate that survives the search}\label{sec:certificate}
+
+Let $\mathcal{T}$ be the set of distinct row sets among the occupied cells of every partition the search can display: the search partition of every schema with $|S|\le 4$ and, where the capacity rule merged levels, the unmerged partition as well. $T=|\mathcal{T}|$ is fixed once the columns are fixed and does not depend on the target, on $\tau$ or on $m$.
+
+\begin{theorem}[Family-wise certificate]\label{thm:cert}
+Conditionally on the columns, let the rows be independent with $\Pr(z_i=1)=p_i$. For a cell $c$ with rows $I_c$ let $\bar p_c=\frac1{n_c}\sum_{i\in I_c}p_i$. Let
+\[
+k^*(n,\tau,\lambda)=\min\Big\{k:\ k\ge\lfloor n\tau\rfloor+1,\ \Pr\big(\mathrm{Bin}(n,\tau)\ge k\big)\le\lambda\Big\}.
+\]
+Then, with $\lambda=\alpha/T$, the probability that some cell $c\in\mathcal{T}$ with $\bar p_c\le\tau$ has $k_c\ge k^*(n_c,\tau,\lambda)$ is at most $\alpha$, simultaneously over every $\tau\in(0,1)$ and every rule by which schemas are chosen after seeing the target.
+\end{theorem}
+
+\begin{proof}[Proof sketch]
+$k_c$ is Poisson-binomial with mean $n_c\bar p_c$. By Hoeffding's Theorem~4~\citep{hoeffding1956}, for $k-1\ge n\bar p_c$ the upper tail of a Poisson-binomial sum is at most that of $\mathrm{Bin}(n,\bar p_c)$; the condition $k\ge\lfloor n\tau\rfloor+1\ge n\bar p_c+\dots$ \todo{state precisely as in PMD 4.14 Proposition 3} places $k^*$ in that range. Monotonicity of the binomial tail in $p$ gives $\Pr(k_c\ge k^*)\le\Pr(\mathrm{Bin}(n_c,\tau)\ge k^*)\le\alpha/T$ for every cell with $\bar p_c\le\tau$. A union bound over the $T$ cells, which are fixed given the columns, gives the family-wise statement regardless of how the displayed schema was selected. Simultaneity in $\tau$ follows because the event for a larger $\tau$ is contained in that for a smaller one.
+\end{proof}
+
+\paragraph{What the theorem does not say.} It bounds the \emph{average} success probability of the rows in a cell, not a population share, and it assumes independence given the columns (families in \texttt{titanic} violate it). The guarantee is per (target value, direction, column set). Westfall--Young resampling was considered and rejected: a permutation of the target tests independence, not $\bar p_c\le\tau$, and certifies a cell of purity $0.85$ as ``$>0.9$''. Tarone's trick removes cells that cannot reach $k^*$ at the given $\tau$ but makes the family depend on $\tau$, which breaks simultaneity for an interactive $\tau$; it is admissible in an experiment with $\tau$ fixed in advance and reduces the smallest certifiable cell only logarithmically (\todo{$n_{\min}$ table}).
+
+\paragraph{Price.} $n_{\min}$, the smallest fully pure cell that can be certified: \todo{table from experiments/n\_min\_table.py: M=5..30, N, $\tau=0.7/0.9$}. Power under strict control at $N=500$ is 1\,\%, at $N=1000$ 57\,\%, at $N=3000$ 100\,\% \todo{cite script}.
+
+\section{Evaluation protocol}\label{sec:protocol}
+
+\paragraph{Folds.} Repeated stratified $K$-fold ($5\times5$; $5\times2$ for \texttt{mushroom} and \texttt{adult}, $5\times1$ for \texttt{chess}), identical across methods so that differences are paired. Every fitted quantity --- bins are fixed, but the capacity rule, level merging and the family size $T$ --- is computed on the training fold; the chosen groups are carried to the held-out rows through the fitted partition (unseen levels go to the ``other'' group).
+
+\paragraph{Budget.} All methods answer the same question: with at most $B\in\{1,2,4,8,16,32\}$ conditions, which groups of rows hold the most positives, each at training purity $\ge\tau$ (or certified) and size $\ge m$? A cell of a $d$-column grid costs $d$; a rule of length $\ell$ costs $\ell$; a tree leaf costs its depth.
+
+\paragraph{Methods.}
+\texttt{vsf}: best schema per budget, its top $\lfloor B/d\rfloor$ centres.
+\texttt{vsf\_partial}: best schema per budget with partial centres, disjoint greedy.
+\texttt{vsf\_greedy}: the nested chain $S_1\subset S_2\subset S_3\subset S_4$ (the greedy the exhaustive search argues against).
+\texttt{rules}: every conjunction of $\le 4$ conditions occurring in the training rows, budgeted maximum coverage (may overlap).
+\texttt{rules\_pure}: \texttt{rules} with the union kept at training purity $\ge\tau$.
+\texttt{rules\_disjoint}: \texttt{rules} with no shared training row.
+\texttt{tree}: CART on one-hot columns, best over depth $\le 4$, criterion and class weight; qualifying leaves under the same greedy. Under the certified rule the tree's leaves are not a pre-specified family, so the filter is only a filter, not a certificate.
+
+\paragraph{Metrics.} On the held-out rows: coverage $k/P$ of the union of selected groups; purity $k/n$ of the union; net coverage $(k-\frac{\tau}{1-\tau}(n-k))/P$, the Lagrangian of coverage subject to purity $\ge\tau$; share of splits with held-out purity $\ge\tau$; description stability (mean pairwise Jaccard of the selected row sets across splits); conditions actually spent; selection time. Paired differences to \texttt{vsf} with the Nadeau--Bengio corrected variance~\citep{nadeau2003}; a mark needs $|t|\ge 2$.
+
+\paragraph{Why the disjoint baseline.} \todo{numbers}: in the external runs the held-out purity of the \texttt{rules} union reached $\tau$ in 53\,\% of splits (observed rule) and 87\,\% (certified), against 73\,\% and 92\,\% for \texttt{vsf}, \texttt{vsf\_partial} and \texttt{rules\_disjoint}. A comparison of coverage alone between an overlapping and a disjoint method therefore compares different constraints.
+
+\section{Data}\label{sec:data}
+Eighteen tables with pinned SHA-256 hashes and recorded preprocessing (Table~\ref{tab:data}): the UCI classics of subgroup discovery (\texttt{mushroom}, \texttt{nursery}, \texttt{car}, \texttt{chess}), \texttt{titanic}, three small clinical tables, seven real tables from public mirrors with $N$ from 1\,470 to 48\,842 and base rates from 8 to 28\,\% (\texttt{adult}, \texttt{hmda}, \texttt{attrition}, \texttt{credit}, \texttt{resume}, two churn tables), and two planted synthetic designs: \emph{aligned} (one 4-cell and one 2-cell in the same four columns) and \emph{misaligned} (two 2-condition rules on disjoint column pairs, which no full grid of four columns can show with fewer than $9+9$ cells). Three high-dimensional expression tables (325--7\,070 columns) are in the repository but excluded: exhaustive search over $d\le4$ needs a feature pre-filter, which would enter the family and break Theorem~\ref{thm:cert}.
+
+\begin{table}[t]\centering\small
+\caption{Datasets and settings (generated by \texttt{experiments/paper\_tables.py} from the manifest and the configuration list).}\label{tab:data}
+\input{tables/datasets}
+\end{table}
+
+\section{Results}\label{sec:results}
+
+\subsection{The price of one grid, and where it comes from}\label{sec:mechanism}
+
+\begin{table}[t]\centering\small
+\caption{Paired comparisons over (configuration, budget) cells, $|t|\ge2$ with the Nadeau--Bengio correction; uninformative cells (no method above 1\,\% held-out coverage) left out. ``Gap closed'' is $(\cov^{\mathrm{p}}-\cov)/(\cov_{\mathrm{rules\,disj}}-\cov)$ over cells where disjoint rules beat the grid by at least one point.}\label{tab:counts}
+\input{tables/counts}
+\end{table}
+
+\begin{table}[t]\centering\small
+\caption{Held-out coverage (\%) at $B=32$, observed-purity selection. Marks: partial centres vs the full grid (p\,vs\,g) and vs disjoint rules (p\,vs\,r).}\label{tab:purity32}
+\input{tables/coverage_purity_B32}
+\end{table}
+
+\begin{table}[t]\centering\small
+\caption{Held-out coverage (\%) at $B=32$, certified selection (configurations where some method certifies anything).}\label{tab:cert32}
+\input{tables/coverage_certified_B32}
+\end{table}
+
+Table~\ref{tab:counts} gives the counts. With the observed-purity rule the full grid loses to free disjoint rules in 39 of 95 cells and wins 2; with partial centres the same schema family loses 16 and wins 5, and closes a median 90\,\% of the gap. Under the certificate the full grid loses 14 of 43 cells; partial centres lose one and win two. The remaining losses under the observed rule are at $B\ge16$ on the tables with the most columns to spare (\texttt{mlc\_churn}, \texttt{credit}, \texttt{attrition}, \texttt{resume}: Table~\ref{tab:purity32}), where free rules keep adding disjoint fragments from other columns after the schema's four are exhausted.
+
+On the misaligned design the full grid covers 0.375 at every budget (one rule; the second needs nine 4-condition cells) while partial centres reach 0.718 at $B=16$, equal to free rules; on the aligned design the full grid still loses (0.504 vs 0.544) because the planted 2-cell costs nine full cells. At $B=32$ the full grid spends on average 7 conditions: one grid holds few pure fully specified cells. This is the mechanism: the alignment price is the price of fixing every axis.
+
+\subsection{Under the certificate}
+Table~\ref{tab:cert32}. Only 8 of 17 certified configurations certify anything at all (the clinical tables with $N\le700$, \texttt{car}, \texttt{credit}, \texttt{resume} and \texttt{wa\_churn} certify nothing at their $\tau$; Section~\ref{sec:certificate}). Where something is certified, one schema with partial centres ties free disjoint rules in 40 of 43 cells, wins 2 and loses 1 (\texttt{nursery}, $\tau=0.7$, $B=32$: 61 vs 67); the independent check on ten other tables gave 77 ties, 2 wins, 0 losses. Held-out union purity reaches $\tau$ in 97\,\% of splits for every method under the certificate, against 61\,\% for overlapping rules under the observed rule (Table~\ref{tab:counts}).
+
+\subsection{Reproducibility of the description}
+\todo{Net coverage and stability. Candidate headline: with $m=1$, free rules select training-pure fragments whose held-out union falls below $\tau$; net coverage of rules at B=32 on titanic $\tau=0.7$: $-24$; vsf\_partial $+8$.}
+
+\subsection{Trees and greedy chains}
+\todo{CART beats every grid method on titanic under the certificate (51.7 vs 34.2) with a filter that is not a certificate; on planted grid structure CART is greedy at the root. Greedy VSF chain: how often it differs from the exhaustive winner and by how much.}
+
+\subsection{Cost}
+\todo{Selection seconds by $M$, $N$, $d$; the partial search re-uses enumerated cells; chess ($M=36$) numbers.}
+
+\section{Limitations}
+The relaxation makes the aligned method closer to free rules; what remains of the constraint is justified by the shared picture, and we have not measured readability. The certificate's power at $N\le 500$ is negligible; with $\tau=0.9$ it certifies nothing on \texttt{titanic}. The capacity rule $\lfloor N/10\rfloor$ interacts with the folds (\texttt{car}: a full factorial at the capacity threshold is merged in the fold but not on all rows, $+15$ points of apparent gap). Numeric columns are binned before the search; the bins are not optimised.
+
+\section{Reproducibility}
+Code: \todo{Zenodo DOI}. Every number is produced by a script in \texttt{experiments/} with seed 0 from data loaded through the manifest. Use of AI assistance: \todo{disclosure per journal policy}.
+
+\bibliographystyle{plainnat}
+\bibliography{refs}
+\end{document}
