@@ -36,7 +36,7 @@ import numpy as np
 from .centers import CenterSpec
 from .vis import Translations, _FullCellStatistics, humanize_col, humanize_val
 
-__all__ = ["enumerate_rules"]
+__all__ = ["enumerate_rules", "union_coverage"]
 
 
 def enumerate_rules(
@@ -168,4 +168,64 @@ def enumerate_rules(
         "n_positive": n_positive,
         "schemas": schema_list,
         "min_rows": min_rows,
+    }
+
+
+def union_coverage(
+    X: np.ndarray,
+    Z: np.ndarray,
+    rules: Sequence[Dict[str, object]],
+) -> Dict[str, object]:
+    """
+    What a SET of rules covers together, as a predictor of the value: the
+    rows satisfying at least one rule (their union - rules overlap, a cell
+    of a 2D schema lies inside cells of its 1D sub-schemas, so the sum of
+    the rules' rows is not the answer), how many of those rows carry the
+    value (`k`), the share of all value rows reached (`coverage` - the
+    recall of "predict the value where some rule fires") and the share of
+    the value among the covered rows (`precision`). Each rule is
+    ``{"features": [j, ...], "values": [v, ...]}`` in the columns of `X`.
+    """
+    X_arr = np.asarray(X, dtype=object)
+    z = (np.asarray(Z).ravel() == 1)
+    n = int(z.shape[0])
+    n_pos = int(z.sum())
+    str_cols: Dict[int, np.ndarray] = {}
+    eq_cache: Dict[Tuple[int, str], np.ndarray] = {}
+
+    def eq(j: int, v: str) -> np.ndarray:
+        key = (j, v)
+        m = eq_cache.get(key)
+        if m is None:
+            col = str_cols.get(j)
+            if col is None:
+                col = X_arr[:, j].astype(str)
+                str_cols[j] = col
+            m = col == v
+            eq_cache[key] = m
+        return m
+
+    covered = np.zeros(n, dtype=bool)
+    for r in rules:
+        feats = [int(j) for j in r["features"]]
+        vals = [str(v) for v in r["values"]]
+        if len(feats) != len(vals) or not feats:
+            raise ValueError("each rule needs equally many features and values")
+        if any(j < 0 or j >= X_arr.shape[1] for j in feats):
+            raise ValueError(f"rule names a feature outside [0, {X_arr.shape[1]})")
+        m = eq(feats[0], vals[0]).copy()
+        for j, v in zip(feats[1:], vals[1:]):
+            m &= eq(j, v)
+        covered |= m
+    n_cov = int(covered.sum())
+    k_cov = int((covered & z).sum())
+    return {
+        "n_rules": int(len(rules)),
+        "n_covered": n_cov,
+        "k_covered": k_cov,
+        "mass": (n_cov / n) if n else 0.0,
+        "coverage": (k_cov / n_pos) if n_pos else 0.0,
+        "precision": (k_cov / n_cov) if n_cov else 0.0,
+        "n_samples": n,
+        "n_positive": n_pos,
     }

@@ -198,7 +198,7 @@ from .selective import (
 )
 from .avr import _prepare_search
 from .redundancy import DEFAULT_GROUP_THRESHOLD, CenterCatalog, collect_centers
-from .rules import enumerate_rules
+from .rules import enumerate_rules, union_coverage
 from .vis import Translations, catalog_from_dataframe, prepare_visualization_payload
 
 __all__ = ["serve"]
@@ -259,6 +259,8 @@ _CURVES_MAX_EXCLUDE = 200
 #: Largest number of schemas `/api/rules` lists at once: the schemas on the
 #: envelope (one per floor and dimensionality, tens on a real dataset).
 _RULES_MAX_SCHEMAS = 400
+#: Largest rule set `/api/rules/union` combines.
+_RULES_UNION_MAX = 20000
 #: Grid step of the tau-curves, in percent of purity.
 _CURVES_STEP_PCT = 1.0
 #: Largest number of (column, value) conjuncts a composite target may have:
@@ -852,6 +854,8 @@ class VSFRequestHandler(http.server.BaseHTTPRequestHandler):
             self._handle_target_api()
         elif path == "/api/rules":
             self._handle_rules_api()
+        elif path == "/api/rules/union":
+            self._handle_rules_union_api()
         elif path == "/api/centers/groups":
             self._handle_centers_api(detail=False)
         elif path == "/api/centers/group":
@@ -1343,6 +1347,48 @@ class VSFRequestHandler(http.server.BaseHTTPRequestHandler):
             })
             self._send_json_response(200, out)
         except ValueError as exc:
+            self._send_json_response(400, {"error": str(exc)})
+        except Exception as e:
+            self._send_json_response(500, {"error": str(e)})
+
+    def _handle_rules_union_api(self) -> None:
+        """
+        `/api/rules/union`: what a set of rules covers together
+        (`vsf.rules.union_coverage`): the union of their rows, the value
+        rows among them (coverage = recall of "the value is where a rule
+        fires"), and the precision of that prediction. `rules` is a list of
+        {features, values}; `certified` (optional, a list of booleans of
+        the same length) asks for the same figures for the certified subset
+        as well. Target, direction and exclusions as for `/api/rules`.
+        """
+        try:
+            req = self._read_json_body()
+            parsed = self._parse_landscape_request(req)
+            if parsed is None:
+                return
+            params, _, _ = parsed
+            rules = req.get("rules")
+            if not isinstance(rules, list) or len(rules) > _RULES_UNION_MAX:
+                self._send_json_response(400, {"error": f"rules must be a list of at most {_RULES_UNION_MAX} {{features, values}} objects"})
+                return
+            cert = req.get("certified", None)
+            if cert is not None and (not isinstance(cert, list) or len(cert) != len(rules)):
+                self._send_json_response(400, {"error": "certified must be a list of booleans, one per rule"})
+                return
+            target = params["_target"]
+            if target.criterion is None:
+                self._send_json_response(400, {"error": "the rules view needs an explicit target value (criterion)"})
+                return
+            X_df, Z, _ = _target_arrays(self.server.df, target, params.get("drop", ()))
+            Z = _np.asarray(Z).astype(int)
+            if params["direction"] == "absence":
+                Z = 1 - Z
+            out: Dict[str, Any] = {"all": union_coverage(X_df.values, Z, rules)}
+            if cert is not None:
+                out["certified"] = union_coverage(X_df.values, Z, [r for r, c in zip(rules, cert) if c])
+            out.update({"target": target.target_col, "criterion": target.criterion, "direction": params["direction"], "tau": params["tau"]})
+            self._send_json_response(200, out)
+        except (ValueError, KeyError, TypeError) as exc:
             self._send_json_response(400, {"error": str(exc)})
         except Exception as e:
             self._send_json_response(500, {"error": str(e)})

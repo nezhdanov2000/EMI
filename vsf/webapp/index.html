@@ -301,6 +301,9 @@
                             </div>
                             <div id="ruBars" class="ru-bars"></div>
                             <div class="ru-total" id="ruTotal">Total centres: —</div>
+                            <!-- What the listed rules cover TOGETHER (union of rows; rules
+                                 overlap, so not a sum): as a predictor of the value. -->
+                            <div class="ru-union" id="ruUnion" title="The rows satisfying at least one of the listed rules - their union, since rules overlap - and how much of the value they reach. 'Certified' counts only rules at or above the boundary: the honest predictor 'the value is where a certified rule fires'. All listed rules together usually cover nearly everything, because every schema partitions all rows."></div>
                             <!-- Erased schemas (click on a bar segment), Undo / Reset, last notice. -->
                             <div id="ruErased" class="ru-erased" style="display: none;"></div>
                             <div id="ruCards" class="cg-list"></div>
@@ -329,6 +332,18 @@
             <div id="tradeoffsArea" style="display: none;">
                 <div class="to-panel">
                     <div class="to-controls">
+                        <!-- Which branch the pointer addresses: the four lines
+                             overlap, so hover and click go to the picked one
+                             (drawn on top, at full strength) at the pointer's
+                             floor. "nearest" is Plotly's own choice. -->
+                        <span class="ru-branch-pick" id="toBranchPick" title="The lines overlap. Pick the branch the hover box and the click should follow; it is drawn on top and the others step back. Nearest: whichever point is closest to the pointer.">
+                            <span>Branch</span>
+                            <label><input type="radio" name="toBranch" value="0" checked onchange="renderTauCurves()"> nearest</label>
+                            <label><input type="radio" name="toBranch" value="1" onchange="renderTauCurves()"> 1D</label>
+                            <label><input type="radio" name="toBranch" value="2" onchange="renderTauCurves()"> 2D</label>
+                            <label><input type="radio" name="toBranch" value="3" onchange="renderTauCurves()"> 3D</label>
+                            <label><input type="radio" name="toBranch" value="4" onchange="renderTauCurves()"> 4D</label>
+                        </span>
                         <label title="Envelope: the best schema of each dimensionality at every floor - the schema changes along the line, and the marks on the axis say where. Selected branch: the branch on screen, one fixed schema, so both panels describe the same thing throughout.">
                             Track
                             <select id="toTrack" onchange="renderTauCurves()">

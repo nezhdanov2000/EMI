@@ -3629,6 +3629,43 @@ function renderRulesResults() {
     }
     renderRulesErased();
     renderRulesCards(listed, absence);
+    scheduleRulesUnion(shown, absence);
+}
+
+// What the listed rules cover together - the union of their rows on the
+// server (rules overlap: a 2D cell lies inside its 1D parents' cells, so
+// the rules' rows cannot be summed), for all listed rules and for the
+// certified ones. Debounced: a filter or an erase changes the set many
+// times a second.
+let _rulesUnionTimer = null, _rulesUnionSeq = 0;
+function scheduleRulesUnion(shown, absence) {
+    if (_rulesUnionTimer) clearTimeout(_rulesUnionTimer);
+    _rulesUnionTimer = setTimeout(() => refreshRulesUnion(shown, absence), 250);
+}
+
+async function refreshRulesUnion(shown, absence) {
+    const el = document.getElementById('ruUnion');
+    const p = landscapeParams();
+    if (!el || !p) return;
+    if (!shown.length) { el.textContent = 'No rule listed: nothing is covered.'; return; }
+    const seq = ++_rulesUnionSeq;
+    const body = Object.assign({}, p, {
+        rules: shown.map(r => ({ features: r.features, values: r.conditions.map(c => c.value) })),
+        certified: shown.map(r => !!r.certified),
+    });
+    try {
+        const res = await fetch('/api/rules/union', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        if (seq !== _rulesUnionSeq) return;   // a newer set is on its way
+        if (res.status === 404) { el.textContent = 'Union: the running server predates this endpoint — restart it (python run.py) and reload.'; return; }
+        const out = await res.json();
+        if (!res.ok) { el.textContent = 'Union: ' + (out.error || res.status); return; }
+        const valueWord = absence ? 'rows without the value' : 'value rows';
+        const line = (u, label, cls) => `<span class="${cls}">${label}</span>: <strong>${u.n_rules}</strong> rule${u.n_rules === 1 ? '' : 's'} fire on <strong>${u.n_covered.toLocaleString()}</strong> of ${u.n_samples.toLocaleString()} rows (${(u.mass * 100).toFixed(1)}%), reaching <strong>${u.k_covered.toLocaleString()}</strong> of ${u.n_positive.toLocaleString()} ${valueWord} — coverage <strong>${(u.coverage * 100).toFixed(1)}%</strong>, precision <strong>${(u.precision * 100).toFixed(1)}%</strong>`;
+        el.innerHTML = `<div>${line(out.certified, `Together, certified rules (≥ ${Math.round(out.tau * 100)}%)`, 'ru-union-cert' + (absence ? ' absence' : ''))}.</div>`
+            + `<div>${line(out.all, 'Together, all listed rules', '')}.</div>`;
+    } catch (err) {
+        if (seq === _rulesUnionSeq) el.textContent = 'Union request failed: ' + err.message;
+    }
 }
 
 // The erased schemas as chips (each restorable), Undo / Reset, and the
@@ -4978,6 +5015,14 @@ function trackMode() {
     return el && el.value === 'branch' ? 'branch' : 'envelope';
 }
 
+// The branch the pointer addresses on the Trade-offs curves: 0 = nearest
+// point (Plotly's choice), 1-4 = that branch at the pointer's floor.
+function toBranchPick() {
+    const el = document.querySelector('input[name="toBranch"]:checked');
+    const d = el ? Number(el.value) : 0;
+    return Number.isFinite(d) ? d : 0;
+}
+
 // The selected branch as a series over the same tau grid: its own coverage and
 // centre count, read off the envelope's family only where it IS the winner —
 // elsewhere the server has not scored it at that floor, so the series is drawn
@@ -4998,6 +5043,40 @@ function branchSeries(data, taus) {
         xs.push(t * 100); cov.push(c.x[i] * 100); cen.push(c.n_centers[i]);
     });
     return xs.length ? { xs, cov, cen, d: feats.length } : null;
+}
+
+// Blinking rings over every point of one schema, on a plot's own overlay
+// (the same device as the Rules eraser): a hovered point on the Trade-offs
+// curves shows where else the same schema is the envelope.
+function vsfOverlayOf(el) {
+    let ov = el.querySelector(':scope > svg.ru-overlay');
+    if (!ov) {
+        ov = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+        ov.setAttribute('class', 'ru-overlay');
+        el.style.position = el.style.position || 'relative';
+        el.appendChild(ov);
+    }
+    return ov;
+}
+
+function vsfDrawRings(el, xs, ys) {
+    const ov = vsfOverlayOf(el);
+    const fl = el._fullLayout, xa = fl && fl.xaxis, ya = fl && fl.yaxis;
+    Array.from(ov.querySelectorAll('circle')).forEach(c => c.remove());
+    if (!xa || !ya) return;
+    xs.forEach((x, i) => {
+        if (ys[i] === null || ys[i] === undefined) return;
+        const c = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+        c.setAttribute('cx', (xa._offset + xa.d2p(x)).toFixed(1));
+        c.setAttribute('cy', (ya._offset + ya.d2p(ys[i])).toFixed(1));
+        c.setAttribute('r', '6');
+        ov.appendChild(c);
+    });
+}
+
+function vsfClearRings(el) {
+    const ov = el.querySelector(':scope > svg.ru-overlay');
+    if (ov) Array.from(ov.querySelectorAll('circle')).forEach(c => c.remove());
 }
 
 function renderTauCurves() {
@@ -5021,31 +5100,35 @@ function renderTauCurves() {
     const costFactor = (d) => (unit === 'conditions' ? d : 1);
     const covTraces = [], cenTraces = [], marks = [];
     let totalChanges = 0;
-    dims.forEach(d => {
+    // With a branch picked it is drawn last (on top), full strength and the
+    // only one that answers hover; the others step back and stay silent.
+    const pick = track === 'branch' ? 0 : toBranchPick();
+    const drawOrder = pick && dims.includes(pick) ? dims.filter(d => d !== pick).concat([pick]) : dims.slice();
+    const traceDim = [];   // trace index -> d, for the click and hover handlers
+    drawOrder.forEach(d => {
         const c = data.curves[String(d)];
         const colour = TAU_CURVE_COLORS[d] || '#e2e8f0';
         const custom = taus.map((t, i) => [
             c.n_centers[i], c.feature_names[i].join(' + '), (c.mass[i] * 100).toFixed(2),
             c.n_certifying[i], c.n_family,
         ]);
-        const dim = track === 'branch' ? 0.25 : 1;
+        const active = !pick || d === pick;
+        const dim = track === 'branch' ? 0.25 : (active ? 1 : 0.35);
+        traceDim.push(d);
         covTraces.push({
             type: 'scatter', mode: 'lines+markers', name: `${d}D`,
             x: taus.map(t => t * 100), y: c.x.map(v => v * 100), customdata: custom,
-            line: { color: colour, width: 1.5 }, marker: { size: 4, color: colour },
-            opacity: dim,
-            hovertemplate: `<b>${d}D</b> at %{x:.0f}%: ${data.x} %{y:.2f}%<br>`
-                + '%{customdata[1]}<br>%{customdata[0]} centres, mass %{customdata[2]}%<br>'
-                + '%{customdata[3]} of %{customdata[4]} schemas certify a centre<extra></extra>',
+            line: { color: colour, width: active && pick ? 2.2 : 1.5 }, marker: { size: active && pick ? 5 : 4, color: colour },
+            // No Plotly hover box (it covered the curves): 'none' keeps the
+            // hover events, our own small tip under the pointer shows the
+            // point. Silent traces skip hover altogether.
+            opacity: dim, hoverinfo: active ? 'none' : 'skip',
         });
         cenTraces.push({
             type: 'scatter', mode: 'lines+markers', name: `${d}D`, showlegend: false,
             x: taus.map(t => t * 100), y: c.n_centers.map(v => v * costFactor(d)), customdata: custom,
-            line: { color: colour, width: 1.5, shape: 'hv' }, marker: { size: 4, color: colour },
-            opacity: dim,
-            hovertemplate: `<b>${d}D</b> at %{x:.0f}%: %{y} ${costNoun}`
-                + (unit === 'conditions' ? ` <i>(%{customdata[0]} centres × ${d})</i>` : '')
-                + '<br>%{customdata[1]}<extra></extra>',
+            line: { color: colour, width: active && pick ? 2.2 : 1.5, shape: 'hv' }, marker: { size: active && pick ? 5 : 4, color: colour },
+            opacity: dim, hoverinfo: active ? 'none' : 'skip',
         });
         if (track !== 'branch') {
             const ch = tauWinnerChanges(c, taus);
@@ -5086,27 +5169,103 @@ function renderTauCurves() {
     // panel a change of schema leaves no artefact (the envelope is continuous
     // by construction), while on the centres panel it is a step that would
     // otherwise read as a cost that moved.
-    Plotly.react(covEl, covTraces, toLayout(data, {
+    const layoutCov = toLayout(data, {
         ytitle: tauCurveYLabel(data), xrange: [xmin, 101], yrange: [0, 102],
         shapes: [cursorShape], legend: true,
-    }), TO_PLOT_CFG);
-    Plotly.react(cenEl, cenTraces, toLayout(data, {
+    });
+    const layoutCen = toLayout(data, {
         ytitle: unit === 'conditions'
             ? 'conditions in its description (d × centres)' : 'certified centres of that schema',
         xrange: [xmin, 101], shapes: [cursorShape].concat(marks),
-    }), TO_PLOT_CFG);
+    });
+    if (pick) {
+        // Hover by floor: the picked branch's point at the pointer's x
+        // answers even when another line lies under the pointer.
+        [layoutCov, layoutCen].forEach(l => { l.hovermode = 'x'; l.hoverdistance = -1; });
+    }
+    Plotly.react(covEl, covTraces, layoutCov, TO_PLOT_CFG);
+    Plotly.react(cenEl, cenTraces, layoutCen, TO_PLOT_CFG);
     const segs = renderLeadStrip(data, taus, dims, [cursorShape], [xmin, 101]);
 
     const cenTitle = document.getElementById('toCentresTitle');
     if (cenTitle) {
         cenTitle.textContent = (unit === 'conditions' ? 'Conditions' : 'Centres') + ' vs. purity floor';
     }
+    // The branch and floor a hover/click means: the picked branch at the
+    // point's floor, or the hit trace's own branch when nothing is picked.
+    const pointTarget = pt => {
+        if (!pt || pt.curveNumber >= traceDim.length) return null;
+        const d = pick ? pick : traceDim[pt.curveNumber];
+        return { d, ti: pt.pointNumber };
+    };
     covEl.removeAllListeners && covEl.removeAllListeners('plotly_click');
     covEl.on('plotly_click', ev => {
-        const pt = ev.points && ev.points[0];
-        if (!pt || pt.curveNumber >= dims.length) return;
-        openTauPoint(dims[pt.curveNumber], pt.pointNumber, 0);
+        const t = pointTarget(ev.points && ev.points[0]);
+        if (!t) return;
+        openTauPoint(t.d, t.ti, 0);
     });
+    // Hover: ring every point of the hovered schema on both panels, so the
+    // stretches one schema holds along the envelope are seen at once.
+    let toHiKey = null;
+    const clearToRings = () => { toHiKey = null; vsfClearRings(covEl); vsfClearRings(cenEl); };
+    clearToRings();
+    const ringSchema = (d, ti) => {
+        const c = data.curves[String(d)];
+        const f = c && c.features[ti];
+        const key = f && f.length ? f.slice().sort((a, b) => a - b).join(',') + '|' + d : null;
+        if (key === toHiKey) return;
+        if (key === null) { clearToRings(); return; }
+        toHiKey = key;
+        const idx = [];
+        for (let i = 0; i < taus.length; i++) {
+            const g = c.features[i];
+            if (g && g.length && g.slice().sort((a, b) => a - b).join(',') + '|' + d === key) idx.push(i);
+        }
+        const xs = idx.map(i => taus[i] * 100);
+        vsfDrawRings(covEl, xs, idx.map(i => c.x[i] * 100));
+        vsfDrawRings(cenEl, xs, idx.map(i => c.n_centers[i] * costFactor(d)));
+    };
+    // A small tip of our own, placed just under the pointer (Plotly's box
+    // sat to the right and hid the curves): two short lines.
+    const tipOf = el => {
+        let tip = el.querySelector(':scope > div.to-tip');
+        if (!tip) { tip = document.createElement('div'); tip.className = 'to-tip'; el.appendChild(tip); }
+        return tip;
+    };
+    const hideTips = () => [covEl, cenEl].forEach(el => { const t = el.querySelector(':scope > div.to-tip'); if (t) t.style.display = 'none'; });
+    const showTip = (el, ev, t, isCen) => {
+        const c = data.curves[String(t.d)];
+        if (!c) return;
+        const tip = tipOf(el);
+        const pct = Math.round(taus[t.ti] * 100);
+        const first = isCen
+            ? `<b>${t.d}D</b> at ${pct}%: ${c.n_centers[t.ti] * costFactor(t.d)} ${costNoun}`
+            : `<b>${t.d}D</b> at ${pct}%: ${data.x} ${(c.x[t.ti] * 100).toFixed(1)}%`;
+        tip.innerHTML = `${first}<br>${escHtml(c.feature_names[t.ti].join(' + '))} · ${c.n_centers[t.ti]} centres`;
+        const me = ev.event;
+        const bb = el.getBoundingClientRect();
+        let left = (me ? me.clientX - bb.left : bb.width / 2) - 8;
+        let top = (me ? me.clientY - bb.top : bb.height / 2) + 16;
+        tip.style.display = 'block';
+        const w = tip.offsetWidth, h = tip.offsetHeight;
+        if (left + w > bb.width - 4) left = bb.width - 4 - w;
+        if (left < 4) left = 4;
+        if (top + h > bb.height - 2) top = (me ? me.clientY - bb.top : bb.height / 2) - h - 10;
+        tip.style.left = `${left.toFixed(0)}px`; tip.style.top = `${top.toFixed(0)}px`;
+    };
+    const onToHover = (el, isCen) => ev => {
+        const t = pointTarget(ev.points && ev.points[0]);
+        if (!t) { clearToRings(); hideTips(); return; }
+        showTip(el, ev, t, isCen);
+        if (track === 'branch') { clearToRings(); return; }
+        ringSchema(t.d, t.ti);
+    };
+    [[covEl, false], [cenEl, true]].forEach(([el, isCen]) => {
+        if (el.removeAllListeners) { el.removeAllListeners('plotly_hover'); el.removeAllListeners('plotly_unhover'); }
+        el.on('plotly_hover', onToHover(el, isCen));
+        el.on('plotly_unhover', () => { clearToRings(); hideTips(); });
+    });
+    hideTips();
     if (note) {
         const p0 = (data.anchor * 100).toFixed(1);
         const nfam = dims.map(d => `${d}D: ${data.curves[String(d)].n_family}`).join(', ');

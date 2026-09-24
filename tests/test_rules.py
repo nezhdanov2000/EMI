@@ -152,3 +152,38 @@ def test_rules_endpoint():
         assert srv.post("/api/rules", {"target": "survived", "schemas": schemas})[0] == 400  # needs a criterion
     finally:
         srv.close()
+
+
+def test_union_coverage_is_the_union_of_rows_not_the_sum():
+    from vsf.rules import union_coverage
+    df = _df(3)
+    X = df[["sex", "age", "fare"]].values
+    Z = (df["survived"] == "yes").astype(int).values
+    male = {"features": [0], "values": ["male"]}
+    male_child = {"features": [0, 1], "values": ["male", "child"]}
+    u1 = union_coverage(X, Z, [male])
+    u2 = union_coverage(X, Z, [male, male_child])          # nested: no new rows
+    u3 = union_coverage(X, Z, [male, {"features": [0], "values": ["female"]}])
+    m = (df["sex"] == "male").values
+    assert u1["n_covered"] == int(m.sum()) and u1["k_covered"] == int((m & (Z == 1)).sum())
+    assert u1["coverage"] == pytest.approx(u1["k_covered"] / Z.sum()) and u1["precision"] == pytest.approx(u1["k_covered"] / u1["n_covered"])
+    assert (u2["n_covered"], u2["k_covered"]) == (u1["n_covered"], u1["k_covered"]) and u2["n_rules"] == 2
+    assert u3["n_covered"] == len(df) and u3["coverage"] == pytest.approx(1.0)
+    assert union_coverage(X, Z, [])["n_covered"] == 0
+    with pytest.raises(ValueError):
+        union_coverage(X, Z, [{"features": [9], "values": ["x"]}])
+    # endpoint: all + certified subset; absence flips the indicator
+    srv = _Server(df)
+    base = {"target": "survived", "criterion": "yes", "tau": 0.8}
+    try:
+        status, out = srv.post("/api/rules/union", dict(base, rules=[male, male_child], certified=[True, False]))
+        assert status == 200, out
+        assert out["all"]["n_covered"] == u1["n_covered"] and out["certified"]["n_rules"] == 1
+        assert out["certified"]["n_covered"] == u1["n_covered"]
+        status, ab = srv.post("/api/rules/union", dict(base, rules=[male], direction="absence", tau=0.95))
+        assert status == 200 and ab["all"]["k_covered"] == u1["n_covered"] - u1["k_covered"]
+        assert srv.post("/api/rules/union", dict(base, rules="x"))[0] == 400
+        assert srv.post("/api/rules/union", dict(base, rules=[male], certified=[True, False]))[0] == 400
+        assert srv.post("/api/rules/union", dict(base, rules=[{"features": [0], "values": []}]))[0] == 400
+    finally:
+        srv.close()

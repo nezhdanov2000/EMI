@@ -1213,7 +1213,7 @@ body.absence-mode .color-scale-handle--red { --handle-color: #64748b; }
 .to-grid { display: flex; flex-direction: column; gap: 2px; }
 .to-chart { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .to-title { color: #e2e8f0; font-weight: 600; }
-.to-plot { width: 100%; height: 230px; }
+.to-plot { width: 100%; height: 230px; position: relative; }
 .to-plot-tall { height: 300px; }
 .to-plot-strip { height: 72px; }
 .to-note { color: var(--text-dim); line-height: 1.45; }
@@ -1342,3 +1342,15 @@ body.absence-mode .color-scale-handle--red { --handle-color: #64748b; }
 .ru-overlay { position: absolute; left: 0; top: 0; width: 100%; height: 100%; pointer-events: none; overflow: visible; }
 .ru-overlay circle { fill: none; stroke: #f8fafc; stroke-width: 2; animation: ruBlink 0.9s steps(1, end) infinite; }
 .ru-overlay line.ru-cursor { stroke: rgba(248,250,252,0.55); stroke-width: 1; }
+
+.ru-union { color: var(--text-muted); font-size: 0.78rem; line-height: 1.5; padding: 6px 10px; border-radius: 8px; background: rgba(255,255,255,0.03); }
+.ru-union strong { color: #f8fafc; font-variant-numeric: tabular-nums; }
+.ru-union .ru-union-cert { color: #86efac; }
+.ru-union .ru-union-cert.absence { color: #fca5a5; }
+
+.to-tip {
+    position: absolute; display: none; pointer-events: none; z-index: 5;
+    font-size: 0.7rem; line-height: 1.3; color: #e2e8f0; white-space: nowrap;
+    background: rgba(15, 23, 42, 0.92); border: 1px solid rgba(255,255,255,0.15); border-radius: 6px; padding: 3px 7px;
+}
+.to-tip b { color: #f8fafc; }
