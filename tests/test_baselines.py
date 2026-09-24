@@ -345,3 +345,21 @@ def test_vsf_partial_candidates_are_a_subset_of_free_rules() -> None:
     # except through greedy non-monotonicity; on this planted data they tie.
     for b in budgets:
         assert abs(part.train_coverage[b] - disj.train_coverage[b]) < 0.05
+
+
+def test_ssdpp_groups_are_disjoint_qualify_and_respect_budget() -> None:
+    pytest.importorskip("rulelist")
+    X, z = _two_region_data(0)
+    _, fit, X_all, train, z_train, names = _train_split(X, z)
+    budgets = [2, 4, 8]
+    res = bl.select_ssdpp(X_all, train, z_train, 0.9, 5, budgets, names)
+    for b in budgets:
+        assert sum(g.cost for g in res.groups[b]) <= b
+        union_tr = np.zeros(train.size, dtype=bool)
+        for g in res.groups[b]:
+            m_tr = g.members[train]
+            assert not np.any(union_tr & m_tr)
+            union_tr |= m_tr
+            assert z_train[m_tr].mean() >= 0.9 - 1e-12
+    # the ordered list resolves the overlap of the two planted rules by "else": both fit in 4 conditions
+    assert res.train_coverage[4] > 0.8

@@ -49,6 +49,16 @@ Methods
                `rules_pure` may overlap, and an overlapping union of rules
                each >= tau can fall below tau (rules_pure guards this on the
                training fold only).
+`ssdpp`        SSD++ (Proenca et al., 2022; package `rulelist`): an MDL rule
+               list for the two-class target on the training rows, beam 50,
+               depth <= max_d, min_support = m. A rule list is ordered
+               ("else if"), so rule i applies to the rows not matched by
+               rules 1..i-1: its groups are disjoint by construction. The
+               qualifying rules (training purity >= tau, or the certificate
+               threshold) are then chosen under the budget by the same greedy
+               as the others; cost = conditions in the rule. The list is
+               fitted for the whole target, so it also contains rules for
+               the other class; those never qualify.
 `tree`         one CART tree (scikit-learn) on one-hot training rows,
                min_samples_leaf = m; qualifying leaves selected by the same
                greedy. At each budget the tree with the most covered
@@ -120,6 +130,7 @@ __all__ = [
     "select_tree",
     "select_vsf",
     "select_vsf_partial",
+    "select_ssdpp",
     "TREE_GRID",
 ]
 
@@ -439,6 +450,55 @@ def select_vsf_partial(
     return result
 
 
+def select_ssdpp(
+    X_all: np.ndarray, train: np.ndarray, z_train: np.ndarray, tau: float, m: int,
+    budgets: Sequence[int], names: Sequence[str], max_d: int = MAX_BRANCH_D,
+    threshold: Optional[np.ndarray] = None, beam_width: int = 50,
+) -> MethodResult:
+    """SSD++ rule list (package `rulelist`) on the training rows; see the module docstring."""
+    import pandas as pd
+    from rulelist import RuleList
+    n_train = int(train.size)
+    z64 = z_train.astype(np.int64)
+    X_train = X_all[train]
+    cols = [f"c{j}" for j in range(X_all.shape[1])]
+    frame = pd.DataFrame({c: X_train[:, j].astype(str) for j, c in enumerate(cols)})
+    target = pd.DataFrame({"y": np.where(z64 == 1, "pos", "neg")})
+    model = RuleList(target_model="categorical", task="discovery", max_depth=max_d,
+                     beam_width=beam_width, min_support=max(1, m))
+    model.fit(frame, target)
+    candidates: List[_Candidate] = []
+    members_all: List[np.ndarray] = []
+    covered_all = np.zeros(X_all.shape[0], dtype=bool)
+    for sg in model._rulelist.subgroups:
+        conds = [(int(str(it.parent_variable)[1:]), str(it.activation_function.keywords["category"]))
+                 for it in sg.pattern]
+        match = np.ones(X_all.shape[0], dtype=bool)
+        for j, v in conds:
+            match &= X_all[:, j].astype(str) == v
+        members = match & ~covered_all          # "else if" semantics on all rows
+        covered_all |= match
+        rows = np.flatnonzero(members[train])
+        if rows.size == 0:
+            continue
+        k = int(z64[rows].sum())
+        if not bool(_qualifying(np.array([k]), np.array([rows.size]), tau, m, threshold)[0]):
+            continue
+        candidates.append(_Candidate(positives=rows[z64[rows] == 1], cost=len(conds),
+                                     key=len(members_all), negatives=rows[z64[rows] == 0]))
+        members_all.append(members)
+        _ = names
+    chosen = budgeted_greedy(candidates, budgets, n_train, disjoint=True)
+    n_pos = max(1, int(z64.sum()))
+    result = MethodResult()
+    for budget, (idx, covered) in chosen.items():
+        groups = [Group(members=members_all[int(candidates[i].key)], cost=candidates[i].cost,  # type: ignore[arg-type]
+                        label=f"ssdpp#{candidates[i].key}") for i in idx]
+        result.groups[budget] = groups
+        result.train_coverage[budget] = covered / n_pos
+    return result
+
+
 def greedy_chain(
     fit: _CandidateFactory, z_train: np.ndarray, spec: CenterSpec, max_d: int = MAX_BRANCH_D,
 ) -> List[Tuple[int, ...]]:
@@ -607,7 +667,7 @@ def evaluate_groups(groups: Sequence[Group], z: np.ndarray, test: np.ndarray) ->
             int(sum(g.cost for g in groups)))
 
 
-METHODS: Tuple[str, ...] = ("vsf", "vsf_partial", "vsf_greedy", "rules", "rules_pure", "rules_disjoint", "tree")
+METHODS: Tuple[str, ...] = ("vsf", "vsf_partial", "vsf_greedy", "rules", "rules_pure", "rules_disjoint", "tree", "ssdpp")
 
 
 @dataclass(frozen=True, eq=False)
@@ -746,6 +806,8 @@ def run_split(
                                                threshold=threshold, disjoint=True),
         "tree": lambda: select_tree(X_all, train, z_train, tau, m, budgets, random_state, max_d,
                                     threshold=threshold),
+        "ssdpp": lambda: select_ssdpp(X_all, train, z_train, tau, m, budgets, names, max_d,
+                                      threshold=threshold),
     }
     out: SplitResult = {}
     for mth in methods:

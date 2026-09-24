@@ -25,7 +25,7 @@ import numpy as np
 import pandas as pd
 
 RESULTS = Path(__file__).resolve().parent / "results"
-METHOD_ORDER = ("vsf", "vsf_partial", "vsf_greedy", "rules_disjoint", "rules_pure", "rules", "tree")
+METHOD_ORDER = ("vsf", "vsf_partial", "vsf_greedy", "rules_disjoint", "rules_pure", "rules", "ssdpp", "tree")
 MIN_INFORMATIVE = 0.01
 EXCLUDED: Dict[str, str] = {}
 
