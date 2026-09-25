@@ -1,0 +1,5 @@
+dataset,positive,tau,min_samples,d,n_repeats,seed,winner,in_sample_coverage,in_sample_purity,fixed_cv_coverage,fixed_cv_se,fixed_cv_purity,nested_cv_coverage,nested_cv_se,nested_cv_purity,nested_minus_fixed_t,nested_all_rows_coverage,nested_all_rows_purity,all_rows_minus_train,all_rows_minus_train_se,share_same_winner_all_rows,share_same_winner,n_distinct_winners,mean_pairwise_jaccard,d_star_nested,seconds_nested
+mushroom,poisonous,0.9,1,1,5,0,odor,0.9694,1.0,0.9694,0.0032,1.0,0.9694,0.0032,1.0,0.0,0.9694,1.0,0.0,0.0,1.0,1.0,1,1.0,4,19.4
+mushroom,poisonous,0.9,1,2,5,0,odor+spore_print_color,0.9877,1.0,0.9877,0.002,1.0,0.9877,0.002,1.0,0.0,0.9877,1.0,0.0,0.0,1.0,1.0,1,1.0,4,19.4
+mushroom,poisonous,0.9,1,3,5,0,odor+stalk_color_below_ring+spore_print_color,0.9939,1.0,0.9939,0.0013,1.0,0.9931,0.0015,1.0,-1.19,0.9931,1.0,0.0,0.0,0.64,0.64,2,0.76,4,19.4
+mushroom,poisonous,0.9,1,4,5,0,bruises+stalk_root+ring_number+spore_print_color,1.0,1.0,1.0,0.0,1.0,1.0,0.0,1.0,0.0,1.0,1.0,0.0,0.0,1.0,1.0,1,1.0,4,19.4

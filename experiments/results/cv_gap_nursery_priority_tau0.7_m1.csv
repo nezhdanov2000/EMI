@@ -1,0 +1,5 @@
+dataset,positive,tau,min_samples,d,winner,edge_full,edge_fold,cov_leak,cov_fixed,cov_nested,lost_edge
+nursery,priority,0.7,1,1,health,nan,nan,0.0,0.0,0.0,0.0
+nursery,priority,0.7,1,2,has_nurs+health,0.0,0.0,0.6301,0.6301,0.6301,0.0
+nursery,priority,0.7,1,3,parents+has_nurs+health,0.0,0.0195,0.8087,0.8087,0.8087,0.0
+nursery,priority,0.7,1,4,parents+has_nurs+children+health,0.2086,0.1596,0.7595,0.72,0.7393,0.0395

@@ -1,0 +1,3 @@
+dataset,positive,tau,min_samples,d,n_repeats,seed,winner,in_sample_coverage,in_sample_purity,fixed_cv_coverage,fixed_cv_se,fixed_cv_purity,nested_cv_coverage,nested_cv_se,nested_cv_purity,nested_minus_fixed_t,nested_all_rows_coverage,nested_all_rows_purity,all_rows_minus_train,all_rows_minus_train_se,share_same_winner_all_rows,share_same_winner,n_distinct_winners,mean_pairwise_jaccard,d_star_nested,seconds_nested
+splice_junction,EI,0.9,1,1,5,0,p_p20,0.0039,1.0,0.0031,0.0018,1.0,0.0018,0.0016,0.7,-0.91,0.0018,0.7,0.0,0.0,0.76,0.76,4,0.583,none,3.5
+splice_junction,EI,0.9,1,2,5,0,p_p8+p_p20,0.0052,1.0,0.0021,0.0017,1.0,0.0,0.0,0.0,-1.25,0.0,0.0,0.0,0.0,0.52,0.52,4,0.594,none,3.5

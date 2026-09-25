@@ -1,0 +1,61 @@
+dataset,positive,tau,min_samples,n_repeats,max_d,selection,method,budget,coverage,coverage_se,purity,splits_with_groups,purity_reaches_tau,net_coverage,net_coverage_se,stability,conditions_spent,train_coverage,minus_vsf,minus_vsf_se,net_minus_vsf,net_minus_vsf_se,fold0_groups,selection_seconds
+synthetic_two_rules,yes,0.9,5,5,4,purity,vsf,1,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.005
+synthetic_two_rules,yes,0.9,5,5,4,purity,vsf,2,0.4527,0.0276,0.9489,25,0.92,0.2277,0.0938,0.682,2.0,0.4874,0.0,0.0,0.0,0.0,X_1+X_2#0,0.005
+synthetic_two_rules,yes,0.9,5,5,4,purity,vsf,4,0.4527,0.0276,0.9489,25,0.92,0.2277,0.0938,0.682,2.0,0.4874,0.0,0.0,0.0,0.0,X_1+X_2#0,0.005
+synthetic_two_rules,yes,0.9,5,5,4,purity,vsf,8,0.4527,0.0276,0.9489,25,0.92,0.2277,0.0938,0.682,2.0,0.4874,0.0,0.0,0.0,0.0,X_1+X_2#0,0.005
+synthetic_two_rules,yes,0.9,5,5,4,purity,vsf,16,0.4527,0.0276,0.9489,25,0.92,0.2277,0.0938,0.682,2.0,0.4874,0.0,0.0,0.0,0.0,X_1+X_2#0,0.005
+synthetic_two_rules,yes,0.9,5,5,4,purity,vsf,32,0.4027,0.0227,0.9482,25,0.92,0.2023,0.0904,0.545,20.0,0.498,0.0,0.0,0.0,0.0,X_1+X_2+X_3+X_4#63 | X_1+X_2+X_3+X_4#4 | X_1+X_2+X_3+X_4#72 | X_1+X_2+X_3+X_4#5 | X_1+X_2+X_3+X_4#8 | X_1+X_2+X_3+X_4#27 | X_1+X_2+X_3+X_4#36 | X_1+X_2+X_3+X_4#2,0.005
+synthetic_two_rules,yes,0.9,5,5,4,purity,vsf_greedy,1,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.003
+synthetic_two_rules,yes,0.9,5,5,4,purity,vsf_greedy,2,0.4573,0.0265,0.9491,25,0.92,0.2323,0.0947,0.637,2.0,0.4848,0.0045,0.0201,0.0045,0.0214,X_3+X_4#0,0.003
+synthetic_two_rules,yes,0.9,5,5,4,purity,vsf_greedy,4,0.4573,0.0265,0.9491,25,0.92,0.2323,0.0947,0.637,2.0,0.4848,0.0045,0.0201,0.0045,0.0214,X_3+X_4#0,0.003
+synthetic_two_rules,yes,0.9,5,5,4,purity,vsf_greedy,8,0.4573,0.0265,0.9491,25,0.92,0.2323,0.0947,0.637,2.0,0.4848,0.0045,0.0201,0.0045,0.0214,X_3+X_4#0,0.003
+synthetic_two_rules,yes,0.9,5,5,4,purity,vsf_greedy,16,0.4573,0.0265,0.9491,25,0.92,0.2323,0.0947,0.637,2.0,0.4848,0.0045,0.0201,0.0045,0.0214,X_3+X_4#0,0.003
+synthetic_two_rules,yes,0.9,5,5,4,purity,vsf_greedy,32,0.4405,0.0322,0.9507,25,0.92,0.2318,0.0987,0.643,9.2,0.4905,0.0377,0.0299,0.0295,0.055,X_3+X_4#0,0.003
+synthetic_two_rules,yes,0.9,5,5,4,purity,rules,1,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.011
+synthetic_two_rules,yes,0.9,5,5,4,purity,rules,2,0.4527,0.0276,0.9489,25,0.92,0.2277,0.0938,0.682,2.0,0.4874,0.0,0.0,0.0,0.0,X_1=0 & X_2=0,0.011
+synthetic_two_rules,yes,0.9,5,5,4,purity,rules,4,0.9045,0.0142,0.9572,25,1.0,0.5364,0.0794,1.0,4.0,0.9045,0.4518,0.0252,0.3086,0.0492,X_1=0 & X_2=0 | X_3=0 & X_4=0,0.011
+synthetic_two_rules,yes,0.9,5,5,4,purity,rules,8,0.9045,0.0142,0.9572,25,1.0,0.5364,0.0794,1.0,4.0,0.9045,0.4518,0.0252,0.3086,0.0492,X_1=0 & X_2=0 | X_3=0 & X_4=0,0.011
+synthetic_two_rules,yes,0.9,5,5,4,purity,rules,16,0.9045,0.0142,0.9572,25,1.0,0.5364,0.0794,1.0,4.0,0.9045,0.4518,0.0252,0.3086,0.0492,X_1=0 & X_2=0 | X_3=0 & X_4=0,0.011
+synthetic_two_rules,yes,0.9,5,5,4,purity,rules,32,0.9045,0.0142,0.9572,25,1.0,0.5364,0.0794,1.0,4.0,0.9045,0.5018,0.0283,0.3341,0.0576,X_1=0 & X_2=0 | X_3=0 & X_4=0,0.011
+synthetic_two_rules,yes,0.9,5,5,4,purity,rules_pure,1,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.01
+synthetic_two_rules,yes,0.9,5,5,4,purity,rules_pure,2,0.4527,0.0276,0.9489,25,0.92,0.2277,0.0938,0.682,2.0,0.4874,0.0,0.0,0.0,0.0,X_1=0 & X_2=0,0.01
+synthetic_two_rules,yes,0.9,5,5,4,purity,rules_pure,4,0.9045,0.0142,0.9572,25,1.0,0.5364,0.0794,1.0,4.0,0.9045,0.4518,0.0252,0.3086,0.0492,X_1=0 & X_2=0 | X_3=0 & X_4=0,0.01
+synthetic_two_rules,yes,0.9,5,5,4,purity,rules_pure,8,0.9045,0.0142,0.9572,25,1.0,0.5364,0.0794,1.0,4.0,0.9045,0.4518,0.0252,0.3086,0.0492,X_1=0 & X_2=0 | X_3=0 & X_4=0,0.01
+synthetic_two_rules,yes,0.9,5,5,4,purity,rules_pure,16,0.9045,0.0142,0.9572,25,1.0,0.5364,0.0794,1.0,4.0,0.9045,0.4518,0.0252,0.3086,0.0492,X_1=0 & X_2=0 | X_3=0 & X_4=0,0.01
+synthetic_two_rules,yes,0.9,5,5,4,purity,rules_pure,32,0.9045,0.0142,0.9572,25,1.0,0.5364,0.0794,1.0,4.0,0.9045,0.5018,0.0283,0.3341,0.0576,X_1=0 & X_2=0 | X_3=0 & X_4=0,0.01
+synthetic_two_rules,yes,0.9,5,5,4,purity,tree,1,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.072
+synthetic_two_rules,yes,0.9,5,5,4,purity,tree,2,0.4727,0.0263,0.9463,25,0.92,0.2273,0.0943,0.79,2.0,0.4853,0.02,0.0291,-0.0005,0.0265,entropy-None-depth2-leaf6,0.072
+synthetic_two_rules,yes,0.9,5,5,4,purity,tree,4,0.4727,0.0263,0.9463,25,0.92,0.2273,0.0943,0.79,2.0,0.4853,0.02,0.0291,-0.0005,0.0265,entropy-None-depth2-leaf6,0.072
+synthetic_two_rules,yes,0.9,5,5,4,purity,tree,8,0.6473,0.0298,0.9585,25,1.0,0.3936,0.0759,0.711,6.0,0.6328,0.1945,0.0428,0.1659,0.0777,entropy-None-depth3-leaf7 | entropy-None-depth3-leaf13,0.072
+synthetic_two_rules,yes,0.9,5,5,4,purity,tree,16,0.8045,0.0194,0.9546,25,1.0,0.4568,0.0914,0.95,9.0,0.7992,0.3518,0.0316,0.2291,0.0422,entropy-None-depth3-leaf7 | entropy-None-depth3-leaf13 | entropy-None-depth3-leaf14,0.072
+synthetic_two_rules,yes,0.9,5,5,4,purity,tree,32,0.83,0.0292,0.9566,25,1.0,0.4864,0.0859,0.864,20.48,0.8308,0.4273,0.0393,0.2841,0.0662,entropy-None-depth4-leaf14 | entropy-None-depth4-leaf26 | entropy-None-depth4-leaf15 | entropy-None-depth4-leaf29 | entropy-None-depth4-leaf23 | entropy-None-depth4-leaf30,0.072
+synthetic_two_rules,yes,0.9,5,5,4,certified,vsf,1,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.018
+synthetic_two_rules,yes,0.9,5,5,4,certified,vsf,2,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.018
+synthetic_two_rules,yes,0.9,5,5,4,certified,vsf,4,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.018
+synthetic_two_rules,yes,0.9,5,5,4,certified,vsf,8,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.018
+synthetic_two_rules,yes,0.9,5,5,4,certified,vsf,16,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.018
+synthetic_two_rules,yes,0.9,5,5,4,certified,vsf,32,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.018
+synthetic_two_rules,yes,0.9,5,5,4,certified,vsf_greedy,1,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.019
+synthetic_two_rules,yes,0.9,5,5,4,certified,vsf_greedy,2,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.019
+synthetic_two_rules,yes,0.9,5,5,4,certified,vsf_greedy,4,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.019
+synthetic_two_rules,yes,0.9,5,5,4,certified,vsf_greedy,8,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.019
+synthetic_two_rules,yes,0.9,5,5,4,certified,vsf_greedy,16,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.019
+synthetic_two_rules,yes,0.9,5,5,4,certified,vsf_greedy,32,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.019
+synthetic_two_rules,yes,0.9,5,5,4,certified,rules,1,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.02
+synthetic_two_rules,yes,0.9,5,5,4,certified,rules,2,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.02
+synthetic_two_rules,yes,0.9,5,5,4,certified,rules,4,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.02
+synthetic_two_rules,yes,0.9,5,5,4,certified,rules,8,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.02
+synthetic_two_rules,yes,0.9,5,5,4,certified,rules,16,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.02
+synthetic_two_rules,yes,0.9,5,5,4,certified,rules,32,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.02
+synthetic_two_rules,yes,0.9,5,5,4,certified,rules_pure,1,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.019
+synthetic_two_rules,yes,0.9,5,5,4,certified,rules_pure,2,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.019
+synthetic_two_rules,yes,0.9,5,5,4,certified,rules_pure,4,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.019
+synthetic_two_rules,yes,0.9,5,5,4,certified,rules_pure,8,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.019
+synthetic_two_rules,yes,0.9,5,5,4,certified,rules_pure,16,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.019
+synthetic_two_rules,yes,0.9,5,5,4,certified,rules_pure,32,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.019
+synthetic_two_rules,yes,0.9,5,5,4,certified,tree,1,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.06
+synthetic_two_rules,yes,0.9,5,5,4,certified,tree,2,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.06
+synthetic_two_rules,yes,0.9,5,5,4,certified,tree,4,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.06
+synthetic_two_rules,yes,0.9,5,5,4,certified,tree,8,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.06
+synthetic_two_rules,yes,0.9,5,5,4,certified,tree,16,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.06
+synthetic_two_rules,yes,0.9,5,5,4,certified,tree,32,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.06

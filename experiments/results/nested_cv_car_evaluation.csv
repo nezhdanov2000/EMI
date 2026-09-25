@@ -1,0 +1,5 @@
+dataset,positive,tau,min_samples,d,n_repeats,seed,winner,in_sample_coverage,in_sample_purity,fixed_cv_coverage,fixed_cv_se,fixed_cv_purity,nested_cv_coverage,nested_cv_se,nested_cv_purity,nested_minus_fixed_t,nested_all_rows_coverage,nested_all_rows_purity,all_rows_minus_train,all_rows_minus_train_se,share_same_winner_all_rows,share_same_winner,n_distinct_winners,mean_pairwise_jaccard,d_star_nested,seconds_nested
+car_evaluation,acc,0.9,1,1,5,0,safety,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.92,0.92,2,0.847,4,0.3
+car_evaluation,acc,0.9,1,2,5,0,persons+safety,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,1.0,1.0,1,1.0,4,0.3
+car_evaluation,acc,0.9,1,3,5,0,buying+persons+safety,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.92,0.92,2,0.923,4,0.3
+car_evaluation,acc,0.9,1,4,5,0,buying+maint+persons+safety,0.599,0.9583,0.4396,0.0382,0.9456,0.287,0.0608,0.9496,-3.65,0.4396,0.9456,0.1526,0.0419,1.0,1.0,1,1.0,4,0.3

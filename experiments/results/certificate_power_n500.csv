@@ -1,0 +1,4 @@
+n,method,runs,tau,alpha,fwer,power,mean_coverage_d2,seconds
+500,per_schema,200,0.8,0.05,0.0,0.745,0.2933,26.6
+500,family_bonferroni,200,0.8,0.05,0.0,0.01,0.0043,27.3
+500,split,200,0.8,0.05,0.0,0.18,0.0724,10.0

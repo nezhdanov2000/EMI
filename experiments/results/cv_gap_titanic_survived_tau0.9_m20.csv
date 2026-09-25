@@ -1,0 +1,5 @@
+dataset,positive,tau,min_samples,d,winner,edge_full,edge_fold,cov_leak,cov_fixed,cov_nested,lost_edge
+titanic,survived,0.9,20,1,sex,nan,nan,0.0,0.0,0.0,0.0
+titanic,survived,0.9,20,2,passenger_class+sex,0.4348,0.4165,0.4708,0.4708,0.4708,0.0
+titanic,survived,0.9,20,3,passenger_class+sex+title,0.4459,0.4563,0.4591,0.4134,0.4263,0.0457
+titanic,survived,0.9,20,4,passenger_class+sex+fare_level+port_embarked,0.3971,0.3504,0.3977,0.3203,0.3701,0.0774
