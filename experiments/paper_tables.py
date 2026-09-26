@@ -14,7 +14,7 @@ OUT = ROOT / "paper" / "tables"
 
 
 def esc(s: str) -> str:
-    return s.replace("_", r"\_")
+    return s.replace("_", r"\_").replace(">", r"\textgreater{}").replace("<", r"\textless{}")
 
 
 def coverage_table(d: pd.DataFrame, selection: str, budget: int) -> str:
