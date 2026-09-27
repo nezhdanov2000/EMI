@@ -936,3 +936,51 @@ class TestAnalyzeCacheAndPrefetch(unittest.TestCase):
             httpd.shutdown()
             thread.join(timeout=5)
             httpd.server_close()
+
+
+# ---------------------------------------------------------------------------
+# Partial-axis centres (`centres: "partial"`, Project_Master_Document.md 4.16)
+# ---------------------------------------------------------------------------
+
+class TestPartialCentresAnalyze(_LiveServerTestBase):
+    def _analyze(self, **extra):
+        body = {"target": "outcome", "criterion": "yes", "tau": 0.85, "min_samples": 5}
+        body.update(extra)
+        resp = self._post("/api/analyze", body, timeout=120)
+        return resp.status, json.loads(resp.read().decode("utf-8"))
+
+    def test_partial_mode_payload(self):
+        status, data = self._analyze(centres="partial")
+        self.assertEqual(status, 200, data)
+        self.assertEqual(data["centres"], "partial")
+        for d_key, branch in data["branches"].items():
+            block = branch["partial"]
+            self.assertIsNotNone(block)
+            self.assertEqual(block["d"], int(d_key))
+            self.assertEqual(sorted(block["views"]), [str(p) for p in range(1, int(d_key) + 1)])
+            own = block["views"][d_key]["summary"]
+            self.assertGreaterEqual(own["coverage"], own["full_grid_coverage"] - 1e-12)
+            self.assertEqual(own["certified_cells_outside"], 0)
+
+    def test_full_mode_is_unchanged_and_cached_separately(self):
+        status_f, full = self._analyze()
+        status_p, part = self._analyze(centres="partial")
+        self.assertEqual((status_f, status_p), (200, 200))
+        self.assertEqual(full["centres"], "full")
+        self.assertTrue(all(b["partial"] is None for b in full["branches"].values()))
+        self.assertTrue(all(b["partial"] is not None for b in part["branches"].values()))
+        # an explicit "full" is the same cache entry as no field at all
+        status_e, explicit = self._analyze(centres="full")
+        self.assertEqual(status_e, 200)
+        self.assertEqual(explicit, full)
+
+    def test_partial_mode_explicit_schema(self):
+        status, data = self._analyze(centres="partial", features=[2, 0])
+        self.assertEqual(status, 200, data)
+        self.assertEqual(data["branch_dims"], [2])
+        self.assertEqual(data["branches"]["2"]["selected_feature_indices"], [2, 0])
+
+    def test_invalid_centres_is_400(self):
+        status, data = self._analyze(centres="half")
+        self.assertEqual(status, 400)
+        self.assertIn("centres", data["error"])

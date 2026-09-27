@@ -875,6 +875,7 @@ async function runAnalysis(targetCol, criterion = null, features = null, options
             rule: readCertRule(),
             min_samples: readCertMinSamples(),
             direction: readDirection(),
+            centres: readCentresMode(),
         });
         if (criterion !== null) {
             reqBody.criterion = criterion;
@@ -964,6 +965,12 @@ function selectDefaultBranchAndRender(preserveActiveIfPossible, carryOverDim = n
 function loadBranchesResponse(data, preserveBranch = false) {
     const carryOverDim = (preserveBranch && activeBranchDim !== null) ? String(activeBranchDim) : null;
     currentBranchesResponse = data;
+    // The legend and the panel must describe the response on screen, whatever
+    // the toggle said when it was requested.
+    activeCentresMode = data && data.centres === 'partial' ? 'partial' : 'full';
+    partialHighlight = null;
+    partialFocus = null;
+    syncCentresButtons();
     renderCertificateSummary(data);
     onAnalysisLoadedForLandscape(data);
     stopSlicePlayback();
@@ -1014,8 +1021,18 @@ function renderBranchSelector(response) {
         // the number that reads 41.3% while no cell exceeds 2.42% purity.
         const sc = branch.search_centers;
         const cc = branch.centers || {};
+        const pv = (response.centres === 'partial' && branch.partial && branch.partial.views)
+            ? branch.partial.views[dKey] : null;
         let headline;
-        if (sc && sc.undetermined_reason) {
+        if (pv) {
+            const ps = pv.summary;
+            const unused = (ps.n_centers > 0 && (ps.axes_used || []).length < Number(dKey))
+                ? ` · uses ${(ps.axes_used || []).length} of ${dKey} axes` : '';
+            headline = ps.n_centers
+                ? `<span class="branch-uadj" title="Partial-axis centres of this schema: coverage, number of centres and the conditions they spell out. In brackets: the full grid of the same schema.">${activeDirection === 'absence' ? `free ${(ps.mass * 100).toFixed(1)}% of rows · ` : ''}coverage ${(ps.coverage * 100).toFixed(1)}% · ${ps.n_centers} centre${ps.n_centers === 1 ? '' : 's'} · ${ps.conditions} cond.${unused}</span>`
+                  + `<span class="branch-sub" title="Full cells of the same schema under the same rule">full cells: ${(ps.full_grid_coverage * 100).toFixed(1)}% · ${ps.full_grid_n_centers} · ${ps.full_grid_conditions} cond.</span>`
+                : `<span class="branch-uadj" style="color:var(--text-dim);" title="No cell of any sub-grid of this schema reaches the boundary.">no partial centres</span>`;
+        } else if (sc && sc.undetermined_reason) {
             headline = `<span class="branch-uadj" style="color:var(--text-dim);" title="${sc.undetermined_reason}">coverage undetermined</span>`;
         } else if (cc.n_centers) {
             headline = (activeDirection === 'absence')
@@ -1677,6 +1694,19 @@ function updateHUDForDimension(d) {
     // dimButtonsGroup's active-button state, just not textually paired
     // with the values anymore — a deliberate trade the user accepted.
     const cov = formatCoverage(currentPayload, d);
+    const pView = partialViewFor(currentPayload, d);
+    if (pView) {
+        // Partial mode: the counted objects are the regions of this view.
+        const ps = pView.summary;
+        cov.coverage = ps.coverage;
+        cov.n_centers = ps.n_centers;
+        cov.purity = ps.purity_pooled;
+        cov.mass = ps.mass;
+        cov.conditions = ps.conditions;
+    } else if (cov.n_centers !== undefined && cov.n_centers !== null) {
+        // A full cell of a d-axis view spells out d conditions.
+        cov.conditions = cov.n_centers * d;
+    }
     const sc = currentPayload.search_centers;
     const freeEl = document.getElementById('val-free');
     if (freeEl) {
@@ -1706,12 +1736,22 @@ function updateHUDForDimension(d) {
     if (kEl) {
         kEl.innerText = (cov.n_centers === undefined || cov.n_centers === null)
             ? 'n/a' : String(cov.n_centers);
-        kEl.title = (cov.n_centers === 0 && cov.max_lower !== undefined && cov.max_lower !== null)
+        kEl.title = pView
+            ? 'Number of partial-axis centres: disjoint regions of this view, each fixing some of its axes, each at least tau pure. Fewer is better at equal coverage.'
+            : (cov.n_centers === 0 && cov.max_lower !== undefined && cov.max_lower !== null)
             ? `No cell reaches the certified purity floor. The highest lower bound anywhere in this view is ${(cov.max_lower * 100).toFixed(1)}%, against tau = ${(activeTau * 100).toFixed(0)}%.`
             : 'Number of cells certified to be at least tau pure in the target value. Fewer is better at equal coverage.';
     }
+    const condEl = document.getElementById('val-conditions');
+    if (condEl) {
+        condEl.innerText = (cov.conditions === undefined || cov.conditions === null) ? 'n/a' : String(cov.conditions);
+        condEl.title = pView
+            ? 'The (column = value) conditions the partial centres of this view spell out: each fixes only some axes.'
+            : `The (column = value) conditions the centres of this view spell out: ${d} per full cell.`;
+    }
 
     updateAxesList(d);
+    renderPartialPanel();
 }
 
 function updateAxesList(d) {
@@ -1795,6 +1835,7 @@ function renderSliceTabs(payload) {
 function selectSlice(idx) {
     window._lastActiveSliceIndex = activeSliceIndex;
     activeSliceIndex = idx;
+    renderPartialPanel();
 
     const tabs = document.querySelectorAll('#slice-tabs .slice-tab');
     tabs.forEach(tab => {
@@ -1880,6 +1921,660 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 });
 
+// ---------------------------------------------------------------------------
+// Partial-axis centres (Project_Master_Document.md Section 4.16)
+//
+// "Full cells": a centre is a cell of the branch's full grid, every axis
+// fixed (Section 4.3). "Partial axes": the branches are the winners of the
+// partial-centre search and a centre may fix only some of the schema's
+// axes - on the lattice it is a bar (one axis free), a plate (two) or a
+// layer (three) of the same cube. The response's `partial` block carries,
+// for every view p = 1..d (the branch's first p axes), the disjoint centres
+// chosen for that view as regions of the lattice (tick runs per fixed axis),
+// their coverage beside the full grid's on the same axes, and - for the
+// branch's own view - a cross-validated coverage paired with the full
+// grid's on the same folds.
+//
+// What is counted in this mode is the regions, not the spheres. A sphere
+// keeps its own cell's colour (its share of the value against tau), so a
+// region can hold brown spheres: the claim "purity >= tau" is about the
+// region's rows together, and the heterogeneity inside it is shown, not
+// averaged away. Every sphere the lattice colours as a centre lies inside a
+// region (the server checks this; `certified_cells_outside`).
+// ---------------------------------------------------------------------------
+let activeCentresMode = 'full';   // 'full' | 'partial'; part of the analysis request
+let partialHighlight = null;      // centre id emphasised while its row is hovered
+let partialFocus = null;          // centre id isolated by clicking its row
+
+function readCentresMode() {
+    return activeCentresMode === 'partial' ? 'partial' : 'full';
+}
+
+function syncCentresButtons() {
+    document.querySelectorAll('#centresToggle .centres-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.centres === activeCentresMode);
+    });
+    document.body.classList.toggle('partial-mode', activeCentresMode === 'partial');
+    updateCentresModeNote();
+}
+
+// Switching the kind of centre changes the search, hence the branches, so it
+// re-runs the current analysis (a different cache entry on the server).
+async function setCentresMode(mode) {
+    mode = mode === 'partial' ? 'partial' : 'full';
+    const changed = mode !== activeCentresMode;
+    activeCentresMode = mode;
+    partialHighlight = null;
+    partialFocus = null;
+    syncCentresButtons();
+    if (changed && lastTargetCol !== null) {
+        await runAnalysis(lastTargetCol, lastCriterion, lastFeatures);
+    }
+}
+
+function responseIsPartial() {
+    return Boolean(currentBranchesResponse && currentBranchesResponse.centres === 'partial');
+}
+
+// The partial view the lattice shows at view dimensionality `dim`, or null
+// in full-cell mode (or for a payload without the block).
+function partialViewFor(payload, dim) {
+    if (!responseIsPartial() || !payload || !payload.partial || !payload.partial.views) return null;
+    return payload.partial.views[String(dim)] || null;
+}
+
+function updateCentresModeNote() {
+    const el = document.getElementById('centresModeNote');
+    if (!el) return;
+    const show = responseIsPartial() && viewMode !== 'lattice' && viewMode !== 'screen';
+    el.style.display = show ? '' : 'none';
+    if (show) {
+        el.innerHTML = '<strong>Partial-axis centres are on.</strong> This tab scores schemas by <em>full cells</em> '
+            + '(every axis fixed); the partial-centre search changes the branch list and the Lattice only.';
+    }
+}
+
+function partialCondition(centre, axis) {
+    for (const cond of centre.conditions) if (cond.axis === axis) return cond;
+    return null;
+}
+
+function partialConditionText(cond) {
+    const vals = cond.values || [];
+    return vals.length === 1
+        ? `${cond.column} = ${vals[0]}`
+        : `${cond.column} ∈ {${vals.join(', ')}}`;
+}
+
+function partialCentreLabel(centre) {
+    return centre.conditions.map(partialConditionText).join(' ∧ ');
+}
+
+// How the centre sits in the 4-D film strip. 'all': it does not fix the
+// slice axis (or the view has none), so it is drawn in every slice; 'in' /
+// 'out': it fixes the slice axis and the current slice is / is not among its
+// values; 'restricted': the "All" tab (the 3-D marginal) with a centre that
+// fixes the slice axis - it holds only part of the rows drawn there, so it
+// is outlined, never filled.
+function partialSliceStatus(centre, dim, sliceIndex) {
+    if (dim < 4) return 'all';
+    const w = partialCondition(centre, 3);
+    if (!w) return 'all';
+    if (sliceIndex === null || sliceIndex === undefined) return 'restricted';
+    return w.ticks.includes(sliceIndex) ? 'in' : 'out';
+}
+
+// Geometry of the overlay: the skewer.
+//
+// A partial centre is a set of full cells of the lattice that share the
+// values of the axes it fixes and run through every value of the axes it
+// leaves free. It is drawn as the line(s) those cells sit on, exactly as
+// beads on a skewer:
+//
+//   * one free spatial axis (a "bar")   -> one straight line along that axis,
+//     from the first occupied member cell to the last;
+//   * two free spatial axes (a "plate") -> a lattice: for every occupied row
+//     and every occupied column of the plate a line spanning its occupied
+//     members, so the members sit at the intersections;
+//   * three free spatial axes (a "layer", only a centre that fixes just the
+//     4-D slice axis) -> nothing in the cube: every sphere of the slice is a
+//     member, and the panel says so;
+//   * no free spatial axis (a full cell, or a cell whose free axes are all
+//     collapsed) -> the ordinary sphere, nothing added.
+//
+// Each skewer ends in a HANDLE: one sphere on the wall of the cube at the
+// projection of the centre (coordinate -0.5 on every free axis - where the
+// within-branch collapse of Section 5.6 drops the cells), sized by the
+// centre's rows and coloured by its pooled purity zone, like every other
+// sphere. A thin stem joins the handle to the first member; the empty
+// stretch it crosses encodes nothing and is drawn as such. The colour of a
+// skewer is the pooled purity zone of its centre (green under presence, red
+// under absence); the member spheres keep their own colours, so a member
+// below the boundary stays visible as such. Centres are disjoint in rows, so
+// a sphere sits on at most one skewer.
+const PARTIAL_SHAPE = ['cell', 'bar', 'plate', 'layer'];
+const PARTIAL_WALL = -0.5;          // the wall coordinate of a free axis
+const PARTIAL_SKEWER_WIDTH = 5;
+const PARTIAL_STEM_WIDTH = 2;
+const PARTIAL_HANDLE_SCALE = 55;    // the sphere scale of buildPlotData
+
+function _hexToRgb(hex) {
+    return `rgb(${parseInt(hex.slice(1, 3), 16)}, ${parseInt(hex.slice(3, 5), 16)}, ${parseInt(hex.slice(5, 7), 16)})`;
+}
+
+function _rgba(hex, a) {
+    const r = parseInt(hex.slice(1, 3), 16), g = parseInt(hex.slice(3, 5), 16), b = parseInt(hex.slice(5, 7), 16);
+    return `rgba(${r}, ${g}, ${b}, ${a})`;
+}
+
+// gl3d ignores alpha on lines and per-point marker colours: dimming is a
+// blend of the colour towards the plot background.
+const _PLOT_BG = [7, 10, 19];
+function _dim(hex, t) {
+    const r = parseInt(hex.slice(1, 3), 16), g = parseInt(hex.slice(3, 5), 16), b = parseInt(hex.slice(5, 7), 16);
+    const mix = (c, bg) => Math.round(c * (1 - t) + bg * t);
+    return `rgb(${mix(r, _PLOT_BG[0])}, ${mix(g, _PLOT_BG[1])}, ${mix(b, _PLOT_BG[2])})`;
+}
+
+function partialGridFor(payload, dim, sliceIndex) {
+    let key = String(dim);
+    if (dim >= 4 && payload.slice_axis) key = (sliceIndex !== null && sliceIndex !== undefined) ? `4_${sliceIndex}` : '4_all';
+    return payload.grids ? (payload.grids[key] || payload.grids[String(dim)] || payload.grids['3']) : null;
+}
+
+// The free axes of a centre that are spatial in this view (x, y, z that are
+// not collapsed); the slice axis (3) and collapsed axes do not count.
+function partialFreeSpatial(centre, dim) {
+    return (centre.free_axes || []).filter(a => a < Math.min(dim, 3));
+}
+
+function partialShapeWord(centre, dim) {
+    return PARTIAL_SHAPE[Math.min(partialFreeSpatial(centre, dim).length, PARTIAL_SHAPE.length - 1)];
+}
+
+// Member cells of every drawn centre in the grid on screen: id -> [{coord, i}].
+function partialMembersByCentre(view, grid, dim, sliceIndex) {
+    const by = new Map();
+    const n = grid && grid.x ? grid.x.length : 0;
+    for (let i = 0; i < n; i++) {
+        const coord = [grid.x[i], grid.y[i], grid.z[i]];
+        const m = partialMembership(view, coord, dim, sliceIndex);
+        if (!m.whole.length) continue;
+        const id = m.whole[0].id;
+        if (!by.has(id)) by.set(id, []);
+        by.get(id).push({ coord, i });
+    }
+    return by;
+}
+
+// The fixed (wall-free) position of a centre: its fixed axes at their tick,
+// free axes at the wall, collapsed axes at -0.5.
+function partialHandlePosition(centre, dim) {
+    const pos = [PARTIAL_WALL, PARTIAL_WALL, PARTIAL_WALL];
+    for (const cond of centre.conditions) {
+        if (cond.axis >= Math.min(dim, 3)) continue;
+        // a fixed axis with several ticks (merged levels) sits at their midpoint
+        const t = cond.ticks || [];
+        pos[cond.axis] = t.length ? (Math.min(...t) + Math.max(...t)) / 2 : PARTIAL_WALL;
+    }
+    return pos;
+}
+
+function _seg(acc, A, B) {
+    acc.x.push(A[0], B[0], null); acc.y.push(A[1], B[1], null); acc.z.push(A[2], B[2], null);
+}
+
+// Skewer (solid) and stem (thin) segments of one centre given its members.
+function partialSkewerSegments(centre, members, dim) {
+    const solid = { x: [], y: [], z: [] }, stem = { x: [], y: [], z: [] };
+    const free = partialFreeSpatial(centre, dim);
+    if (!members.length || free.length === 0 || free.length >= 3) return { solid, stem };
+    const base = partialHandlePosition(centre, dim);
+    const at = (assign) => { const p = base.slice(); for (const [a, v] of assign) p[a] = v; return p; };
+    if (free.length === 1) {
+        const a = free[0];
+        const vals = members.map(m => m.coord[a]);
+        const lo = Math.min(...vals), hi = Math.max(...vals);
+        if (hi > lo) _seg(solid, at([[a, lo]]), at([[a, hi]]));
+        _seg(stem, at([[a, PARTIAL_WALL]]), at([[a, lo]]));
+        return { solid, stem };
+    }
+    // plate: a lattice over the two free axes
+    const [a, b] = free;
+    const rows = new Map(), cols = new Map();
+    for (const m of members) {
+        const u = m.coord[a], v = m.coord[b];
+        if (!rows.has(v)) rows.set(v, []);
+        rows.get(v).push(u);
+        if (!cols.has(u)) cols.set(u, []);
+        cols.get(u).push(v);
+    }
+    for (const [v, us] of rows) {
+        const lo = Math.min(...us), hi = Math.max(...us);
+        if (hi > lo) _seg(solid, at([[a, lo], [b, v]]), at([[a, hi], [b, v]]));
+    }
+    for (const [u, vs] of cols) {
+        const lo = Math.min(...vs), hi = Math.max(...vs);
+        if (hi > lo) _seg(solid, at([[a, u], [b, lo]]), at([[a, u], [b, hi]]));
+    }
+    // an L-shaped stem from the handle on the edge to the lattice's corner
+    const uMin = Math.min(...cols.keys()), vMin = Math.min(...rows.keys());
+    _seg(stem, at([[a, PARTIAL_WALL], [b, PARTIAL_WALL]]), at([[a, uMin], [b, PARTIAL_WALL]]));
+    _seg(stem, at([[a, uMin], [b, PARTIAL_WALL]]), at([[a, uMin], [b, vMin]]));
+    return { solid, stem };
+}
+
+// The overlay traces (appended after the cell-grid and sphere traces, so
+// the transitions, which restyle trace 1, never touch them): skewers and
+// stems (no hover of their own) and the handles (hover = the centre's
+// statistics; hovering a handle highlights its members). A centre that
+// fixes the 4-D slice axis is not drawn on the "All" marginal (it holds
+// only part of the rows behind each sphere there); the panel names its
+// slices.
+function buildPartialOverlayTraces(payload, dim, sliceIndex) {
+    const view = partialViewFor(payload, dim);
+    if (!view || !view.centres || view.centres.length === 0) return [];
+    const grid = partialGridFor(payload, dim, sliceIndex);
+    const members = partialMembersByCentre(view, grid, dim, sliceIndex);
+    const zone = activePalette()[COLOR_CENTER];
+    const focusOn = partialFocus !== null || partialHighlight !== null;
+    const solid = { x: [], y: [], z: [] };
+    const solidHi = { x: [], y: [], z: [] }, stemHi = { x: [], y: [], z: [] };
+    const solidLo = { x: [], y: [], z: [] };
+    const handle = { x: [], y: [], z: [], size: [], color: [], text: [], custom: [] };
+    const maxN = payload.global_max_n || 1;
+    const traces = [];
+    for (const c of view.centres) {
+        const status = partialSliceStatus(c, dim, sliceIndex);
+        if (status === 'out' || status === 'restricted') continue;
+        const free = partialFreeSpatial(c, dim);
+        if (free.length === 0 || free.length >= 3) continue;   // full cell / layer: no skewer
+        const emphasised = c.id === partialHighlight || c.id === partialFocus;
+        const faded = focusOn && !emphasised;
+        const segs = partialSkewerSegments(c, members.get(c.id) || [], dim);
+        const S = emphasised ? solidHi : (faded ? solidLo : solid);
+        for (let q = 0; q < segs.solid.x.length; q++) { S.x.push(segs.solid.x[q]); S.y.push(segs.solid.y[q]); S.z.push(segs.solid.z[q]); }
+        // The handle and its stem appear only for the centre picked out (a
+        // click on one of its beads or on its row, or a hover on the row):
+        // at rest the picture is the skewers alone.
+        if (!emphasised) continue;
+        for (let q = 0; q < segs.stem.x.length; q++) { stemHi.x.push(segs.stem.x[q]); stemHi.y.push(segs.stem.y[q]); stemHi.z.push(segs.stem.z[q]); }
+        const pos = partialHandlePosition(c, dim);
+        handle.x.push(pos[0]); handle.y.push(pos[1]); handle.z.push(pos[2]);
+        handle.size.push(PARTIAL_HANDLE_SCALE * Math.sqrt(c.n / maxN));
+        handle.color.push(zone);
+        const freeNames = free.map(a => (payload.selected_features || [])[a] || `axis ${a + 1}`);
+        handle.text.push(
+            `🧩 <b>Partial centre #${c.id + 1}</b> (${partialShapeWord(c, dim)})<br>`
+            + `${escHtml(partialCentreLabel(c))}<br>`
+            + `free: ${escHtml(freeNames.join(', '))}<br>`
+            + `🎯 <b>Purity (pooled):</b> ${(c.purity * 100).toFixed(1)}%<br>`
+            + `📏 <b>Confidence bound:</b> [${(c.lower * 100).toFixed(1)}%, ${(c.upper * 100).toFixed(1)}%]<br>`
+            + `📦 <b>Objects:</b> ${c.n} pcs. in ${(members.get(c.id) || []).length} cell${(members.get(c.id) || []).length === 1 ? '' : 's'} · ${c.cost} condition${c.cost === 1 ? '' : 's'}`
+        );
+        handle.custom.push({ partial_id: c.id });
+    }
+    const line = (acc, color, width, dash, name) => ({
+        type: 'scatter3d', mode: 'lines', x: acc.x, y: acc.y, z: acc.z,
+        line: { color, width, dash }, hoverinfo: 'skip', showlegend: false, name,
+    });
+    if (solidLo.x.length) traces.push(line(solidLo, _dim(zone, 0.72), PARTIAL_SKEWER_WIDTH - 2, 'solid', 'Skewers (other)'));
+    if (solid.x.length) traces.push(line(solid, zone, PARTIAL_SKEWER_WIDTH, 'solid', 'Skewers'));
+    if (stemHi.x.length) traces.push(line(stemHi, '#ffffff', PARTIAL_STEM_WIDTH + 1, 'dot', 'Stem (selected)'));
+    if (solidHi.x.length) traces.push(line(solidHi, '#ffffff', PARTIAL_SKEWER_WIDTH + 3, 'solid', 'Skewer (selected)'));
+    if (handle.x.length) {
+        traces.push({
+            type: 'scatter3d', mode: 'markers', x: handle.x, y: handle.y, z: handle.z,
+            marker: { size: handle.size, color: handle.color, opacity: 1, line: { width: 1.5, color: 'rgba(255,255,255,0.7)' } },
+            hovertext: handle.text, hoverinfo: 'text', customdata: handle.custom, showlegend: false, name: 'Handles',
+        });
+    }
+    return traces;
+}
+
+// Sphere colours for the current highlight: members of the picked centre
+// keep their colour, everything else is dimmed. `base` are the rgba fills of
+// buildPlotData; `memberOf` the centre id of every sphere (or null).
+function partialDimmedColours(base, memberOf) {
+    const pick = partialHighlight !== null ? partialHighlight : partialFocus;
+    if (pick === null) return base;
+    // gl3d ignores per-point alpha, so dimming is a blend towards the background.
+    return base.map((col, i) => (memberOf[i] === pick ? col : _dimColour(col, 0.78)));
+}
+
+function _dimColour(col, t) {
+    const m = col.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+    if (!m) return col;
+    const ch = [1, 2, 3].map((q, j) => Math.round(Number(m[q]) * (1 - t) + _PLOT_BG[j] * t));
+    return `rgb(${ch[0]}, ${ch[1]}, ${ch[2]})`;
+}
+
+// Which regions hold the sphere at lattice position (x, y, z). `whole`: the
+// cell lies inside the region; `part`: the "All" tab with a region that
+// fixes the slice axis (the marginal cell is only partly inside).
+function partialMembership(view, coord, dim, sliceIndex) {
+    const whole = [], part = [];
+    for (const c of view.centres) {
+        const status = partialSliceStatus(c, dim, sliceIndex);
+        if (status === 'out') continue;
+        let inside = true;
+        for (const cond of c.conditions) {
+            if (cond.axis >= Math.min(dim, 3)) continue;
+            if (!cond.ticks.includes(coord[cond.axis])) { inside = false; break; }
+        }
+        if (!inside) continue;
+        (status === 'restricted' ? part : whole).push(c);
+    }
+    return { whole, part };
+}
+
+function partialHoverLine(view, coord, dim, sliceIndex) {
+    const m = partialMembership(view, coord, dim, sliceIndex);
+    const fmt = c => `#${c.id + 1} ${escHtml(partialCentreLabel(c))} — pooled ${c.k}/${c.n}, ${(c.purity * 100).toFixed(1)}%`;
+    if (m.whole.length) return `<br>🧩 <b>On skewer</b> ${m.whole.map(fmt).join('; ')}`;
+    if (m.part.length) return `<br>🧩 <b>Partly in</b> ${m.part.map(fmt).join('; ')} — shown in its slices only`;
+    return '<br>🧩 In no partial centre';
+}
+
+function removePartialOverlay() {
+    const div = document.getElementById('plot-container');
+    if (!div || !div.data || div.data.length <= 2) return Promise.resolve();
+    const extra = [];
+    for (let i = 2; i < div.data.length; i++) {
+        const nm = div.data[i].name;
+        if (nm !== PROJ_FILL_NAME && nm !== PROJ_LINE_NAME) extra.push(i);
+    }
+    return extra.length ? Plotly.deleteTraces(div, extra) : Promise.resolve();
+}
+
+// Replaces the overlay traces for the view on screen, leaving the grid and
+// the spheres (and the camera) as they are.
+function syncPartialOverlay() {
+    const div = document.getElementById('plot-container');
+    if (!div || !div.data || !currentPayload) return Promise.resolve();
+    const dim = activeDimensionality || (currentPayload.metrics ? currentPayload.metrics.d : 3);
+    const traces = buildPartialOverlayTraces(currentPayload, dim, activeSliceIndex);
+    applyStroke(window._isStrokeActive || false);
+    return removePartialOverlay().then(() => (traces.length ? Plotly.addTraces(div, traces) : null));
+}
+
+// Axis labels follow the pick: on an axis the centre fixes, only the values
+// it fixes keep their label (the rest become a dot); a free axis keeps every
+// label, since the skewer runs through all of them. gl3d tick labels cannot
+// be coloured one by one, so the non-members are reduced rather than dimmed.
+// The 4-D slice tabs dim the same way. Everything is restored on release.
+// `keep` is one entry per spatial axis (x, y, z): the tick indices whose
+// labels stay, or null to keep them all; `wKeep` the slice indices whose
+// tabs stay lit, or null. Both null = restore.
+function applyAxisPick(keep, wKeep) {
+    const div = document.getElementById('plot-container');
+    const payload = currentPayload;
+    if (!div || !div.layout || !payload || !payload.axis_ticks) return Promise.resolve();
+    const update = {};
+    ['x', 'y', 'z'].forEach((ax, a) => {
+        const full = payload.axis_ticks[ax].text;
+        const k = keep ? keep[a] : null;
+        update[`scene.${ax}axis.ticktext`] = k ? full.map((t, i) => (k.has(i) ? t : '·')) : full;
+    });
+    document.querySelectorAll('#slice-tabs .slice-tab').forEach(tab => {
+        const key = tab.getAttribute('data-slice');
+        tab.classList.toggle('slice-dim', Boolean(wKeep) && key !== 'all' && !wKeep.has(Number(key)));
+    });
+    return Plotly.relayout(div, update);
+}
+
+function syncPartialAxisTicks() {
+    const payload = currentPayload;
+    if (!payload) return Promise.resolve();
+    const pick = partialHighlight !== null ? partialHighlight : partialFocus;
+    const dim = activeDimensionality || (payload.metrics ? payload.metrics.d : 3);
+    const view = partialViewFor(payload, dim);
+    const centre = (pick !== null && view) ? view.centres.find(c => c.id === pick) : null;
+    if (!centre) return applyAxisPick(null, null);
+    const keep = [0, 1, 2].map(a => {
+        if (a >= Math.min(dim, 3)) return null;
+        const cond = partialCondition(centre, a);
+        return cond ? new Set(cond.ticks) : null;
+    });
+    const wCond = dim >= 4 ? partialCondition(centre, 3) : null;
+    return applyAxisPick(keep, wCond ? new Set(wCond.ticks) : null);
+}
+
+// The projection of a cell onto the walls of the cube: for the cell's x
+// value the strip of the floor (z = -0.5) one cell wide at that x, running
+// the length of the y axis; for its y value the strip of the floor at that
+// y; for its z value the strip of the back wall (x = -0.5) at that z. Each
+// strip is a translucent fill in the cell's own colour with a bright edge,
+// and a thin drop line joins the sphere to each wall it projects on. The
+// strips end at the axis labels the tick reduction leaves lit.
+//
+// The two traces that carry this ('Projection fill', 'Projection track')
+// are created once with the plot (full-cell mode) and restyled in place:
+// adding and deleting gl3d traces while the pointer moves races Plotly's
+// scene rebuild ("Cannot set properties of undefined (setting 'axes')") and
+// can leave the scene half-drawn.
+const PROJ_INSET = 0.03;
+const PROJ_FILL_NAME = 'Projection fill';
+const PROJ_LINE_NAME = 'Projection track';
+
+function emptyProjectionTraces() {
+    return [
+        { type: 'mesh3d', x: [0, 0, 0], y: [0, 0, 0], z: [0, 0, 0], i: [0], j: [1], k: [2], visible: false,
+          color: '#ffffff', opacity: 0.22, flatshading: true,
+          lighting: { ambient: 1, diffuse: 0, specular: 0, roughness: 1, fresnel: 0 },
+          hoverinfo: 'skip', showscale: false, showlegend: false, name: PROJ_FILL_NAME },
+        { type: 'scatter3d', mode: 'lines', x: [0], y: [0], z: [0], visible: false,
+          line: { color: '#ffffff', width: 3 }, hoverinfo: 'skip', showlegend: false, name: PROJ_LINE_NAME },
+    ];
+}
+
+function _rectMesh(mesh, lines, au, av, aw, u0, u1, v0, v1, w) {
+    const put = (u, v) => { const q = [0, 0, 0]; q[au] = u; q[av] = v; q[aw] = w; return q; };
+    const c = [put(u0, v0), put(u1, v0), put(u1, v1), put(u0, v1)];
+    const base = mesh.x.length;
+    for (const q of c) { mesh.x.push(q[0]); mesh.y.push(q[1]); mesh.z.push(q[2]); }
+    mesh.i.push(base, base); mesh.j.push(base + 1, base + 2); mesh.k.push(base + 2, base + 3);
+    for (let q = 0; q < 4; q++) _seg(lines, c[q], c[(q + 1) % 4]);
+}
+
+// Geometry of the projection of `point` onto the walls for the displayed
+// spatial `axes`; `lens` are the tick counts of x, y, z.
+function projectionGeometry(point, axes, lens) {
+    const W = PARTIAL_WALL + 0.012;
+    const [x, y, z] = point;
+    const mesh = { x: [], y: [], z: [], i: [], j: [], k: [] };
+    const lines = { x: [], y: [], z: [] };
+    const span = a => [W + PROJ_INSET, lens[a] - 0.5 - PROJ_INSET];
+    const cell = v => [v - 0.5 + PROJ_INSET, v + 0.5 - PROJ_INSET];
+    let toFloor = false, toWall = false;
+    for (const a of axes) {
+        if (a === 0) { _rectMesh(mesh, lines, 0, 1, 2, ...cell(x), ...span(1), W); toFloor = true; }
+        else if (a === 1) { _rectMesh(mesh, lines, 0, 1, 2, ...span(0), ...cell(y), W); toFloor = true; }
+        else if (a === 2) { _rectMesh(mesh, lines, 1, 2, 0, ...span(1), ...cell(z), W); toWall = true; }
+    }
+    if (toFloor && z > W) _seg(lines, [x, y, z], [x, y, W]);
+    if (toWall && x > W) _seg(lines, [x, y, z], [W, y, z]);
+    return { mesh, lines };
+}
+
+function projectionTraceIndices(div) {
+    let fill = -1, line = -1;
+    div.data.forEach((t, i) => { if (t.name === PROJ_FILL_NAME) fill = i; if (t.name === PROJ_LINE_NAME) line = i; });
+    return { fill, line };
+}
+
+// Writes the projection of `point` (or clears it, point = null) into the
+// permanent traces; returns the restyle promise.
+function showProjection(div, point, axes, lens, colour) {
+    const { fill, line } = projectionTraceIndices(div);
+    if (fill < 0 || line < 0) return Promise.resolve();
+    if (point === null) {
+        return Plotly.restyle(div, { visible: [false, false] }, [fill, line]);
+    }
+    const g = projectionGeometry(point, axes, lens);
+    return Plotly.restyle(div, {
+        x: [g.mesh.x], y: [g.mesh.y], z: [g.mesh.z], i: [g.mesh.i], j: [g.mesh.j], k: [g.mesh.k],
+        color: colour, visible: g.mesh.x.length > 0,
+    }, [fill]).then(() => Plotly.restyle(div, {
+        x: [g.lines.x], y: [g.lines.y], z: [g.lines.z], 'line.color': colour, visible: g.lines.x.length > 0,
+    }, [line]));
+}
+
+// Full-cell mode: hovering a sphere picks its cell out the same way - the
+// other spheres dim, each displayed axis keeps only the value of that cell,
+// and the other slice tabs dim. Released on unhover.
+let cellHighlight = null;   // point index in the sphere trace, or null
+
+function setCellHighlight(i) {
+    if (cellHighlight === i) return;
+    cellHighlight = i;
+    const div = document.getElementById('plot-container');
+    const d = window._lastFilteredData;
+    if (!div || !div.data || !div.data[1] || !d || !d.baseColors || isAnimating) return;
+    const payload = currentPayload;
+    const dim = activeDimensionality || (payload && payload.metrics ? payload.metrics.d : 3);
+    const lens = ['x', 'y', 'z'].map(ax => (payload && payload.axis_ticks && payload.axis_ticks[ax]) ? payload.axis_ticks[ax].vals.length : 1);
+    // One chain per change, and every change waits for the previous chain:
+    // gl3d does not tolerate a relayout while a restyle is still rebuilding.
+    _cellHighlightQueue = _cellHighlightQueue.then(() => {
+        if (cellHighlight !== i) return null;   // superseded meanwhile
+        if (i === null) {
+            return Plotly.restyle(div, { 'marker.color': [d.baseColors] }, 1)
+                .then(() => showProjection(div, null))
+                .then(() => applyAxisPick(null, null));
+        }
+        const tr = div.data[1];
+        const coord = [tr.x[i], tr.y[i], tr.z[i]];
+        const colours = d.baseColors.map((col, j) => (j === i ? col : _dimColour(col, 0.78)));
+        const spatial = [0, 1, 2].filter(a => a < Math.min(dim, 3));
+        const keep = [0, 1, 2].map(a => (a < Math.min(dim, 3) ? new Set([Math.round(coord[a])]) : null));
+        const wKeep = (dim >= 4 && activeSliceIndex !== null && activeSliceIndex !== undefined) ? new Set([activeSliceIndex]) : null;
+        return Plotly.restyle(div, { 'marker.color': [colours] }, 1)
+            .then(() => showProjection(div, coord, spatial, lens, d.baseColors[i]))
+            .then(() => applyAxisPick(keep, wKeep));
+    }).catch(err => console.warn('cell highlight:', err));
+}
+let _cellHighlightQueue = Promise.resolve();
+
+function syncPartialSphereColours() {
+    const div = document.getElementById('plot-container');
+    const d = window._lastFilteredData;
+    if (!div || !div.data || !d || !d.baseColors || !responseIsPartial()) return Promise.resolve();
+    return Plotly.restyle(div, { 'marker.color': [partialDimmedColours(d.baseColors, d.memberOf)] }, 1);
+}
+
+function setPartialHighlight(id) {
+    if (partialHighlight === id) return;
+    partialHighlight = id;
+    if (!isAnimating && viewMode === 'lattice') { syncPartialSphereColours(); syncPartialOverlay(); syncPartialAxisTicks(); }
+    document.querySelectorAll('#partialPanel .pc-row').forEach(row => {
+        row.classList.toggle('pc-hover', id !== null && Number(row.dataset.id) === id);
+    });
+}
+
+function togglePartialFocus(id) {
+    partialFocus = (partialFocus === id) ? null : id;
+    if (!isAnimating && viewMode === 'lattice') { syncPartialSphereColours(); syncPartialOverlay(); syncPartialAxisTicks(); }
+    renderPartialPanel();
+}
+
+function _cvText(cv) {
+    return `${(cv.mean * 100).toFixed(1)} ± ${(cv.se * 100).toFixed(1)}%`;
+}
+
+// The panel under the axes strip: what the regions on screen are, what
+// they cost against the full grid of the same axes, and the list itself.
+function renderPartialPanel() {
+    const el = document.getElementById('partialPanel');
+    if (!el) return;
+    const payload = currentPayload;
+    const dim = activeDimensionality || (payload && payload.metrics ? payload.metrics.d : 1);
+    const view = partialViewFor(payload, dim);
+    if (!view || viewMode !== 'lattice') { el.style.display = 'none'; el.innerHTML = ''; return; }
+    el.style.display = '';
+    const s = view.summary;
+    const branchD = payload.metrics ? payload.metrics.d : dim;
+    const absence = activeDirection === 'absence';
+    const axisNames = payload.selected_features || [];
+    const part = payload.partial;
+
+    const head = [];
+    head.push(`<span class="pc-title">🧩 Partial-axis centres · ${dim}D view</span>`);
+    head.push(`<span class="pc-num"><b>${pct(s.coverage)}</b> coverage · <b>${s.n_centers}</b> centre${s.n_centers === 1 ? '' : 's'} · <b>${s.conditions}</b> condition${s.conditions === 1 ? '' : 's'}</span>`);
+    head.push(`<span class="pc-cmp" title="The full grid of the same ${dim} axes under the same rule and partition: every centre fixes all ${dim} axes (${dim} conditions each).">full cells, same axes: ${pct(s.full_grid_coverage)} · ${s.full_grid_n_centers} · ${s.full_grid_conditions} cond.</span>`);
+
+    const notes = [];
+    if (dim === branchD && part) {
+        if (part.coverage_cv && part.full_grid_cv) {
+            const g = part.gain_vs_full;
+            const t = g ? g.t : null;
+            const verdict = (t === null || !Number.isFinite(t)) ? ''
+                : (Math.abs(t) >= 2 ? (t > 0 ? ' — partial centres ahead' : ' — full cells ahead') : ' — not distinguishable');
+            notes.push(`<span title="Repeated stratified ${part.coverage_cv.n_splits}-fold CV × ${part.coverage_cv.n_repeats}: centres chosen on the training rows, counted on the held-out rows; this branch's schema fixed (it was chosen on all rows, so this is not a nested estimate) and the same folds for both, so the difference is paired (Nadeau–Bengio corrected SE).">Held-out coverage: partial ${_cvText(part.coverage_cv)} vs full cells ${_cvText(part.full_grid_cv)}${g ? `; paired Δ = ${(g.difference * 100).toFixed(1)} pp, t = ${Number.isFinite(g.t) ? g.t.toFixed(2) : '∞'}` : ''}${verdict}.</span>`);
+        } else if (part.cv_undetermined_reason) {
+            notes.push(`<span>Held-out coverage not estimated: ${escHtml(part.cv_undetermined_reason)}.</span>`);
+        }
+    }
+    const warns = [];
+    const used = s.axes_used || [];
+    if (s.n_centers > 0 && used.length < dim) {
+        const unused = [];
+        for (let a = 0; a < dim; a++) if (!used.includes(a)) unused.push(axisNames[a] || `axis ${a + 1}`);
+        warns.push(`No centre fixes ${escHtml(unused.join(', '))}: ${unused.length === 1 ? 'this axis adds' : 'these axes add'} nothing at this view — the same centres live on the ${used.length}-axis sub-grid.`);
+    }
+    if (s.certified_cells_outside > 0) {
+        warns.push(`${s.certified_cells_outside} displayed cell${s.certified_cells_outside === 1 ? ' is' : 's are'} at or above the boundary but in no region: the lattice shows a finer partition than the search scored (binned or capacity-merged levels).`);
+    }
+    const inexact = view.centres.filter(c => !c.exact || c.conditions.some(cd => cd.missing > 0));
+    if (inexact.length) {
+        warns.push(`${inexact.length} region${inexact.length === 1 ? '' : 's'} cannot be drawn exactly (values absent from the drawn sample, or merged levels); the list states the exact conditions.`);
+    }
+    if (dim >= 4 && (activeSliceIndex === null || activeSliceIndex === undefined)) {
+        const hidden = view.centres.filter(c => partialSliceStatus(c, dim, null) === 'restricted').length;
+        if (hidden > 0) {
+            notes.push(`<span>“All” is the 3-D marginal over the slice axis. ${hidden} centre${hidden === 1 ? '' : 's'} fix${hidden === 1 ? 'es' : ''} that axis and ${hidden === 1 ? 'is' : 'are'} not drawn here — ${hidden === 1 ? 'it holds' : 'they hold'} only part of the rows behind each sphere. Open a slice to see ${hidden === 1 ? 'it' : 'them'}.</span>`);
+        }
+    }
+    const layers = view.centres.filter(c => partialFreeSpatial(c, dim).length >= 3
+        && partialSliceStatus(c, dim, activeSliceIndex) === 'in');
+    for (const c of layers) {
+        notes.push(`<span><b>The whole slice is centre #${c.id + 1}</b> (${escHtml(partialCentreLabel(c))}, ${c.k}/${c.n}, ${(c.purity * 100).toFixed(1)}%): every sphere on screen is one of its cells, so nothing is drawn for it.</span>`);
+    }
+
+    const rows = view.centres.map(c => {
+        const status = partialSliceStatus(c, dim, activeSliceIndex);
+        const free = (c.free_axes || []).map(a => axisNames[a] || `axis ${a + 1}`);
+        const shape = partialShapeWord(c, dim);
+        const shapeText = free.length
+            ? `${shape === 'bar' ? 'skewer' : (shape === 'plate' ? 'lattice' : (shape === 'layer' ? 'whole slice' : 'cell'))} · free: ${escHtml(free.join(', '))}`
+            : 'full cell';
+        const wCond = dim >= 4 ? partialCondition(c, 3) : null;
+        const where = status === 'out' ? '<span class="pc-tag">not in this slice</span>'
+            : (status === 'restricted' && wCond
+                ? `<span class="pc-tag" title="This centre fixes the slice axis, so it is drawn only in these slices.">in slice${wCond.values.length === 1 ? '' : 's'}: ${escHtml(wCond.values.join(', '))}</span>`
+                : '');
+        const approx = (!c.exact || c.conditions.some(cd => cd.missing > 0)) ? '<span class="pc-tag pc-tag-warn" title="The drawn region is not exactly the centre\'s rows: see the conditions.">approx. drawing</span>' : '';
+        const cls = ['pc-row'];
+        if (status === 'out' || status === 'restricted') cls.push('pc-out');
+        if (partialFocus === c.id) cls.push('pc-focus');
+        return `<div class="${cls.join(' ')}" data-id="${c.id}" onmouseenter="setPartialHighlight(${c.id})" onmouseleave="setPartialHighlight(null)" onclick="togglePartialFocus(${c.id})" title="Click to isolate this centre on the lattice; click again to show all.">
+            <span class="pc-idx">#${c.id + 1}</span>
+            <span class="pc-cond">${escHtml(partialCentreLabel(c))}</span>
+            <span class="pc-shape">${shapeText}</span>
+            <span class="pc-stats" title="${absence ? 'Rows without the value' : 'Rows with the value'} / rows in the centre; their share; its interval at the per-centre level the centre rule used (${c.level.toExponential(2)}).">${c.k}/${c.n} · ${(c.purity * 100).toFixed(1)}% <span class="pc-ci">[${(c.lower * 100).toFixed(1)}, ${(c.upper * 100).toFixed(1)}]</span></span>
+            <span class="pc-cost" title="Conditions this centre spells out">${c.cost} cond.</span>
+            ${(where || approx) ? `<span class="pc-tags">${where}${approx}</span>` : ''}
+        </div>`;
+    }).join('');
+
+    el.innerHTML = `
+        <div class="pc-head">${head.join('')}</div>
+        ${notes.length ? `<div class="pc-notes">${notes.join(' ')}</div>` : ''}
+        ${warns.map(w => `<div class="pc-warn">⚠ ${w}</div>`).join('')}
+        <div class="pc-legend">A partial centre is drawn as a <b>skewer</b>: a ${absence ? 'red' : 'green'} line through the cells it pools along its free axis (a lattice of lines when two axes are free). Spheres on a skewer keep their own colours: a brown bead on a green skewer is a cell below the boundary inside a centre above it. <b>Click a bead or a row</b> to pick the centre out: its other cells dim away and its <b>handle</b> appears on the wall of the cube — one sphere at the centre's projection, sized by its rows and coloured by its pooled share, the sphere the collapse of that axis would produce.${partialFocus !== null ? ' <a href="#" onclick="togglePartialFocus(partialFocus); return false;">Show all centres</a>' : ''}</div>
+        <div class="pc-list">${rows || '<div class="pc-empty">No partial centre at this view: no cell of any sub-grid reaches the boundary.</div>'}</div>`;
+}
+
 function buildPlotData(payload, dim, sliceIndex) {
     let dimStr = dim.toString();
 
@@ -1957,7 +2652,11 @@ function buildPlotData(payload, dim, sliceIndex) {
     };
 
     let fx = [], fy = [], fz = [], fColors = [], fSizes = [], fHover = [], fPurity = [], fOpacity = [], fCustomdata = [];
+    // Partial mode: every sphere keeps its own zone colour; `fMemberOf` is
+    // the centre each sphere sits on (or null), for the highlight dimming.
+    const fMemberOf = [];
 
+    const pView = partialViewFor(payload, dim);
     const totalPts = xCoords ? xCoords.length : 0;
     for (let i = 0; i < totalPts; i++) {
         const p = (currentPurity && currentPurity[i] !== undefined) ? currentPurity[i] : 0.5;
@@ -1971,11 +2670,14 @@ function buildPlotData(payload, dim, sliceIndex) {
         fy.push(yCoords[i]);
         fz.push(zCoords[i]);
 
-        const hex = activePalette()[colorIndex];
-        const rr = parseInt(hex.slice(1, 3), 16);
-        const gg = parseInt(hex.slice(3, 5), 16);
-        const bb = parseInt(hex.slice(5, 7), 16);
-        fColors.push(`rgb(${rr}, ${gg}, ${bb})`);
+        const zoneHex = activePalette()[colorIndex];
+        let memberOf = null;
+        if (pView) {
+            const m = partialMembership(pView, [xCoords[i], yCoords[i], zCoords[i]], dim, sliceIndex);
+            if (m.whole.length) memberOf = m.whole[0].id;
+        }
+        fColors.push(_hexToRgb(zoneHex));   // 'rgb(r, g, b)': the form the transitions interpolate
+        fMemberOf.push(memberOf);
 
         fPurity.push(p);
 
@@ -1986,14 +2688,16 @@ function buildPlotData(payload, dim, sliceIndex) {
         const baseSize = 55 * Math.sqrt(n_c / maxN);
         fSizes.push(baseSize);
 
-        fHover.push((currentHover && currentHover[i]) ? currentHover[i] : '');
+        let hov = (currentHover && currentHover[i]) ? currentHover[i] : '';
+        if (pView) hov += partialHoverLine(pView, [xCoords[i], yCoords[i], zCoords[i]], dim, sliceIndex);
+        fHover.push(hov);
         fCustomdata.push((currentCustomdata && currentCustomdata[i]) ? currentCustomdata[i] : null);
     }
 
     const scatterTrace = {
         x: fx, y: fy, z: fz,
         mode: 'markers',
-        marker: { size: fSizes, color: fColors, opacity: 1, line: { width: 0 }, showscale: false },
+        marker: { size: fSizes, color: pView ? partialDimmedColours(fColors, fMemberOf) : fColors, opacity: 1, line: { width: 0 }, showscale: false },
         hovertext: fHover, hoverinfo: 'text', customdata: fCustomdata, type: 'scatter3d', name: 'Data'
     };
 
@@ -2036,7 +2740,10 @@ function buildPlotData(payload, dim, sliceIndex) {
         layout.scene.camera = cameraConfig;
     }
 
-    return { traces: [cellBoundaryTrace, scatterTrace], layout: layout, fPurity, fOpacity, fSizes };
+    // Partial-axis centres ride on top, after the two traces the transitions
+    // restyle by index (0 = grid, 1 = spheres).
+    const overlay = pView ? buildPartialOverlayTraces(payload, dim, sliceIndex) : emptyProjectionTraces();
+    return { traces: [cellBoundaryTrace, scatterTrace, ...overlay], layout: layout, fPurity, fOpacity, fSizes, fColors, fMemberOf };
 }
 
 function renderPlot(payload) {
@@ -2046,12 +2753,16 @@ function renderPlot(payload) {
     window._lastFilteredData = {
         purity: data.fPurity,
         opacity: data.fOpacity,
-        baseSizes: data.fSizes
+        baseSizes: data.fSizes,
+        baseColors: data.fColors,
+        memberOf: data.fMemberOf
     };
 
+    cellHighlight = null;
     Plotly.newPlot('plot-container', data.traces, data.layout, { responsive: true, displayModeBar: false });
 
     currentRenderedDim = dim;
+    if (responseIsPartial() && (partialFocus !== null || partialHighlight !== null)) syncPartialAxisTicks();
 
     // Default camera distance is ~2.608 (sqrt(1.6^2 + 1.6^2 + 1.3^2))
     window._currentCameraScale = 1.0;
@@ -2060,6 +2771,34 @@ function renderPlot(payload) {
     applyStroke(window._isStrokeActive || false);
 
     const plotDiv = document.getElementById('plot-container');
+    // Hovering a skewer's handle picks its centre out (members stay lit).
+    plotDiv.on('plotly_hover', function (ev) {
+        const pt = ev && ev.points && ev.points[0];
+        if (!pt) return;
+        if (!responseIsPartial()) {
+            if (pt.curveNumber === 1) setCellHighlight(pt.pointNumber);
+            return;
+        }
+        const cd = pt.curveNumber >= 2 ? pt.customdata : null;
+        if (cd && typeof cd.partial_id === 'number') setPartialHighlight(cd.partial_id);
+    });
+    plotDiv.on('plotly_unhover', function () {
+        if (partialHighlight !== null) setPartialHighlight(null);
+        if (cellHighlight !== null) setCellHighlight(null);
+    });
+    // Clicking a bead picks out (or releases) the centre it sits on: the
+    // handle and stem of that centre appear, its members stay lit.
+    plotDiv.on('plotly_click', function (ev) {
+        const pt = ev && ev.points && ev.points[0];
+        if (!pt || !responseIsPartial()) return;
+        const d = window._lastFilteredData;
+        if (pt.curveNumber === 1 && d && d.memberOf) {
+            const id = d.memberOf[pt.pointNumber];
+            if (typeof id === 'number') { partialHighlight = null; togglePartialFocus(id); }
+        } else if (pt.curveNumber >= 2 && pt.customdata && typeof pt.customdata.partial_id === 'number') {
+            partialHighlight = null; togglePartialFocus(pt.customdata.partial_id);
+        }
+    });
     plotDiv.on('plotly_relayout', function (eventData) {
         let eye = null;
         if (eventData['scene.camera'] && eventData['scene.camera'].eye) {
@@ -2173,7 +2912,7 @@ function flattenCoordinates(x, y, z, targetDim) {
 }
 
 function parseRGBString(c) {
-    const m = c.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
+    const m = c.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
     if (m) return [parseInt(m[1]), parseInt(m[2]), parseInt(m[3])];
     return [0, 0, 0];
 }
@@ -2324,6 +3063,16 @@ function transitionDimensionality(fromDim, toDim, oldSliceIndex = null) {
     isAnimating = true;
     const wasStrokeActive = window._isStrokeActive;
     if (wasStrokeActive) applyStroke(false);
+    // The overlay belongs to one view; it leaves before the spheres move and
+    // the new view's arrives when the move ends. A cell pick does not survive
+    // the move either.
+    if (cellHighlight !== null) {
+        cellHighlight = null;
+        const div0 = document.getElementById('plot-container');
+        if (div0 && div0.data) showProjection(div0, null);
+        applyAxisPick(null, null);
+    }
+    removePartialOverlay();
 
     const duration = 600;
 
@@ -2339,7 +3088,8 @@ function transitionDimensionality(fromDim, toDim, oldSliceIndex = null) {
         const anim = buildAnimationArrays(startData, targetData, currentPayload, refSlice);
 
         window._lastFilteredData = {
-            purity: targetData.fPurity, opacity: targetData.fOpacity, baseSizes: targetData.fSizes
+            purity: targetData.fPurity, opacity: targetData.fOpacity, baseSizes: targetData.fSizes,
+            baseColors: targetData.fColors, memberOf: targetData.fMemberOf
         };
 
         Plotly.restyle('plot-container', {
@@ -2359,7 +3109,7 @@ function transitionDimensionality(fromDim, toDim, oldSliceIndex = null) {
                             'x': [targetData.traces[1].x], 'y': [targetData.traces[1].y], 'z': [targetData.traces[1].z],
                             'marker.size': [targetData.traces[1].marker.size], 'marker.color': [targetData.traces[1].marker.color], 'hovertext': [targetData.traces[1].hovertext],
                             'customdata': [targetData.traces[1].customdata]
-                        }, 1);
+                        }, 1).then(syncPartialOverlay);
                     }
                 );
             });
@@ -2373,7 +3123,7 @@ function transitionDimensionality(fromDim, toDim, oldSliceIndex = null) {
         const origX = traceToAnimate.x, origY = traceToAnimate.y, origZ = traceToAnimate.z;
         const origSizes = traceToAnimate.marker.size, origColors = traceToAnimate.marker.color, origHover = traceToAnimate.hovertext;
 
-        window._lastFilteredData = { purity: targetData.fPurity, opacity: targetData.fOpacity, baseSizes: targetData.fSizes };
+        window._lastFilteredData = { purity: targetData.fPurity, opacity: targetData.fOpacity, baseSizes: targetData.fSizes, baseColors: targetData.fColors, memberOf: targetData.fMemberOf };
 
         Plotly.restyle('plot-container', {
             'x': [flatStart.x], 'y': [flatStart.y], 'z': [flatStart.z],
@@ -2389,8 +3139,9 @@ function transitionDimensionality(fromDim, toDim, oldSliceIndex = null) {
                         isAnimating = false;
                         if (wasStrokeActive) applyStroke(true);
                         Plotly.restyle('plot-container', {
-                            'customdata': [targetData.traces[1].customdata]
-                        }, 1);
+                            'customdata': [targetData.traces[1].customdata],
+                            'hovertext': [targetData.traces[1].hovertext]
+                        }, 1).then(syncPartialOverlay);
                     }
                 );
             });
@@ -2413,7 +3164,7 @@ function transitionDimensionality(fromDim, toDim, oldSliceIndex = null) {
             origX, origY, origZ, origSizes, origColors,
             flatEnd.x, flatEnd.y, flatEnd.z, origSizes, origColors,
             duration, () => {
-                window._lastFilteredData = { purity: targetData.fPurity, opacity: targetData.fOpacity, baseSizes: targetData.fSizes };
+                window._lastFilteredData = { purity: targetData.fPurity, opacity: targetData.fOpacity, baseSizes: targetData.fSizes, baseColors: targetData.fColors, memberOf: targetData.fMemberOf };
                 Plotly.restyle('plot-container', {
                     'x': [targetData.traces[1].x], 'y': [targetData.traces[1].y], 'z': [targetData.traces[1].z],
                     'marker.size': [targetSizes], 'marker.color': [targetColors], 'hovertext': [targetHover],
@@ -2422,6 +3173,7 @@ function transitionDimensionality(fromDim, toDim, oldSliceIndex = null) {
                     currentRenderedDim = toDim;
                     isAnimating = false;
                     if (wasStrokeActive) applyStroke(true);
+                    return syncPartialOverlay();
                 });
             }
         );
@@ -2559,6 +3311,8 @@ function setViewMode(mode) {
     // Rules: the certificate controls step aside for the erasing curves.
     if (scanBlock) scanBlock.style.display = viewMode === 'rules' ? 'none' : '';
     if (rulesSide) rulesSide.style.display = viewMode === 'rules' ? '' : 'none';
+    updateCentresModeNote();
+    renderPartialPanel();
     if (viewMode === 'landscape') {
         refreshLandscape();
     } else if (viewMode === 'tradeoffs') {

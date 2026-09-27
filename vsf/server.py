@@ -62,6 +62,19 @@ user click any other column afterward (`/api/columns` reports
 `default_target` and `vsf/webapp/static/js/app.js` reads it instead of
 hardcoding "class"; see that file's `init()`).
 
+Partial-axis centres (`/api/analyze` with `centres: "partial"`,
+Project_Master_Document.md Section 4.16): the branches are the winners of
+the partial-centre search (`vsf.partial.discover_partial_branches`) instead
+of the full-grid search. Each branch payload still carries the full cells of
+its schema (the lattice) and adds a `partial` block - the disjoint partial
+centres of every view as regions of that lattice, their coverage beside the
+full grid's on the same schema, and a cross-validated coverage paired with
+the full grid's. The default branch and `sufficient_d` then come from the
+partial CV. `"partial"` is part of the cache key; the default `"full"` is
+not (a full-grid key is byte-identical to the one the prefetch writes). The
+landscape, rules, redundancy and trade-off endpoints are full-grid and are
+not affected.
+
 Global Pattern Scan (`/api/scan/start` / `/api/scan/status` /
 `/api/scan/cancel`, added after v2.0): scans every column of `df`, treats
 each of its observed values as a One-vs-Rest binary criterion (exactly
@@ -198,6 +211,7 @@ from .selective import (
 )
 from .avr import _prepare_search
 from .redundancy import DEFAULT_GROUP_THRESHOLD, CenterCatalog, collect_centers
+from .partial import PartialBranch, discover_partial_branches, select_partial_dimensionality
 from .rules import enumerate_rules
 from .vis import Translations, catalog_from_dataframe, prepare_visualization_payload
 
@@ -1001,6 +1015,14 @@ class VSFRequestHandler(http.server.BaseHTTPRequestHandler):
                     {"error": "an absence search needs an explicit target value (criterion) whose absence to certify"},
                 )
                 return
+            # Which centres the branches are made of: full cells of the grid
+            # (Section 4.3) or partial-axis centres (Section 4.16).
+            centres = req.get("centres", "full")
+            if centres not in ("full", "partial"):
+                self._send_json_response(
+                    400, {"error": f"centres must be 'full' or 'partial', got {centres!r}"},
+                )
+                return
             # Explicit schema (`features`: indices into the feature columns,
             # i.e. `df` minus the target, in order) - opened from the
             # landscape rather than found by the search.
@@ -1028,6 +1050,8 @@ class VSFRequestHandler(http.server.BaseHTTPRequestHandler):
             })
             if features is not None:
                 cache_key["features"] = tuple(features)
+            if centres == "partial":
+                cache_key["centres"] = "partial"
             key = _analyze_key(cache_key)
 
             # A request for a different column supersedes any prefetch of
@@ -1063,7 +1087,22 @@ class VSFRequestHandler(http.server.BaseHTTPRequestHandler):
                     # ValueError, caught below and reported as 400 rather
                     # than crashing the request.
                     positive_class = 1 if criterion is not None else None
-                    if features is not None:
+                    partial: Optional[Dict[int, PartialBranch]] = None
+                    if centres == "partial":
+                        branches, partial = discover_partial_branches(
+                            X,
+                            Z,
+                            feature_names=feature_names,
+                            center_spec=center_spec,
+                            positive_class=positive_class,
+                            max_d=_MAX_D,
+                            direction=direction,
+                            prune_dependent=prune,
+                            features=features,
+                            family_max_d=_MAX_D,
+                            random_state=_SCAN_RANDOM_STATE,
+                        )
+                    elif features is not None:
                         # No uncorrected permutation p-value for a schema
                         # picked from the landscape (see `report_schema`).
                         branches = report_schema(
@@ -1095,7 +1134,7 @@ class VSFRequestHandler(http.server.BaseHTTPRequestHandler):
                     response_payload = _build_analyze_response(
                         self.server, target, center_spec, branches,
                         direction=direction, features=features,
-                        drop=drop, prune=prune,
+                        drop=drop, prune=prune, partial=partial,
                     )
                     body = json.dumps(response_payload).encode("utf-8")
                     self.server.cache_put(key, cache_key, response_payload, body)
@@ -1103,7 +1142,7 @@ class VSFRequestHandler(http.server.BaseHTTPRequestHandler):
                     self.server.release(key, event)
                 # Sibling prefetch is per column value; a composite target has
                 # no siblings in that sense.
-                if criterion is not None and features is None and not target.also:
+                if criterion is not None and features is None and not target.also and centres == "full":
                     self.server.start_prefetch(
                         target_col, str(criterion), center_spec, direction, drop, prune
                     )
@@ -2018,12 +2057,18 @@ def _build_analyze_response(
     features: Optional[List[int]] = None,
     drop: Sequence[str] = (),
     prune: bool = False,
+    partial: Optional[Dict[int, PartialBranch]] = None,
 ) -> Dict[str, Any]:
     """
     The `/api/analyze` response body for discovered `branches`: one
     visualisation payload per dimensionality plus the branch selector's
     metadata. Shared by the request handler and the background prefetch so
     the two can never disagree on a field.
+
+    `partial` (partial-centre mode) holds the `vsf.partial.PartialBranch` of
+    every branch: each payload gets its `partial` block, and the default
+    branch / `sufficient_d` are chosen on the partial CV instead of the
+    full-grid one, since the branches were chosen by the partial search.
     """
     df = server.df
     translations = server.translations
@@ -2071,8 +2116,12 @@ def _build_analyze_response(
             ),
             center_spec=center_spec,
             indicator_labels=indicator_labels,
+            partial=None if partial is None else partial.get(d),
         )
-    selected_d = select_branch_dimensionality(branches)
+    selected_d = (
+        select_branch_dimensionality(branches) if partial is None
+        else select_partial_dimensionality(partial)
+    )
     return {
         "target": target_col,
         "criterion": criterion,
@@ -2098,6 +2147,10 @@ def _build_analyze_response(
         # draws certified cells red ("certified free of the value") with
         # the mass of those cells as the headline.
         "direction": direction,
+        # "full": centres are cells of the full grid (Section 4.3);
+        # "partial": branches found by the partial-centre search, each
+        # payload with its `partial` block (Section 4.16).
+        "centres": "full" if partial is None else "partial",
         # Set when the response is for an explicitly chosen schema (opened
         # from the landscape) rather than the search's winners: the branch
         # carries no uncorrected p-value, by design (`vsf.avr.report_schema`).

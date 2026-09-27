@@ -72,3 +72,13 @@ experiments/results/log_*
 
 # Reference data built by experiments/build_adult.py (not redistributed here)
 data/
+
+# TeX auxiliary files and bundles
+*.aux
+*.bbl
+*.blg
+*.log
+*.out
+*.synctex.gz
+*.bundle
+/main.tex

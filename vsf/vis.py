@@ -14,9 +14,12 @@ the collapse/split animation built on top of this payload.
 """
 
 import numpy as np
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Tuple
 from .avr import BranchResult
 from .centers import CenterSpec, purity_bounds, select_centers
+
+if TYPE_CHECKING:  # pragma: no cover - typing only; vsf.partial imports vsf.avr, not this module
+    from .partial import PartialBranch
 
 # Shape of an optional dataset translation table accepted throughout this
 # module: {"columns": {raw_col_name: display_name},
@@ -340,6 +343,163 @@ class _FullCellStatistics:
         }
 
 
+def _contiguous_runs(ticks: Sequence[int]) -> List[List[int]]:
+    """[[first, last], ...] of the maximal runs of consecutive integers in sorted `ticks`."""
+    runs: List[List[int]] = []
+    for t in ticks:
+        if runs and t == runs[-1][1] + 1:
+            runs[-1][1] = t
+        else:
+            runs.append([t, t])
+    return runs
+
+
+def _cv_payload(cv: Any) -> Optional[Dict[str, float]]:
+    if cv is None:
+        return None
+    return {
+        "mean": float(cv.mean), "se": float(cv.se), "purity": float(cv.purity_mean),
+        "n_splits": int(cv.n_splits), "n_repeats": int(cv.n_repeats),
+    }
+
+
+def _partial_overlay(
+    partial: "PartialBranch",
+    X_arr: np.ndarray,
+    selected_idx: Sequence[int],
+    feature_names: Sequence[str],
+    axis_value_maps: Sequence[Optional[Dict[str, int]]],
+    cell_stats: Dict[str, "_FullCellStatistics"],
+    translations: Optional[Translations],
+) -> Dict[str, Any]:
+    """
+    The display form of a partial-centre branch (`vsf.partial.PartialBranch`,
+    Project_Master_Document.md Section 4.16): for every view p = 1..d (the
+    branch's first p axes), the selected centres as regions of the lattice.
+
+    A centre fixes some axes to a SET of values - one value, or several
+    when the capacity rule merged levels of that column - and leaves the
+    rest free. Its fixed values are read off its rows (as
+    `vsf.server._cell_description` does), and `exact` records that the rows
+    are exactly the product of those value sets over the fixed columns,
+    i.e. that the drawn region holds the centre's rows and no others. The
+    values are mapped to the positions of the axis ticks; a value with no
+    tick (absent from the render subsample) is counted in `missing`, since
+    the part of the region it spans cannot be drawn.
+
+    `certified_cells_outside` counts the displayed full cells that the
+    lattice colours as centres but that lie in no selected region. Every
+    full cell that qualifies under the search's partition is a candidate, so
+    it is either chosen or overlaps a chosen centre; when the partitions nest
+    (the displayed partition is the search's and no sub-schema was coarsened
+    differently by the capacity rule) overlapping means lying inside, so the
+    count is 0, and a non-zero value flags a coarsened or binned axis
+    (Section 4.5).
+    """
+    names = [str(n) for n in feature_names]
+    x_str_cols: Dict[int, np.ndarray] = {}
+
+    def col_str(j: int) -> np.ndarray:
+        hit = x_str_cols.get(j)
+        if hit is None:
+            hit = np.asarray(X_arr[:, j]).astype(str)
+            x_str_cols[j] = hit
+        return hit
+
+    position = {int(j): a for a, j in enumerate(selected_idx)}
+    views: Dict[str, Any] = {}
+    for p, view in sorted(partial.views.items()):
+        sel = view.selection
+        centres_out: List[Dict[str, Any]] = []
+        regions: List[Dict[int, set]] = []
+        for i, c in enumerate(view.centres):
+            rows = np.asarray(c.rows, dtype=bool)
+            exact_mask = np.ones(rows.shape[0], dtype=bool)
+            conditions: List[Dict[str, Any]] = []
+            region: Dict[int, set] = {}
+            for j in c.sub_schema:
+                a = position[int(j)]
+                col = col_str(int(j))
+                values = np.unique(col[rows]).tolist()
+                exact_mask &= np.isin(col, values)
+                value_map = axis_value_maps[a] if a < len(axis_value_maps) else None
+                on_axis = [(value_map[v], v) for v in values if value_map is not None and v in value_map]
+                on_axis.sort()
+                ticks = [t for t, _ in on_axis]
+                missing = [v for v in values if value_map is None or v not in value_map]
+                region[a] = set(values)
+                conditions.append({
+                    "axis": a,
+                    "column": humanize_col(names[int(j)], translations),
+                    "values": [humanize_val(names[int(j)], v, translations) for _, v in on_axis]
+                    + [humanize_val(names[int(j)], v, translations) for v in missing],
+                    "ticks": ticks,
+                    "runs": _contiguous_runs(ticks),
+                    "missing": len(missing),
+                })
+            conditions.sort(key=lambda cond: cond["axis"])
+            regions.append(region)
+            centres_out.append({
+                "id": i,
+                "conditions": conditions,
+                "fixed_axes": sorted(position[int(j)] for j in c.sub_schema),
+                "free_axes": [a for a in range(p) if a not in {position[int(j)] for j in c.sub_schema}],
+                "cost": int(c.cost),
+                "n": int(c.n),
+                "k": int(c.k),
+                "purity": float(c.purity),
+                "lower": float(c.purity_lower),
+                "upper": float(c.purity_upper),
+                "level": float(c.level),
+                "exact": bool(np.array_equal(exact_mask, rows)),
+            })
+
+        outside = 0
+        stats = cell_stats.get(str(p))
+        if stats is not None:
+            for key, idx in stats.index.items():
+                if not bool(stats.certified[idx]):
+                    continue
+                inside = any(
+                    all(key[a] in vals for a, vals in region.items() if a < len(key))
+                    for region in regions
+                )
+                if not inside:
+                    outside += 1
+
+        views[str(p)] = {
+            "summary": {
+                "coverage": float(sel.coverage),
+                "n_centers": int(len(sel.centres)),
+                "conditions": int(sel.conditions),
+                "k": int(sel.k_sel),
+                "n": int(sel.n_sel),
+                "purity_pooled": float(sel.purity),
+                "mass": float(sel.mass),
+                "n_positive": int(sel.n_positive),
+                "full_grid_coverage": float(view.full_grid_coverage),
+                "full_grid_n_centers": int(view.full_grid_n_centers),
+                "full_grid_conditions": int(view.full_grid_conditions),
+                "axes_used": sorted(position[int(j)] for j in view.axes_used),
+                "certified_cells_outside": int(outside),
+            },
+            "centres": centres_out,
+        }
+
+    gain = partial.gain_vs_full
+    return {
+        "d": int(partial.d),
+        "views": views,
+        "coverage_cv": _cv_payload(partial.coverage_cv),
+        "full_grid_cv": _cv_payload(partial.full_grid_cv),
+        "gain_vs_full": None if gain is None else {
+            "difference": float(gain.difference), "se": float(gain.se),
+            "t": float(gain.t_statistic), "n_observations": int(gain.n_observations),
+        },
+        "cv_undetermined_reason": partial.cv_undetermined_reason,
+    }
+
+
 def prepare_visualization_payload(
     branch: BranchResult,
     X_matrix: np.ndarray,
@@ -353,6 +513,7 @@ def prepare_visualization_payload(
     positive_value: Optional[object] = None,
     center_spec: Optional[CenterSpec] = None,
     indicator_labels: Optional[Tuple[str, str]] = None,
+    partial: Optional["PartialBranch"] = None,
 ) -> Dict:
     """
     Prepares a structured visualization payload with axis titles, category
@@ -380,6 +541,11 @@ def prepare_visualization_payload(
     frontend colours by, and the coverage / K / purity triple the panel
     reports. Defaults to tau = 0.90, alpha = 0.05, Bonferroni across the
     displayed partition's occupied cells.
+
+    `partial` (a `vsf.partial.PartialBranch` for this branch's schema) adds
+    the `partial` block: the partial-axis centres of every view as regions of
+    the lattice (`_partial_overlay`). The cells, their colours and every
+    other field are unchanged by it.
 
     NOTE on which partition is certified: the certificate here is computed on
     the DISPLAYED partition — the cells the user can see and click — over ALL
@@ -772,6 +938,28 @@ def prepare_visualization_payload(
     # branch that listing is taken from the 3-D marginal because the per-slice
     # grids are separate objects, while the COUNTS come from the joint
     # partition -- the listing is illustrative, the counts are the report.
+    partial_payload: Optional[Dict[str, Any]] = None
+    if partial is not None:
+        if [int(j) for j in partial.schema] != [int(j) for j in selected_idx]:
+            raise ValueError(
+                f"partial branch schema {list(partial.schema)} is not the branch's {list(selected_idx)}"
+            )
+
+        def _value_map(vals: Optional[np.ndarray], nums: Optional[np.ndarray]) -> Optional[Dict[str, int]]:
+            if vals is None or nums is None:
+                return None
+            return {str(v): int(i) for v, i in zip(vals, nums)}
+
+        axis_maps = [
+            _value_map(x_vals, x_num),
+            _value_map(y_vals, y_num) if branch_d >= 2 else None,
+            _value_map(z_vals, z_num) if branch_d >= 3 else None,
+            _value_map(w_vals, w_num) if has_4d else None,
+        ]
+        partial_payload = _partial_overlay(
+            partial, X_arr, selected_idx, feature_names, axis_maps, cell_stats, translations,
+        )
+
     _headline_key = "4" if ("4" in cell_stats and branch.d >= 4) else str(min(branch.d, 3))
     _headline_grid_key = str(min(branch.d, 3))
 
@@ -811,6 +999,9 @@ def prepare_visualization_payload(
             "z": {"vals": list(range(len(z_ticks))), "text": z_ticks},
         },
         "slice_axis": slice_axis_info,
+        # Partial-axis centres (Section 4.16), present only for a partial-
+        # centre analysis; see `_partial_overlay`.
+        "partial": partial_payload,
         # v2.2: `total_samples` is the number of rows every reported STATISTIC
         # is computed on. `rendered_samples` is how many of them are drawn as
         # individual spheres. Before v2.2 this key held the latter while the

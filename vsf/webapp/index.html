@@ -16,8 +16,8 @@
     <!-- Plotly.js -->
     <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
 
-    <link rel="stylesheet" href="/static/css/styles.css?v=5040">
-    <script src="/static/js/app.js?v=5040" defer></script>
+    <link rel="stylesheet" href="/static/css/styles.css?v=5046">
+    <script src="/static/js/app.js?v=5052" defer></script>
 </head>
 
 <body>
@@ -127,6 +127,11 @@
                             <span style="font-size: 0.75rem; color: var(--text-dim);">Centres:</span>
                             <strong id="val-centers" style="color: var(--green); font-size: 1.05rem;">-</strong>
                         </div>
+                        <div id="hud-conditions" style="display: flex; align-items: baseline; gap: 6px;"
+                            title="The (column = value) conditions the centres of this view spell out: d per full cell, fewer per partial-axis centre. The common unit in which full cells and partial centres are compared.">
+                            <span style="font-size: 0.75rem; color: var(--text-dim);">Conditions:</span>
+                            <strong id="val-conditions" style="color: var(--text-main); font-size: 1.05rem;">-</strong>
+                        </div>
                     </div>
                     <div style="display: flex; align-items: center; gap: 8px; border-left: 1px solid var(--border-color); padding-left: 1rem;">
                         <span style="font-size: 0.75rem; color: var(--text-dim); font-weight: 500;"
@@ -156,7 +161,17 @@
                 </div>
             </div>
 
+            <!-- Partial-axis centres are on, and this tab is one that scores
+                 schemas by full cells (app.js, updateCentresModeNote). -->
+            <div id="centresModeNote" class="centres-mode-note" style="display: none;"></div>
+
             <div id="axesListContainer" class="axes-list-bar"></div>
+
+            <!-- Partial-axis centres of the view on screen (Section 4.16;
+                 app.js, renderPartialPanel): what the shaded regions are, what
+                 they cost against the full grid of the same axes, and the list.
+                 Hidden in full-cell mode. -->
+            <div id="partialPanel" class="pc-panel" style="display: none;"></div>
 
             <div id="plot-container"></div>
 
@@ -532,6 +547,21 @@
                                 onclick="setDirection('presence')">Presence</button>
                             <button type="button" class="direction-btn" data-direction="absence"
                                 onclick="setDirection('absence')">Absence</button>
+                        </div>
+                    </div>
+                    <!-- Kind of centre (Project_Master_Document.md Section 4.16).
+                         Full cells: a centre fixes every axis of the branch.
+                         Partial axes: the branches come from the partial-centre
+                         search and a centre may fix only some axes (a bar, plate
+                         or layer of the cube). Re-runs the analysis. -->
+                    <div class="direction-toggle" id="centresToggle"
+                        title="Full cells: every centre fixes all axes of the branch (d conditions). Partial axes: a centre may fix only some of the branch's axes - a bar, plate or layer of the same cube - chosen as a disjoint set by the partial-centre search, under the same purity rule and the same family of cells. Changes the branches and the Lattice; the Landscape, Rules, Redundancy, Trade-offs and the Global Pattern Scan stay full-cell.">
+                        <span style="font-size: 0.8rem; color: var(--text-dim);">Centres:</span>
+                        <div class="view-toggle-group" style="padding: 2px;">
+                            <button type="button" class="centres-btn active" data-centres="full"
+                                onclick="setCentresMode('full')">Full cells</button>
+                            <button type="button" class="centres-btn" data-centres="partial"
+                                onclick="setCentresMode('partial')">Partial axes</button>
                         </div>
                     </div>
                     <div id="baseRateNote" style="font-size: 0.72rem; color: var(--text-dim); min-height: 1em; margin: 2px 0 4px 0;"></div>
