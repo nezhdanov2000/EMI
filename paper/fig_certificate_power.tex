@@ -1,0 +1,24 @@
+% Generated data: fig_certificate_power.dat (experiments/certificate_price.py).
+\begin{tikzpicture}
+\begin{groupplot}[group style={group size=2 by 1, horizontal sep=14mm},
+  width=0.5\linewidth, height=0.36\linewidth, xmode=log, ymin=0, ymax=1.02,
+  xmin=10, xmax=3000, xlabel={cell size $n$}, grid=major, grid style={gray!25},
+  tick label style={font=\scriptsize}, label style={font=\scriptsize}, title style={font=\small},
+  legend style={font=\scriptsize, draw=none, fill=white, fill opacity=0.85, text opacity=1,
+                at={(0.03,0.97)}, anchor=north west, cells={anchor=west}}]
+\nextgroupplot[title={$\tau=0.7$}, ylabel={$\Pr[\text{certified}]$}]
+\addplot[black, thick] table[x=n, y=titanic_t70_p100] {fig_certificate_power.dat};
+\addplot[black, thick, dashed] table[x=n, y=chess_t70_p100] {fig_certificate_power.dat};
+\addplot[red!70!black, thick] table[x=n, y=titanic_t70_p75] {fig_certificate_power.dat};
+\addplot[red!70!black, thick, dashed] table[x=n, y=chess_t70_p75] {fig_certificate_power.dat};
+\nextgroupplot[title={$\tau=0.9$}]
+\addplot[black, thick] table[x=n, y=titanic_t90_p100] {fig_certificate_power.dat};
+\addlegendentry{$p=1$, $T=3\,102$}
+\addplot[black, thick, dashed] table[x=n, y=chess_t90_p100] {fig_certificate_power.dat};
+\addlegendentry{$p=1$, $T=303\,620$}
+\addplot[red!70!black, thick] table[x=n, y=titanic_t90_p95] {fig_certificate_power.dat};
+\addlegendentry{$p=\tau+0.05$, $T=3\,102$}
+\addplot[red!70!black, thick, dashed] table[x=n, y=chess_t90_p95] {fig_certificate_power.dat};
+\addlegendentry{$p=\tau+0.05$, $T=303\,620$}
+\end{groupplot}
+\end{tikzpicture}

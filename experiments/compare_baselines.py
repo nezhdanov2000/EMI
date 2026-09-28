@@ -20,7 +20,15 @@ Every split is cached in results/cache/ as soon as it is computed, keyed by
 the data's hash and the configuration; a call runs at most `--max-seconds`
 of new splits and writes the summary once every split of every
 configuration is present. Large datasets are therefore finished by
-repeating the same command.
+repeating the same command. Methods listed in `baselines.EXTRA_METHODS`
+(added after the main run) are not part of the cache key: a cached split
+that lacks one is topped up - only the missing methods run - and rewritten.
+
+Selection rules: `purity` and `certified` (the family certificate) as in
+the paper's main tables, and `split` (Webb's exploratory/holdout split;
+`baselines.run_split`), listed for the same configurations as `certified`
+so that the two certificates are compared on the same folds. `--selection`
+restricts a run to one rule.
 
 Usage:
     python experiments/compare_baselines.py --only titanic
@@ -47,7 +55,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from baselines import BUDGETS, METHODS, SplitOutcome, SplitResult, run_split, summarize_splits  # noqa: E402
+from baselines import ALL_METHODS, BUDGETS, METHODS, SplitOutcome, SplitResult, run_split, summarize_splits  # noqa: E402
 from datasets import load_dataset  # noqa: E402
 from vsf.centers import paired_gain  # noqa: E402
 
@@ -70,52 +78,74 @@ CONFIGS: List[Config] = [
     Config("titanic", "survived", 0.7),
     Config("titanic", "survived", 0.9, min_samples=20),
     Config("titanic", "survived", 0.7, selection="certified"),
+    Config("titanic", "survived", 0.7, selection="split"),
     Config("breast_cancer", "recurrence-events", 0.7),
     Config("breast_cancer", "recurrence-events", 0.7, selection="certified"),
+    Config("breast_cancer", "recurrence-events", 0.7, selection="split"),
     Config("thyroid_recurrence", "Yes", 0.9),
     Config("thyroid_recurrence", "Yes", 0.9, selection="certified"),
+    Config("thyroid_recurrence", "Yes", 0.9, selection="split"),
     Config("breast_cancer_wisconsin", "malignant", 0.9),
     Config("breast_cancer_wisconsin", "malignant", 0.9, selection="certified"),
+    Config("breast_cancer_wisconsin", "malignant", 0.9, selection="split"),
     # 2026-09-24: the four UCI files of the phase-3 runs restored from git
     # history (cead890) so that the partial-centre comparison is on the same
     # data as claude/phase3-baselines.md.
     Config("car_evaluation", "acc", 0.9),
     Config("car_evaluation", "acc", 0.9, selection="certified"),
+    Config("car_evaluation", "acc", 0.9, selection="split"),
     Config("nursery", "spec_prior", 0.9),
     Config("nursery", "priority", 0.7),
     Config("nursery", "spec_prior", 0.9, selection="certified"),
+    Config("nursery", "spec_prior", 0.9, selection="split"),
     Config("nursery", "priority", 0.7, selection="certified"),
+    Config("nursery", "priority", 0.7, selection="split"),
     Config("mushroom", "poisonous", 0.9, n_repeats=2),
     Config("mushroom", "poisonous", 0.9, n_repeats=2, selection="certified"),
+    Config("mushroom", "poisonous", 0.9, n_repeats=2, selection="split"),
     Config("chess_krkp", "won", 0.9, n_repeats=1),
     Config("chess_krkp", "won", 0.9, n_repeats=1, selection="certified"),
+    Config("chess_krkp", "won", 0.9, n_repeats=1, selection="split"),
     # 2026-09-24: seven real tables built by experiments/build_external_benchmarks.py
     # (N 1 470 - 48 842, M 11 - 24, base rates 8 - 28 %). m = 20 throughout:
     # m = 1 lets free rules overfit tiny training-pure cells (PMD 4.16).
     Config("adult", ">50K", 0.7, min_samples=20, n_repeats=2),
     Config("adult", ">50K", 0.7, min_samples=20, n_repeats=2, selection="certified"),
+    Config("adult", ">50K", 0.7, min_samples=20, n_repeats=2, selection="split"),
     Config("hmda", "yes", 0.5, min_samples=20),
     Config("hmda", "yes", 0.5, min_samples=20, selection="certified"),
+    Config("hmda", "yes", 0.5, min_samples=20, selection="split"),
     Config("attrition", "Yes", 0.5, min_samples=20),
     Config("attrition", "Yes", 0.5, min_samples=20, selection="certified"),
+    Config("attrition", "Yes", 0.5, min_samples=20, selection="split"),
     Config("credit", "bad", 0.7, min_samples=20),
     Config("credit", "bad", 0.7, min_samples=20, selection="certified"),
+    Config("credit", "bad", 0.7, min_samples=20, selection="split"),
     Config("resume", "yes", 0.3, min_samples=20),
     Config("resume", "yes", 0.3, min_samples=20, selection="certified"),
+    Config("resume", "yes", 0.3, min_samples=20, selection="split"),
     Config("wa_churn", "Yes", 0.7, min_samples=20),
     Config("wa_churn", "Yes", 0.7, min_samples=20, selection="certified"),
+    Config("wa_churn", "Yes", 0.7, min_samples=20, selection="split"),
     Config("mlc_churn", "yes", 0.7, min_samples=20),
     Config("mlc_churn", "yes", 0.7, min_samples=20, selection="certified"),
+    Config("mlc_churn", "yes", 0.7, min_samples=20, selection="split"),
     # 2026-09-24: the two wide PMLB tables (build_pmlb_benchmarks.py). splice has
     # M = 60: exhaustive families of size 4 are too large for every method, so
     # max_d = 3 for all methods alike (schema size, rule length, tree depth).
     Config("connect_4", "loss", 0.7, min_samples=20, n_repeats=1),
     Config("connect_4", "loss", 0.7, min_samples=20, n_repeats=1, selection="certified"),
+    Config("connect_4", "loss", 0.7, min_samples=20, n_repeats=1, selection="split"),
     Config("connect_4", "win", 0.9, min_samples=20, n_repeats=1),
     Config("connect_4", "win", 0.9, min_samples=20, n_repeats=1, selection="certified"),
+    Config("connect_4", "win", 0.9, min_samples=20, n_repeats=1, selection="split"),
     Config("splice", "site_b", 0.9, min_samples=20, n_repeats=1, max_d=3),
     Config("splice", "site_b", 0.9, min_samples=20, n_repeats=1, max_d=3, selection="certified"),
+    Config("splice", "site_b", 0.9, min_samples=20, n_repeats=1, max_d=3, selection="split"),
 ]
+# 2026-09-28: every certified configuration is also listed with selection="split"
+# (Webb's exploratory/holdout split): the comparison of the two certificates
+# in the paper's Section 4 on the same folds.
 # The high-dimensional files (lung_discrete, colon, leukemia) are not listed:
 # exhaustive search over d <= 4 on 325-7070 columns needs a feature pre-filter.
 
@@ -213,7 +243,9 @@ def _rounded(value: float, digits: int = 4) -> object:
 def rows_for(tag: str, cfg: Config, per_split: List[SplitResult], seconds: float) -> List[Dict[str, object]]:
     summary = summarize_splits(per_split, N_SPLITS, cfg.n_repeats, cfg.tau)
     out: List[Dict[str, object]] = []
-    for mth in METHODS:
+    for mth in ALL_METHODS:
+        if mth not in summary:
+            continue
         for b in BUDGETS:
             e = summary[mth][b]
             cv = e["coverage"]
@@ -256,13 +288,21 @@ def main() -> int:
                     help="rows of a synthetic dataset (the certified selection needs a few thousand per cell)")
     ap.add_argument("--max-seconds", type=float, default=150.0,
                     help="stop starting new splits after this many seconds")
+    ap.add_argument("--selection", choices=("purity", "certified", "split"), default=None,
+                    help="run only the configurations with this selection rule")
+    ap.add_argument("--methods", default=",".join(ALL_METHODS),
+                    help="comma-separated methods to have in every split (default: all, extras topped up)")
     args = ap.parse_args()
+    wanted = tuple(m for m in args.methods.split(",") if m)
+    unknown = set(wanted) - set(ALL_METHODS)
+    if unknown:
+        raise SystemExit(f"unknown methods: {sorted(unknown)}")
 
     if args.synthetic:
         X, Z = synthetic(args.synthetic, args.seed, args.n)
         base = f"synthetic_{args.synthetic}" + ("" if args.n == 2000 else f"_n{args.n}")
         jobs = [(base, Config(args.synthetic, "yes", 0.9, min_samples=5, selection=sel), X, Z)
-                for sel in ("purity", "certified")]
+                for sel in ("purity", "certified", "split")]
     else:
         configs = [c for c in CONFIGS if c.dataset == args.only]
         if not configs:
@@ -270,6 +310,10 @@ def main() -> int:
         frame, entry = load_dataset(args.only)
         feats = [c for c in frame.columns if c != entry.target]
         jobs = [(args.only, c, frame[feats].values, frame[entry.target].values) for c in configs]
+    if args.selection is not None:
+        jobs = [j for j in jobs if j[1].selection == args.selection]
+        if not jobs:
+            raise SystemExit(f"no configuration with selection {args.selection!r}")
 
     started = time.perf_counter()
     rows: List[Dict[str, object]] = []
@@ -281,10 +325,23 @@ def main() -> int:
             path = _cache_path(tag, cfg, X, Z, args.seed, i)
             if path.exists():
                 result, sec = _load(path)
+                todo = [m for m in wanted if m not in result]
+                if todo and time.perf_counter() - started < args.max_seconds:
+                    # top up: only the methods the cached split lacks are run
+                    t0 = time.perf_counter()
+                    extra = run_split(X, Z, cfg.positive, cfg.tau, cfg.min_samples, i, N_SPLITS,
+                                      cfg.n_repeats, args.seed, BUDGETS, todo, cfg.max_d,
+                                      cfg.selection)  # type: ignore[arg-type]
+                    sec += time.perf_counter() - t0
+                    result.update(extra)
+                    _save(path, result, sec)
+                elif todo:
+                    missing += 1
+                    continue
             elif time.perf_counter() - started < args.max_seconds:
                 t0 = time.perf_counter()
                 result = run_split(X, Z, cfg.positive, cfg.tau, cfg.min_samples, i, N_SPLITS,
-                                   cfg.n_repeats, args.seed, BUDGETS, METHODS, cfg.max_d,
+                                   cfg.n_repeats, args.seed, BUDGETS, wanted, cfg.max_d,
                                    cfg.selection)  # type: ignore[arg-type]
                 sec = time.perf_counter() - t0
                 _save(path, result, sec)
@@ -301,7 +358,9 @@ def main() -> int:
         new = rows_for(tag, cfg, per_split, seconds)
         rows.extend(new)
         print(f"{label} ({seconds:.1f} s of computation)")
-        for mth in METHODS:
+        for mth in ALL_METHODS:
+            if not any(r["method"] == mth for r in new):
+                continue
             line = "  ".join(
                 f"B{r['budget']}:{100 * float(r['coverage']):5.1f}({_pct(r['purity'])}|{_pct(r['net_coverage'])})"  # type: ignore[arg-type]
                 for r in new if r["method"] == mth

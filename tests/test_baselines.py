@@ -363,3 +363,115 @@ def test_ssdpp_groups_are_disjoint_qualify_and_respect_budget() -> None:
             assert z_train[m_tr].mean() >= 0.9 - 1e-12
     # the ordered list resolves the overlap of the two planted rules by "else": both fit in 4 conditions
     assert res.train_coverage[4] > 0.8
+
+
+# --------------------------------------------------------------------------
+# WRAcc top-k lists and the exploratory/holdout split (2026-09-28)
+# --------------------------------------------------------------------------
+def _wracc_of(members_train: np.ndarray, z_train: np.ndarray) -> float:
+    n = int(members_train.sum())
+    k = int(z_train[members_train].sum())
+    return (k - n * z_train.mean()) / z_train.size
+
+
+def test_wracc_candidates_are_the_rules_family_in_wracc_order() -> None:
+    """Same qualifying cells as `rules`; taken in descending WRAcc while they fit the budget."""
+    X, z = _two_region_data(3)
+    _, fit, X_all, train, z_train, names = _train_split(X, z)
+    z64 = z_train.astype(np.int64)
+    budgets = [2, 4, 8, 32]
+    ranked = bl.select_wracc(X_all, train, z_train, 0.9, 5, budgets, names)
+    free = bl._rule_candidates(X_all[train], z64, 0.9, 5, 4, None)
+    family = {c.positives.tobytes() + b"|" + c.negatives.tobytes() for c in free}
+    for b in budgets:
+        groups = ranked.groups[b]
+        assert sum(g.cost for g in groups) <= b
+        scores = []
+        for g in groups:
+            m_tr = g.members[train]
+            rows = np.flatnonzero(m_tr)
+            assert (rows[z64[rows] == 1].tobytes() + b"|" + rows[z64[rows] == 0].tobytes()) in family
+            assert z_train[m_tr].mean() >= 0.9 - 1e-12
+            scores.append(_wracc_of(m_tr, z_train))
+        # a list, not a packing: the order is by WRAcc, non-increasing
+        assert all(a >= b_ - 1e-12 for a, b_ in zip(scores, scores[1:]))
+    # the top-1 at budget 32 is the best WRAcc cell of the whole family
+    best = max(_wracc_of(np.isin(np.arange(train.size), np.concatenate([c.positives, c.negatives])), z_train)
+               for c in free)
+    assert abs(_wracc_of(ranked.groups[32][0].members[train], z_train) - best) < 1e-12
+
+
+def test_wracc_raw_ignores_the_purity_floor() -> None:
+    """Without the filter the top-ranked group need not reach tau: what a tool returns out of the box."""
+    rng = np.random.default_rng(7)
+    n = 3000
+    X = rng.integers(0, 2, size=(n, 4))
+    # one big group at purity 0.6 (huge WRAcc), one small pure group
+    p = np.where(X[:, 0] == 1, 0.6, np.where((X[:, 1] == 1) & (X[:, 2] == 1) & (X[:, 3] == 1), 0.99, 0.05))
+    z = (rng.random(n) < p).astype(int)
+    _, fit, X_all, train, z_train, names = _train_split(X.astype(str), z)
+    raw = bl.select_wracc(X_all, train, z_train, 0.9, 5, [1, 4], names, qualify=False)
+    top = raw.groups[1][0]
+    assert z_train[top.members[train]].mean() < 0.9   # x0 = 1, purity ~0.6
+    assert top.cost == 1
+    filtered = bl.select_wracc(X_all, train, z_train, 0.9, 5, [1, 4], names, qualify=True)
+    for g in filtered.groups[4]:
+        assert z_train[g.members[train]].mean() >= 0.9 - 1e-12
+
+
+def test_certify_on_holdout_tests_each_proposed_group_once_at_alpha_over_T_B() -> None:
+    X, z = _two_region_data(5, n=2000)
+    _, fit, X_all, train, z_train, names = _train_split(X, z)
+    z64 = z.astype(np.int64)
+    holdout = np.setdiff1d(np.arange(z.shape[0]), train)
+    proposed = bl.select_rules(X_all, train, z_train, 0.9, 5, [2, 4, 8], names)
+    kept, t_b = bl.certify_on_holdout(proposed, z64, holdout, 0.9, 0.05)
+    distinct = {np.packbits(g.members[holdout]).tobytes() for gs in proposed.groups.values() for g in gs}
+    assert t_b == len(distinct) > 0
+    need = bl.min_successes_to_certify_heterogeneous
+    z_h = z64[holdout]
+
+    def passes(g) -> bool:
+        m_h = g.members[holdout]
+        n_h, k_h = int(m_h.sum()), int(z_h[m_h].sum())
+        return n_h > 0 and k_h >= int(np.asarray(need(np.array([n_h]), 0.9, 0.05 / t_b))[0])
+
+    for b in (2, 4, 8):
+        assert [g.label for g in kept.groups[b]] == [g.label for g in proposed.groups[b] if passes(g)]
+        inside = bl.union_members(kept.groups[b], z.shape[0])[holdout]
+        assert abs(kept.train_coverage[b] - z_h[inside].sum() / max(1, z_h.sum())) < 1e-12
+
+
+def test_split_selection_runs_every_method_and_certifies_on_half_B() -> None:
+    X, z = _two_region_data(6, n=1500)
+    methods = ("vsf", "vsf_partial", "rules_disjoint", "tree", "wracc")
+    out = bl.run_split(X, z, 1, tau=0.9, m=5, split_index=0, n_repeats=1, budgets=(2, 4, 8),
+                       methods=methods, selection="split")
+    assert set(out) == set(methods)
+    # reconstruct B and check every kept group on it at alpha / T_B
+    factory, zb, _ = _factory(X.astype(str), z, tau=0.9, m=5)
+    splits = bl.stratified_repeated_kfold(zb, 5, 1, 0)
+    train, _ = splits[0]
+    _, holdout = bl.split_halves(train, 0, 0)
+    for mth, per in out.items():
+        for b, o in per.items():
+            assert o.conditions <= b
+        # the union at the largest budget is the union of groups that passed on B:
+        # its B-purity is at least tau whenever it is non-empty and the groups are disjoint
+        inside = per[8].inside[holdout]
+        if mth in ("vsf", "vsf_partial", "rules_disjoint") and inside.any():
+            assert zb[holdout][inside].mean() >= 0.9 - 1e-12
+    with pytest.raises(ValueError):
+        bl.run_split(X, z, 1, tau=0.9, m=5, split_index=0, n_repeats=1, selection="holdout")
+
+
+def test_split_halves_are_a_reproducible_uniform_partition() -> None:
+    rng = np.random.default_rng(0)
+    train = np.sort(rng.choice(1000, size=800, replace=False))
+    a1, b1 = bl.split_halves(train, 0, 0)
+    a2, b2 = bl.split_halves(train, 0, 0)
+    a3, _ = bl.split_halves(train, 0, 1)
+    assert np.array_equal(a1, a2) and np.array_equal(b1, b2)
+    assert not np.array_equal(a1, a3)
+    assert np.intersect1d(a1, b1).size == 0 and np.union1d(a1, b1).size == train.size
+    assert abs(a1.size - b1.size) <= 1

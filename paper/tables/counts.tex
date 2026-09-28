@@ -1,17 +1,18 @@
-\begin{tabular}{llrrr}
+\begin{tabular}{llrrrrrr}
 \toprule
-selection & comparison & better & tie & worse\\
+& & \multicolumn{3}{c}{$|t|\ge2$} & \multicolumn{3}{c}{Holm within configuration}\\
+selection & comparison & better & tie & worse & better & tie & worse\\
 \midrule
-certified & full grid vs disjoint rules & 2 & 29 & 17\\
-certified & partial centres vs disjoint rules & 2 & 40 & 6\\
-certified & partial centres vs full grid & 15 & 33 & 0\\
-certified & \multicolumn{4}{l}{gap closed by partial centres: median 1.00, mean 0.78 ($n=18$)}\\
-certified & \multicolumn{4}{l}{held-out union purity $\ge\tau$: grid 97\,\%, partial 97\,\%, rules$_{\mathrm{disj}}$ 97\,\%, rules 97\,\%}\\
+certified & full grid vs disjoint rules & 2 & 31 & 20 & 2 & 35 & 16\\
+certified & partial centres vs disjoint rules & 2 & 45 & 6 & 2 & 48 & 3\\
+certified & partial centres vs full grid & 18 & 35 & 0 & 12 & 41 & 0\\
+certified & \multicolumn{7}{l}{gap closed by partial centres: median 1.00, mean 0.86 ($n=21$)}\\
+certified & \multicolumn{7}{l}{held-out union purity $\ge\tau$: grid 97\,\%, partial 97\,\%, rules$_{\mathrm{disj}}$ 97\,\%, rules 97\,\%}\\
 \midrule
-purity & full grid vs disjoint rules & 2 & 62 & 45\\
-purity & partial centres vs disjoint rules & 5 & 83 & 21\\
-purity & partial centres vs full grid & 41 & 68 & 0\\
-purity & \multicolumn{4}{l}{gap closed by partial centres: median 0.85, mean 0.75 ($n=55$)}\\
-purity & \multicolumn{4}{l}{held-out union purity $\ge\tau$: grid 79\,\%, partial 79\,\%, rules$_{\mathrm{disj}}$ 77\,\%, rules 60\,\%}\\
+purity & full grid vs disjoint rules & 2 & 62 & 45 & 1 & 66 & 42\\
+purity & partial centres vs disjoint rules & 5 & 83 & 21 & 2 & 91 & 16\\
+purity & partial centres vs full grid & 41 & 68 & 0 & 39 & 70 & 0\\
+purity & \multicolumn{7}{l}{gap closed by partial centres: median 0.85, mean 0.75 ($n=55$)}\\
+purity & \multicolumn{7}{l}{held-out union purity $\ge\tau$: grid 79\,\%, partial 79\,\%, rules$_{\mathrm{disj}}$ 77\,\%, rules 60\,\%}\\
 \bottomrule
 \end{tabular}

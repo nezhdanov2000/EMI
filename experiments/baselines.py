@@ -59,6 +59,18 @@ Methods
                as the others; cost = conditions in the rule. The list is
                fitted for the whole target, so it also contains rules for
                the other class; those never qualify.
+`wracc`        the qualifying family of `rules` (training purity >= tau or
+               the certificate threshold, size >= m) ranked by weighted
+               relative accuracy WRAcc = (n/N)(k/n - P/N), the default
+               quality of subgroup discovery (pysubgroup, SD-Map, CN2-SD),
+               and read as a top-k list: rules are taken in that order while
+               they fit the budget. Same candidates as `rules`, the standard
+               selection order instead of budgeted maximum coverage; may
+               overlap. What "run pysubgroup with a purity filter" returns.
+`wracc_raw`    WRAcc top-k WITHOUT the purity filter (size >= m only): the
+               list a subgroup-discovery tool returns out of the box. Not a
+               solution of the task - its groups need not reach tau - and
+               kept to show what the purity floor changes.
 `tree`         one CART tree (scikit-learn) on one-hot training rows,
                min_samples_leaf = m; qualifying leaves selected by the same
                greedy. At each budget the tree with the most covered
@@ -123,6 +135,10 @@ __all__ = [
     "union_members",
     "evaluate_groups",
     "SplitOutcome",
+    "ALL_METHODS",
+    "EXTRA_METHODS",
+    "certify_on_holdout",
+    "split_halves",
     "run_comparison",
     "run_split",
     "summarize_splits",
@@ -131,6 +147,7 @@ __all__ = [
     "select_vsf",
     "select_vsf_partial",
     "select_ssdpp",
+    "select_wracc",
     "TREE_GRID",
 ]
 
@@ -267,7 +284,18 @@ def _qualifying(
 
 
 #: Selection rules a comparison can run under.
-Selection = Literal["purity", "certified"]
+#:   purity     - training purity >= tau (the product's observed rule);
+#:   certified  - the family-wise certificate at alpha / T (`run_split`);
+#:   split      - Webb's exploratory/holdout split: the training fold is cut
+#:                at random into halves A and B, every method selects on A
+#:                under the purity rule, and each selected group is kept
+#:                only if its count on B passes the heterogeneous binomial
+#:                threshold at alpha / T_B, T_B the number of distinct groups
+#:                the method proposed (over all budgets). B's target values
+#:                are independent of everything that chose the groups, so
+#:                the Bonferroni bound over T_B is exact; the price is that
+#:                A sees half the rows and B certifies with half the rows.
+Selection = Literal["purity", "certified", "split"]
 
 
 def certification_threshold(n_max: int, tau: float, alpha_eff: float) -> np.ndarray:
@@ -531,6 +559,98 @@ def greedy_chain(
 # --------------------------------------------------------------------------
 # Rules
 # --------------------------------------------------------------------------
+def _rule_candidates(
+    X_train: np.ndarray, z64: np.ndarray, tau: float, m: int, max_len: int,
+    threshold: Optional[np.ndarray], qualify: bool = True, top_k: Optional[int] = None,
+) -> List[_Candidate]:
+    """
+    Every conjunction of <= max_len (column = value) conditions that occurs
+    in the training rows, one candidate per distinct training row set
+    (described by the fewest conditions). With `qualify` the purity rule (or
+    `threshold`) and the size floor filter the cells; without it only the
+    size floor does, and `top_k` keeps the cells with the largest WRAcc
+    (n/N)(k/n - P/N) so that the unfiltered family stays bounded. Candidate
+    keys are (columns, values).
+    """
+    n_train, n_features = X_train.shape
+    base_rate = float(z64.sum()) / max(1, n_train)
+    max_len = min(max_len, n_features)
+    if top_k is not None and top_k <= 0:
+        raise ValueError("top_k must be positive")
+    # (wracc, -cost, combo, cell): a heap of the best top_k cells when top_k is set
+    heap: List[Tuple[float, int, Tuple[int, ...], int]] = []
+    kept: List[Tuple[Tuple[int, ...], np.ndarray, np.ndarray, np.ndarray]] = []  # combo, codes, order, bounds
+    combo_index: Dict[Tuple[int, ...], int] = {}
+    picks: List[Tuple[Tuple[int, ...], int]] = []
+    for d in range(1, max_len + 1):
+        for combo in itertools.combinations(range(n_features), d):
+            codes, n_cells = cell_codes(X_train[:, combo])
+            codes = np.asarray(codes, dtype=np.int64)
+            table = np.bincount(codes * 2 + z64, minlength=2 * n_cells).reshape(n_cells, 2)
+            n = table.sum(axis=1)
+            k = table[:, 1]
+            if qualify:
+                q = np.flatnonzero(_qualifying(k, n, tau, m, threshold))
+            else:
+                q = np.flatnonzero(n >= max(1, m))
+            if q.size == 0:
+                continue
+            if top_k is None:
+                combo_index[combo] = len(kept)
+                order = np.argsort(codes, kind="stable")
+                bounds = np.searchsorted(codes[order], np.arange(n_cells + 1))
+                kept.append((combo, codes, order, bounds))
+                picks.extend((combo, int(c)) for c in q.tolist())
+                continue
+            wr = (k[q] - n[q] * base_rate) / n_train
+            for c, w in zip(q.tolist(), wr.tolist()):
+                item = (float(w), -d, combo, int(c))
+                if len(heap) < top_k:
+                    heapq.heappush(heap, item)
+                elif item > heap[0]:
+                    heapq.heapreplace(heap, item)
+    if top_k is not None:
+        by_combo: Dict[Tuple[int, ...], List[int]] = {}
+        for _, _, combo, c in heap:
+            by_combo.setdefault(combo, []).append(c)
+        for combo, cells in by_combo.items():
+            codes, n_cells = cell_codes(X_train[:, combo])
+            codes = np.asarray(codes, dtype=np.int64)
+            order = np.argsort(codes, kind="stable")
+            bounds = np.searchsorted(codes[order], np.arange(n_cells + 1))
+            combo_index[combo] = len(kept)
+            kept.append((combo, codes, order, bounds))
+            picks.extend((combo, c) for c in cells)
+        picks.sort(key=lambda t: (len(t[0]), t[0], t[1]))
+    candidates: List[_Candidate] = []
+    seen: Dict[bytes, int] = {}
+    for combo, c in picks:
+        _, _, order, bounds = kept[combo_index[combo]]
+        rows = order[bounds[c]:bounds[c + 1]]
+        key = rows.tobytes()
+        if key in seen:  # same training rows, described by fewer or equal conditions
+            continue
+        seen[key] = len(candidates)
+        values = tuple(int(v) for v in X_train[rows[0], list(combo)])
+        candidates.append(_Candidate(
+            positives=rows[z64[rows] == 1], cost=len(combo), key=(combo, values),
+            negatives=rows[z64[rows] == 0],
+        ))
+    return candidates
+
+
+def _rule_groups(
+    X_all: np.ndarray, candidates: Sequence[_Candidate], idx: Sequence[int], names: Sequence[str],
+) -> List[Group]:
+    groups: List[Group] = []
+    for i in idx:
+        combo, values = candidates[i].key  # type: ignore[misc]
+        members = np.all(X_all[:, list(combo)] == np.asarray(values), axis=1)
+        groups.append(Group(members=members, cost=candidates[i].cost, label=" & ".join(
+            f"{names[j]}={v}" for j, v in zip(combo, values))))
+    return groups
+
+
 def select_rules(
     X_all: np.ndarray, train: np.ndarray, z_train: np.ndarray, tau: float, m: int,
     budgets: Sequence[int], names: Sequence[str], max_len: int = MAX_BRANCH_D,
@@ -539,44 +659,58 @@ def select_rules(
     """Qualifying conjunctions of <= max_len (column = value) conditions, greedy under budget."""
     n_train = int(train.size)
     z64 = z_train.astype(np.int64)
-    X_train = X_all[train]
-    candidates: List[_Candidate] = []
-    seen: Dict[bytes, int] = {}
-    max_len = min(max_len, X_all.shape[1])
-    for d in range(1, max_len + 1):
-        for combo in itertools.combinations(range(X_all.shape[1]), d):
-            codes, n_cells = cell_codes(X_train[:, combo])
-            codes = np.asarray(codes, dtype=np.int64)
-            table = np.bincount(codes * 2 + z64, minlength=2 * n_cells).reshape(n_cells, 2)
-            q = np.flatnonzero(_qualifying(table[:, 1], table.sum(axis=1), tau, m, threshold))
-            if q.size == 0:
-                continue
-            order = np.argsort(codes, kind="stable")
-            bounds = np.searchsorted(codes[order], np.arange(n_cells + 1))
-            for c in q.tolist():
-                rows = order[bounds[c]:bounds[c + 1]]
-                key = rows.tobytes()
-                if key in seen:  # same training rows, described by fewer or equal conditions
-                    continue
-                seen[key] = len(candidates)
-                values = tuple(int(v) for v in X_train[rows[0], list(combo)])
-                candidates.append(_Candidate(
-                    positives=rows[z64[rows] == 1], cost=d, key=(combo, values),
-                    negatives=rows[z64[rows] == 0],
-                ))
+    candidates = _rule_candidates(X_all[train], z64, tau, m, max_len, threshold)
     chosen = budgeted_greedy(candidates, budgets, n_train,
                              min_union_purity=tau if pure_union else None, disjoint=disjoint)
     n_pos = max(1, int(z64.sum()))
     result = MethodResult()
     for budget, (idx, covered) in chosen.items():
-        groups = []
-        for i in idx:
-            combo, values = candidates[i].key  # type: ignore[misc]
-            members = np.all(X_all[:, list(combo)] == np.asarray(values), axis=1)
-            groups.append(Group(members=members, cost=candidates[i].cost, label=" & ".join(
-                f"{names[j]}={v}" for j, v in zip(combo, values))))
-        result.groups[budget] = groups
+        result.groups[budget] = _rule_groups(X_all, candidates, idx, names)
         result.train_coverage[budget] = covered / n_pos
+    return result
+
+
+#: Cells kept by `select_wracc(qualify=False)`: more than any budget can hold.
+WRACC_TOP_K = 256
+
+
+def select_wracc(
+    X_all: np.ndarray, train: np.ndarray, z_train: np.ndarray, tau: float, m: int,
+    budgets: Sequence[int], names: Sequence[str], max_len: int = MAX_BRANCH_D,
+    threshold: Optional[np.ndarray] = None, qualify: bool = True,
+) -> MethodResult:
+    """
+    Conjunctions of <= max_len conditions ranked by WRAcc and read as a
+    top-k list: walking down the ranking, a rule is taken when its cost
+    still fits the budget (a rule that does not fit is skipped, the walk
+    goes on). Ties: fewer conditions, then enumeration order. Groups may
+    overlap. With `qualify` the candidates are the qualifying family of
+    `rules`; without it every cell of size >= m is a candidate (the
+    `WRACC_TOP_K` best by WRAcc are kept) and the purity floor plays no part
+    in the selection.
+    """
+    z64 = z_train.astype(np.int64)
+    n_train = int(train.size)
+    n_pos = max(1, int(z64.sum()))
+    base_rate = n_pos / n_train
+    candidates = _rule_candidates(X_all[train], z64, tau, m, max_len, threshold,
+                                  qualify=qualify, top_k=None if qualify else WRACC_TOP_K)
+    def wracc(c: _Candidate) -> float:
+        n = c.positives.size + (c.negatives.size if c.negatives is not None else 0)
+        return (c.positives.size - n * base_rate) / n_train
+    ranked = sorted(range(len(candidates)), key=lambda i: (-wracc(candidates[i]), candidates[i].cost, i))
+    result = MethodResult()
+    for budget in budgets:
+        spent = 0
+        idx: List[int] = []
+        covered = np.zeros(n_train, dtype=bool)
+        for i in ranked:
+            if candidates[i].cost <= budget - spent:
+                idx.append(i)
+                spent += candidates[i].cost
+                covered[candidates[i].positives] = True
+        result.groups[int(budget)] = _rule_groups(X_all, candidates, idx, names)
+        result.train_coverage[int(budget)] = int(np.count_nonzero(covered)) / n_pos
     return result
 
 
@@ -674,6 +808,11 @@ def evaluate_groups(groups: Sequence[Group], z: np.ndarray, test: np.ndarray) ->
 
 
 METHODS: Tuple[str, ...] = ("vsf", "vsf_partial", "vsf_greedy", "rules", "rules_pure", "rules_disjoint", "tree", "ssdpp")
+#: Methods added after the main run. They are NOT part of the cache key of
+#: `compare_baselines.py` (which hashes METHODS), so they are computed on
+#: demand and merged into the existing per-split files.
+EXTRA_METHODS: Tuple[str, ...] = ("wracc", "wracc_raw")
+ALL_METHODS: Tuple[str, ...] = METHODS + EXTRA_METHODS
 
 
 @dataclass(frozen=True, eq=False)
@@ -740,6 +879,58 @@ def union_members(groups: Sequence[Group], n_rows: int) -> np.ndarray:
 SplitResult = Dict[str, Dict[int, SplitOutcome]]
 
 
+def split_halves(train: np.ndarray, random_state: int, split_index: int) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    (A, B): the training fold cut uniformly at random into a proposing half
+    A and a certifying half B. NOT stratified on the target - a stratified
+    cut would fix B's positive count from the target values and break the
+    conditional-independence argument of `certify_on_holdout`. Seeded by
+    (random_state, split_index) so that the cut is reproducible and differs
+    between splits.
+    """
+    rng = np.random.default_rng([int(random_state), int(split_index), 0x5B17])
+    perm = rng.permutation(train.size)
+    return np.sort(train[perm[:train.size // 2]]), np.sort(train[perm[train.size // 2:]])
+
+
+def certify_on_holdout(
+    result: MethodResult, z: np.ndarray, holdout: np.ndarray, tau: float, alpha: float,
+) -> Tuple[MethodResult, int]:
+    """
+    Webb's holdout step for one method: every group the method proposed (at
+    any budget) is tested once on the `holdout` rows - kept iff its positive
+    count there reaches `min_successes_to_certify_heterogeneous`(n, tau,
+    alpha / T_B), with T_B the number of DISTINCT proposed groups (by their
+    holdout row set) - and each budget keeps its passing groups in order.
+    Returns the filtered result and T_B. Training coverage is recomputed as
+    the share of holdout positives the kept union holds. A group with no
+    holdout row cannot pass.
+    """
+    z_hold = z[holdout].astype(np.int64)
+    n_pos = max(1, int(z_hold.sum()))
+    distinct: Dict[bytes, Tuple[int, int]] = {}
+    for groups in result.groups.values():
+        for g in groups:
+            members = g.members[holdout]
+            key = np.packbits(members).tobytes()
+            if key not in distinct:
+                distinct[key] = (int(members.sum()), int(z_hold[members].sum()))
+    t_b = len(distinct)
+    if t_b == 0:
+        return result, 0
+    level = alpha / t_b
+    sizes = np.array([n for n, _ in distinct.values()], dtype=np.int64)
+    need = np.asarray(min_successes_to_certify_heterogeneous(np.maximum(sizes, 1), tau, level), dtype=np.int64)
+    passes = {key: (n > 0 and k >= int(need[i])) for i, (key, (n, k)) in enumerate(distinct.items())}
+    out = MethodResult()
+    for budget, groups in result.groups.items():
+        kept = [g for g in groups if passes[np.packbits(g.members[holdout]).tobytes()]]
+        out.groups[budget] = kept
+        inside = union_members(kept, z.shape[0])[holdout]
+        out.train_coverage[budget] = int(z_hold[inside].sum()) / n_pos
+    return out, t_b
+
+
 def run_split(
     X: np.ndarray, Z: np.ndarray, positive_class: object, tau: float, m: int,
     split_index: int, n_splits: int = 5, n_repeats: int = 5, random_state: int = 0,
@@ -764,13 +955,21 @@ def run_split(
     sets all belong to that family) it is a valid post-selection
     certificate; for `tree` it is only the same filter, since the leaves of
     a data-grown tree are not a pre-specified family.
+
+    `selection="split"`: the training fold is halved at random; every
+    method selects on half A under the purity rule and `certify_on_holdout`
+    keeps, per budget, the proposed groups whose count on half B passes the
+    threshold at alpha / T_B. Unlike the family certificate this is valid
+    for every method alike (the tree and SSD++ included), because B is
+    read only after the groups are fixed; its cost is the halved sample.
+    The reported conditions are those of the kept groups.
     """
-    unknown = set(methods) - set(METHODS)
+    unknown = set(methods) - set(ALL_METHODS)
     if unknown:
         raise ValueError(f"unknown methods: {sorted(unknown)}")
     if not (1 <= max_d <= MAX_BRANCH_D):
         raise ValueError(f"max_d must be in [1, {MAX_BRANCH_D}]")
-    if selection not in ("purity", "certified"):
+    if selection not in ("purity", "certified", "split"):
         raise ValueError(f"unknown selection {selection!r}")
     spec = CenterSpec(tau=tau, min_samples=max(1, m))
     prepared = _prepare_search(X, Z, None, positive_class, spec, "presence")
@@ -782,6 +981,9 @@ def run_split(
     if not (0 <= split_index < len(splits)):
         raise ValueError(f"split_index must be in [0, {len(splits)})")
     train, test = splits[split_index]
+    holdout: Optional[np.ndarray] = None
+    if selection == "split":
+        train, holdout = split_halves(train, random_state, split_index)
     z_train = z[train]
     fit = _CandidateFactory(X_all[train], factory.bin_counts, int(train.size), ordered=factory.ordered)
     threshold: Optional[np.ndarray] = None
@@ -814,11 +1016,17 @@ def run_split(
                                     threshold=threshold),
         "ssdpp": lambda: select_ssdpp(X_all, train, z_train, tau, m, budgets, names, max_d,
                                       threshold=threshold),
+        "wracc": lambda: select_wracc(X_all, train, z_train, tau, m, budgets, names, max_d,
+                                      threshold=threshold, qualify=True),
+        "wracc_raw": lambda: select_wracc(X_all, train, z_train, tau, m, budgets, names, max_d,
+                                          threshold=None, qualify=False),
     }
     out: SplitResult = {}
     for mth in methods:
         t0 = time.perf_counter()
         res = selectors[mth]()
+        if holdout is not None:
+            res, _ = certify_on_holdout(res, z, holdout, tau, alpha)
         seconds = time.perf_counter() - t0 + family_seconds
         out[mth] = {}
         for b in budgets:

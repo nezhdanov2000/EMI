@@ -37,6 +37,7 @@ from __future__ import annotations
 import argparse
 import itertools
 import time
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Sequence, Tuple
@@ -44,6 +45,9 @@ from typing import Callable, Dict, Iterable, List, Sequence, Tuple
 import numpy as np
 import pandas as pd
 from scipy.stats import binom
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from vsf.centers import CenterSpec, min_successes_to_select
 
 Mask = np.ndarray  # packed uint8 bit-mask over rows
 
@@ -209,13 +213,16 @@ def cell_codes(x: np.ndarray, schema: Sequence[int], card: np.ndarray) -> np.nda
     return code
 
 
-def k_star(n: np.ndarray, tau: float, level: float) -> np.ndarray:
-    """Smallest k with P(Bin(n,tau) >= k) <= level and k >= floor(n*tau)+1 (Hoeffding condition)."""
-    k = binom.isf(level, n, tau).astype(np.int64)     # largest k with sf(k-1) > level ... adjust below
-    # binom.isf returns k such that sf(k) <= level; we need P(X >= k) = sf(k-1) <= level
-    k = k + 1
-    k = np.maximum(k, np.floor(n * tau).astype(np.int64) + 1)
-    return k
+def k_star(n: np.ndarray, tau: float, level: float, m: int = 1) -> np.ndarray:
+    """
+    Smallest k with P(Bin(n,tau) >= k) <= level and k >= ceil(n*tau) + 1, the
+    Hoeffding condition k - 1 >= n*tau of `vsf.centers.
+    min_successes_to_certify_heterogeneous` (PMD 4.14, Proposition 3).
+    Delegates directly to the authoritative library implementation in
+    `vsf.centers.min_successes_to_select`.
+    """
+    spec = CenterSpec(tau=tau, min_samples=m, rule="certified", multiplicity="family")
+    return min_successes_to_select(n, spec, level)
 
 
 def occupied_cell_count(x: np.ndarray, card: np.ndarray, schemas: Sequence[Tuple[int, ...]],
@@ -247,7 +254,7 @@ def qualifying_cells(x: np.ndarray, y: np.ndarray, card: np.ndarray, schema: Tup
         big = n >= m
         thr = np.full(size, np.iinfo(np.int64).max, dtype=np.int64)
         if big.any():
-            thr[big] = k_star(n[big], tau, level)
+            thr[big] = k_star(n[big], tau, level, m)
         ok = np.flatnonzero(big & (k >= thr))
     out: List[Candidate] = []
     for c in ok:
