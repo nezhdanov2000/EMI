@@ -16,8 +16,8 @@
     <!-- Plotly.js -->
     <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
 
-    <link rel="stylesheet" href="/static/css/styles.css?v=5046">
-    <script src="/static/js/app.js?v=5052" defer></script>
+    <link rel="stylesheet" href="/static/css/styles.css?v=5047">
+    <script src="/static/js/app.js?v=5053" defer></script>
 </head>
 
 <body>
@@ -28,9 +28,56 @@
             <div class="brand-title">Visual Sufficiency Framework</div>
         </div>
         <div class="header-status">
+            <span id="figModeMsg" class="fig-mode-msg" aria-live="polite"></span>
+            <button type="button" id="figModeBtn" class="fig-mode-btn" onclick="setFigureMode(true)"
+                title="Publication figure: white background, black type sized in points at the printed width, colour-blind-safe palette, sidebars hidden, PNG export at a set dpi. Esc returns.">Figure mode</button>
             <span class="header-subtitle">Independent Branch Discovery — Coverage Only v{{VSF_VERSION}}</span>
         </div>
     </header>
+
+    <!-- Figure mode toolbar (app.js, "Figure mode"). Sits outside the figure
+         frame, so a screenshot of the frame never contains it. -->
+    <div id="figToolbar" class="fig-toolbar" hidden>
+        <div class="fig-group">
+            <label title="Width of the figure on paper. 88 mm is a typical single column, 180 mm a full page width. Font sizes below are points at this width.">Print width
+                <input type="number" id="figPrintMm" min="30" max="250" step="1" onchange="onFigOptChange()"> mm</label>
+            <label title="On-screen canvas in CSS pixels. Changing it keeps the printed type size and changes how much room the cube gets.">Canvas
+                <input type="number" id="figCanvasW" min="300" max="2000" step="10" onchange="onFigOptChange()"> ×
+                <input type="number" id="figCanvasH" min="300" max="2000" step="10" onchange="onFigOptChange()"> px</label>
+        </div>
+        <div class="fig-group">
+            <label title="Printed size of the tick labels (category values). Most journals ask for 6-8 pt after reduction.">Ticks
+                <input type="number" id="figTickPt" min="4" max="16" step="0.5" onchange="onFigOptChange()"> pt</label>
+            <label title="Printed size of the axis titles.">Titles
+                <input type="number" id="figTitlePt" min="4" max="18" step="0.5" onchange="onFigOptChange()"> pt</label>
+            <label title="Clearance between the longest tick label and the axis title, in points. Plotly draws 3-D axis titles at a fixed distance from the axis; figure mode moves them past the tick labels. Negative values pull them back in.">Title gap
+                <input type="number" id="figTitleGap" min="-20" max="40" step="0.5" onchange="onFigOptChange()"> pt</label>
+            <label title="Multiplies every sphere diameter; the diameter stays proportional to sqrt(rows).">Spheres ×
+                <input type="number" id="figMarkerScale" min="0.2" max="3" step="0.05" onchange="onFigOptChange()"></label>
+        </div>
+        <div class="fig-group">
+            <label title="Print: Okabe-Ito vermillion / orange / bluish green, distinguishable under red-green colour blindness and in greyscale. UI: the on-screen red / brown / green.">Palette
+                <select id="figPalette" onchange="onFigOptChange()">
+                    <option value="print">Print (Okabe–Ito)</option>
+                    <option value="ui">UI colours</option>
+                </select></label>
+            <label title="Cell lattice lines."><input type="checkbox" id="figGrid" onchange="onFigOptChange()"> Grid</label>
+            <label title="Show the centre list under the canvas (for a screenshot; the PNG export contains the canvas only - put the list in the caption)."><input type="checkbox" id="figList" onchange="onFigOptChange()"> Centre list</label>
+        </div>
+        <div class="fig-group">
+            <label title="Resolution requested at the print width. 600 dpi suits line/combination art; Plotly's WebGL pixel ratio is capped at 4, so a narrow canvas may fall short (the readout says so).">dpi
+                <select id="figDpi" onchange="onFigOptChange()">
+                    <option value="300">300</option>
+                    <option value="600">600</option>
+                    <option value="1200">1200</option>
+                </select></label>
+            <button type="button" id="figExportBtn" class="fig-btn fig-btn-primary" onclick="figExportPng()">Export PNG</button>
+            <button type="button" class="fig-btn" onclick="figCopyCaption()" title="Copy the partial-axis centres of this view as a LaTeX fragment for the caption: conditions, rows with the value / rows, share and interval.">Copy centres (LaTeX)</button>
+            <button type="button" class="fig-btn" onclick="figResetOpts()">Defaults</button>
+            <button type="button" class="fig-btn" onclick="setFigureMode(false)" title="Back to the dashboard (Esc)">Exit</button>
+        </div>
+        <div class="fig-readout"><span id="figReadout"></span> <span id="figStatus" class="fig-status" aria-live="polite"></span></div>
+    </div>
 
     <main>
         <!-- Master Panel: Target Selector + Branch Selector -->

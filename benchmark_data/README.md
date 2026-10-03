@@ -31,9 +31,7 @@ splice_junction) were removed on 2026-09-17; they remain in the git history.
 
 ## Known gaps
 
-- **titanic.csv** — engineered from Kaggle `train.csv`, but the bin edges
-  (age, fare) and the title mapping were never recorded and the script is
-  lost. Rebuild it as a script before any titanic number is published.
+- **titanic.csv** and **mushroom.csv** — rebuilt deterministically from pinned public copies by `experiments/build_titanic.py` and `experiments/build_mushroom.py`.
 - **UCI copies** — archive.ics.uci.edu is not reachable from the build
   machines, so the three UCI tables come from public GitHub copies pinned to
   a commit and checked against UCI's published row, class and missing-value

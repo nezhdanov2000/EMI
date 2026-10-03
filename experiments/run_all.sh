@@ -19,4 +19,5 @@ python3 experiments/summarize_comparison.py > experiments/results/summary.txt
 python3 experiments/paper_tables.py
 python3 experiments/compactness.py
 python3 experiments/certificate_price.py --check
+python3 experiments/fig_example.py
 python3 experiments/check_numbers.py

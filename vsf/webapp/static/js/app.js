@@ -1141,6 +1141,40 @@ const PROB_COLORS_ABSENCE = [
     '#ef4444'  // Red   - certified at least tau free of the value
 ];
 const PALETTE_COUNT = PROB_COLORS.length;
+
+// Print palettes for figure mode (Okabe & Ito 2008): the three zones stay
+// distinguishable under deuteranopia and protanopia and in greyscale, which
+// the UI's red / brown / green is not. Same zone order as PROB_COLORS.
+const PRINT_COLORS = [
+    '#D55E00', // vermillion - below the lower boundary
+    '#E69F00', // orange     - between the boundaries
+    '#009E73'  // bluish green - at or above tau: a discrete centre
+];
+const PRINT_COLORS_ABSENCE = [
+    '#999999', // grey       - the value is present here, uncertified
+    '#E69F00', // orange     - between the boundaries
+    '#D55E00'  // vermillion - certified at least tau free of the value
+];
+
+// Figure mode (publication export; see the "Figure mode" section at the end
+// of this file). Declared here because activePalette() and plotTheme() read
+// it on every render.
+const FIG_STORAGE_KEY = 'vsf.figure.v1';
+const FIG_DEFAULTS = Object.freeze({
+    printMm: 88,        // printed width of the figure (single journal column)
+    canvasW: 720,       // on-screen canvas, CSS px
+    canvasH: 640,
+    tickPt: 7,          // printed size of tick labels
+    titlePt: 8,         // printed size of axis titles
+    markerScale: 1,     // multiplies the sqrt(n) sphere diameters
+    palette: 'print',   // 'print' (Okabe-Ito) | 'ui'
+    grid: true,         // the cell lattice
+    list: false,        // centre list under the canvas (screenshot only)
+    dpi: 600,           // requested raster resolution at printMm
+    titleGapPt: 2,      // clearance between the longest tick label and the axis title
+});
+let figureMode = false;
+let figOpts = loadFigOpts();
 const COLOR_CENTER = 2, COLOR_MIXED = 1, COLOR_LOW = 0;
 
 // Which side of the value the current analysis searches for. Part of the
@@ -1152,6 +1186,9 @@ function readDirection() {
 }
 
 function activePalette() {
+    if (figureMode && figOpts.palette === 'print') {
+        return activeDirection === 'absence' ? PRINT_COLORS_ABSENCE : PRINT_COLORS;
+    }
     return activeDirection === 'absence' ? PROB_COLORS_ABSENCE : PROB_COLORS;
 }
 
@@ -2069,11 +2106,11 @@ function _rgba(hex, a) {
 
 // gl3d ignores alpha on lines and per-point marker colours: dimming is a
 // blend of the colour towards the plot background.
-const _PLOT_BG = [7, 10, 19];
 function _dim(hex, t) {
     const r = parseInt(hex.slice(1, 3), 16), g = parseInt(hex.slice(3, 5), 16), b = parseInt(hex.slice(5, 7), 16);
-    const mix = (c, bg) => Math.round(c * (1 - t) + bg * t);
-    return `rgb(${mix(r, _PLOT_BG[0])}, ${mix(g, _PLOT_BG[1])}, ${mix(b, _PLOT_BG[2])})`;
+    const bg = plotTheme().bgRgb;
+    const mix = (c, k) => Math.round(c * (1 - t) + k * t);
+    return `rgb(${mix(r, bg[0])}, ${mix(g, bg[1])}, ${mix(b, bg[2])})`;
 }
 
 function partialGridFor(payload, dim, sliceIndex) {
@@ -2201,7 +2238,7 @@ function buildPartialOverlayTraces(payload, dim, sliceIndex) {
         for (let q = 0; q < segs.stem.x.length; q++) { stemHi.x.push(segs.stem.x[q]); stemHi.y.push(segs.stem.y[q]); stemHi.z.push(segs.stem.z[q]); }
         const pos = partialHandlePosition(c, dim);
         handle.x.push(pos[0]); handle.y.push(pos[1]); handle.z.push(pos[2]);
-        handle.size.push(PARTIAL_HANDLE_SCALE * Math.sqrt(c.n / maxN));
+        handle.size.push(PARTIAL_HANDLE_SCALE * plotTheme().markerScale * Math.sqrt(c.n / maxN));
         handle.color.push(zone);
         const freeNames = free.map(a => (payload.selected_features || [])[a] || `axis ${a + 1}`);
         handle.text.push(
@@ -2220,12 +2257,13 @@ function buildPartialOverlayTraces(payload, dim, sliceIndex) {
     });
     if (solidLo.x.length) traces.push(line(solidLo, _dim(zone, 0.72), PARTIAL_SKEWER_WIDTH - 2, 'solid', 'Skewers (other)'));
     if (solid.x.length) traces.push(line(solid, zone, PARTIAL_SKEWER_WIDTH, 'solid', 'Skewers'));
-    if (stemHi.x.length) traces.push(line(stemHi, '#ffffff', PARTIAL_STEM_WIDTH + 1, 'dot', 'Stem (selected)'));
-    if (solidHi.x.length) traces.push(line(solidHi, '#ffffff', PARTIAL_SKEWER_WIDTH + 3, 'solid', 'Skewer (selected)'));
+    const emph = plotTheme().emph;
+    if (stemHi.x.length) traces.push(line(stemHi, emph, PARTIAL_STEM_WIDTH + 1, 'dot', 'Stem (selected)'));
+    if (solidHi.x.length) traces.push(line(solidHi, emph, PARTIAL_SKEWER_WIDTH + 3, 'solid', 'Skewer (selected)'));
     if (handle.x.length) {
         traces.push({
             type: 'scatter3d', mode: 'markers', x: handle.x, y: handle.y, z: handle.z,
-            marker: { size: handle.size, color: handle.color, opacity: 1, line: { width: 1.5, color: 'rgba(255,255,255,0.7)' } },
+            marker: { size: handle.size, color: handle.color, opacity: 1, line: { width: 1.5, color: plotTheme().handleEdge } },
             hovertext: handle.text, hoverinfo: 'text', customdata: handle.custom, showlegend: false, name: 'Handles',
         });
     }
@@ -2245,7 +2283,8 @@ function partialDimmedColours(base, memberOf) {
 function _dimColour(col, t) {
     const m = col.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
     if (!m) return col;
-    const ch = [1, 2, 3].map((q, j) => Math.round(Number(m[q]) * (1 - t) + _PLOT_BG[j] * t));
+    const bg = plotTheme().bgRgb;
+    const ch = [1, 2, 3].map((q, j) => Math.round(Number(m[q]) * (1 - t) + bg[j] * t));
     return `rgb(${ch[0]}, ${ch[1]}, ${ch[2]})`;
 }
 
@@ -2644,10 +2683,12 @@ function buildPlotData(payload, dim, sliceIndex) {
         glZ.push(z, z, null);
     }
 
+    const theme = plotTheme();
     const cellBoundaryTrace = {
         x: glX, y: glY, z: glZ,
         mode: 'lines',
-        line: { color: 'rgba(255, 255, 255, 0.12)', width: 1.0 },
+        line: { color: theme.grid, width: theme.gridWidth },
+        visible: theme.showGrid,
         hoverinfo: 'skip', type: 'scatter3d', name: 'Cell Grid'
     };
 
@@ -2685,7 +2726,7 @@ function buildPlotData(payload, dim, sliceIndex) {
         // Set maximum diameter so the 1D cluster perfectly touches cell bounds.
         // We empirically use 55 as the magic constant for Plotly 3D scatter
         const maxN = payload.global_max_n || 1;
-        const baseSize = 55 * Math.sqrt(n_c / maxN);
+        const baseSize = 55 * theme.markerScale * Math.sqrt(n_c / maxN);
         fSizes.push(baseSize);
 
         let hov = (currentHover && currentHover[i]) ? currentHover[i] : '';
@@ -2706,33 +2747,23 @@ function buildPlotData(payload, dim, sliceIndex) {
         cameraConfig = { eye: { x: 1.6, y: 1.6, z: 1.3 } };
     }
 
+    const sceneAxis = (ax, range) => ({
+        title: { text: payload.axis_names[ax], font: { family: theme.font, color: theme.titleColor, size: theme.titleSize } },
+        tickvals: payload.axis_ticks ? payload.axis_ticks[ax].vals : undefined,
+        ticktext: payload.axis_ticks ? payload.axis_ticks[ax].text : undefined,
+        range, showticklabels: true,
+        tickfont: { family: theme.font, color: theme.tickColor, size: theme.tickSize },
+        backgroundcolor: theme.sceneBg, showgrid: false, zeroline: false, showspikes: false
+    });
     const layout = {
-        paper_bgcolor: '#070a13', plot_bgcolor: '#070a13', showlegend: false,
+        paper_bgcolor: theme.paper, plot_bgcolor: theme.paper, showlegend: false,
         scene: {
             aspectmode: 'cube',
-            xaxis: {
-                title: { text: payload.axis_names.x, font: { color: '#c084fc', size: 13 } },
-                tickvals: payload.axis_ticks ? payload.axis_ticks.x.vals : undefined,
-                ticktext: payload.axis_ticks ? payload.axis_ticks.x.text : undefined,
-                range: [xMin, xMax], tickfont: { color: '#e2e8f0', size: 11 },
-                backgroundcolor: '#090d1a', showgrid: false, zeroline: false, showspikes: false
-            },
-            yaxis: {
-                title: { text: payload.axis_names.y, font: { color: '#c084fc', size: 13 } },
-                tickvals: payload.axis_ticks ? payload.axis_ticks.y.vals : undefined,
-                ticktext: payload.axis_ticks ? payload.axis_ticks.y.text : undefined,
-                range: [yMin, yMax], showticklabels: true,
-                tickfont: { color: '#e2e8f0', size: 11 }, backgroundcolor: '#090d1a', showgrid: false, zeroline: false, showspikes: false
-            },
-            zaxis: {
-                title: { text: payload.axis_names.z, font: { color: '#c084fc', size: 13 } },
-                tickvals: payload.axis_ticks ? payload.axis_ticks.z.vals : undefined,
-                ticktext: payload.axis_ticks ? payload.axis_ticks.z.text : undefined,
-                range: [zMin, zMax], showticklabels: true,
-                tickfont: { color: '#e2e8f0', size: 11 }, backgroundcolor: '#090d1a', showgrid: false, zeroline: false, showspikes: false
-            }
+            xaxis: sceneAxis('x', [xMin, xMax]),
+            yaxis: sceneAxis('y', [yMin, yMax]),
+            zaxis: sceneAxis('z', [zMin, zMax])
         },
-        margin: { l: 0, r: 0, b: 0, t: 0 }, font: { family: 'Inter', color: '#94a3b8' },
+        margin: { l: 0, r: 0, b: 0, t: 0 }, font: { family: theme.font, color: theme.fontColor },
         uirevision: 'true'
     };
 
@@ -2864,7 +2895,8 @@ function applyStroke(enable) {
     }
 
     if (enable) {
-        const color = document.getElementById('strokeColor').value || '#ffffff';
+        let color = document.getElementById('strokeColor').value || '#ffffff';
+        if (figureMode && color.toLowerCase() === '#ffffff') color = plotTheme().emph;
         const width = parseFloat(document.getElementById('strokeWidth').value) || 2;
 
         let checkMatch = (p) => false;
@@ -6077,3 +6109,424 @@ async function openSchemaAtTau(features, tau) {
     }
     await runAnalysis(lastTargetCol, lastCriterion, features.slice());
 }
+
+// =====================================================================
+// Figure mode: the lattice as a publication figure
+// =====================================================================
+// A print theme for the 3-D lattice and a PNG export sized in physical
+// units. Everything is specified at the printed size: the figure is
+// `printMm` wide on paper, so one CSS pixel of the canvas is printMm/canvasW
+// millimetres there and a font of P points is P * (25.4 / 72) / (printMm /
+// canvasW) pixels. Resizing the canvas therefore never changes the printed
+// type size, only how much room the cube has around it.
+//
+// The export re-renders the plot off screen with the WebGL canvas at the
+// export pixel ratio (gl3d draws tick labels and titles into the canvas as
+// triangulated meshes, so a ratio-1 canvas upsampled by Plotly's `scale`
+// would blur them). Plotly caps plotGlPixelRatio at 4; the dpi actually
+// reached is written into the PNG's pHYs chunk and shown in the toolbar.
+// The centre list is HTML and is not part of the export; copy it as a
+// LaTeX caption instead (figCopyCaption).
+
+const PLOT_THEME_DARK = Object.freeze({
+    paper: '#070a13', sceneBg: '#090d1a', bgRgb: [7, 10, 19],
+    font: 'Inter', fontColor: '#94a3b8',
+    titleColor: '#c084fc', titleSize: 13, tickColor: '#e2e8f0', tickSize: 11,
+    grid: 'rgba(255, 255, 255, 0.12)', gridWidth: 1.0, showGrid: true,
+    emph: '#ffffff', handleEdge: 'rgba(255,255,255,0.7)', markerScale: 1,
+});
+const PLOTLY_MAX_GL_PIXEL_RATIO = 4;   // plot_config.plotGlPixelRatio: max 4
+// gl3d tick labels do not render at tickfont.size px. Measured on Plotly
+// 2.27.0 (the version index.html loads) by rendering "HHHH" as a tick label
+// and as an axis title and measuring the ink: titles render at their size
+// (within 3 %), tick labels at GL3D_TICK_K * size^2 px (size 10, 14, 20, 28
+// -> 0.083, 0.083, 0.082, 0.082), independent of canvas size, pixel ratio
+// and camera distance. So a tick label of T px needs size sqrt(T / K).
+// Re-measure if the Plotly version changes.
+const GL3D_TICK_K = 0.0826;
+const PT_MM = 25.4 / 72;
+
+function loadFigOpts() {
+    let stored = null;
+    try { stored = JSON.parse(window.localStorage.getItem(FIG_STORAGE_KEY) || 'null'); } catch (_) { stored = null; }
+    return sanitiseFigOpts(Object.assign({}, FIG_DEFAULTS, stored && typeof stored === 'object' ? stored : {}));
+}
+
+function saveFigOpts() {
+    try { window.localStorage.setItem(FIG_STORAGE_KEY, JSON.stringify(figOpts)); } catch (_) { /* storage unavailable */ }
+}
+
+function sanitiseFigOpts(o) {
+    const num = (v, lo, hi, dflt) => {
+        const x = Number(v);
+        return Number.isFinite(x) ? Math.min(hi, Math.max(lo, x)) : dflt;
+    };
+    return {
+        printMm: num(o.printMm, 30, 250, FIG_DEFAULTS.printMm),
+        canvasW: Math.round(num(o.canvasW, 300, 2000, FIG_DEFAULTS.canvasW)),
+        canvasH: Math.round(num(o.canvasH, 300, 2000, FIG_DEFAULTS.canvasH)),
+        tickPt: num(o.tickPt, 4, 16, FIG_DEFAULTS.tickPt),
+        titlePt: num(o.titlePt, 4, 18, FIG_DEFAULTS.titlePt),
+        markerScale: num(o.markerScale, 0.2, 3, FIG_DEFAULTS.markerScale),
+        palette: o.palette === 'ui' ? 'ui' : 'print',
+        grid: o.grid !== false,
+        list: o.list === true,
+        dpi: num(o.dpi, 150, 1200, FIG_DEFAULTS.dpi),
+        titleGapPt: num(o.titleGapPt, -20, 40, FIG_DEFAULTS.titleGapPt),
+    };
+}
+
+// CSS px of the canvas per typographic point at the printed width.
+function figPxPerPt() {
+    return PT_MM / (figOpts.printMm / figOpts.canvasW);
+}
+
+function plotTheme() {
+    if (!figureMode) return PLOT_THEME_DARK;
+    const k = figPxPerPt();
+    return {
+        paper: '#ffffff', sceneBg: '#ffffff', bgRgb: [255, 255, 255],
+        font: 'Arial, Helvetica, sans-serif', fontColor: '#000000',
+        titleColor: '#000000', titleSize: Math.max(1, figOpts.titlePt * k),
+        tickColor: '#000000', tickSize: Math.max(1, Math.sqrt((figOpts.tickPt * k) / GL3D_TICK_K)),
+        grid: 'rgb(170, 170, 170)', gridWidth: 1.0, showGrid: figOpts.grid,
+        emph: '#000000', handleEdge: 'rgba(0,0,0,0.75)', markerScale: figOpts.markerScale,
+    };
+}
+
+// The export: pixel ratio and the dpi it reaches at the printed width.
+function figExportPlan() {
+    const inches = figOpts.printMm / 25.4;
+    const wanted = (figOpts.dpi * inches) / figOpts.canvasW;
+    const ratio = Math.min(PLOTLY_MAX_GL_PIXEL_RATIO, Math.max(1, wanted));
+    const pxW = Math.round(figOpts.canvasW * ratio);
+    const pxH = Math.round(figOpts.canvasH * ratio);
+    return { ratio, pxW, pxH, dpi: pxW / inches, capped: wanted > PLOTLY_MAX_GL_PIXEL_RATIO };
+}
+
+// gl3d puts every axis title a FIXED distance from its axis (gl-axes3d:
+// tickPad + labelPad, Plotly passes labelPad = 30 px on every update),
+// whatever the length of the tick labels, so a title lands on top of long
+// labels (health over "recommended" in nursery). Plotly has no layout key
+// for it. Figure mode therefore wraps the update() of the gl-axes3d
+// prototype - shared by the on-screen scene and by the clone Plotly.toImage
+// renders - and, while figure mode is on, replaces labelPad after Plotly
+// has set it: the longest tick label plus half the title plus a gap. Off
+// figure mode the wrapper leaves Plotly's value alone. If the internals
+// are not where Plotly 2.27 keeps them, nothing is patched and the titles
+// fall back to Plotly's placement.
+let _figLabelPadPx = null;
+
+function figLabelPadPx(payload) {
+    if (!figureMode || !payload || !payload.axis_ticks) return null;
+    const k = figPxPerPt();
+    let maxChars = 0;
+    ['x', 'y', 'z'].forEach(ax => {
+        const t = payload.axis_ticks[ax] && payload.axis_ticks[ax].text;
+        (t || []).forEach(s => { maxChars = Math.max(maxChars, String(s).length); });
+    });
+    // 0.56 em: mean advance of lower-case Arial.
+    const px = maxChars * 0.56 * figOpts.tickPt * k + 0.5 * figOpts.titlePt * k + figOpts.titleGapPt * k;
+    // gl-axes3d scales pads by 2 under a perspective camera (the one this
+    // view uses): offset = 2 * labelPad CSS px, whatever the pixel ratio.
+    return Math.max(0, px / 2);
+}
+
+function installGl3dLabelPadHook(div) {
+    try {
+        const axes = div._fullLayout.scene._scene.glplot.axes;
+        const proto = Object.getPrototypeOf(axes);
+        if (!proto || typeof proto.update !== 'function' || proto.__vsfLabelPadHook) return;
+        const orig = proto.update;
+        proto.update = function (opts) {
+            const r = orig.call(this, opts);
+            if (_figLabelPadPx !== null && Array.isArray(this.labelPad)) {
+                this.labelPad = [_figLabelPadPx, _figLabelPadPx, _figLabelPadPx];
+            }
+            return r;
+        };
+        proto.__vsfLabelPadHook = true;
+    } catch (err) {
+        console.warn('gl3d title offset unavailable:', err);
+    }
+}
+
+function figCurrentCamera(div) {
+    try {
+        const sc = div && div._fullLayout && div._fullLayout.scene && div._fullLayout.scene._scene;
+        if (sc && typeof sc.getCamera === 'function') return JSON.parse(JSON.stringify(sc.getCamera()));
+    } catch (_) { /* fall back to the layout copy */ }
+    const cam = div && div.layout && div.layout.scene && div.layout.scene.camera;
+    return cam ? JSON.parse(JSON.stringify(cam)) : null;
+}
+
+function figApplyFrame() {
+    const b = document.body;
+    b.classList.toggle('fig-mode', figureMode);
+    b.classList.toggle('fig-list', figureMode && figOpts.list);
+    b.style.setProperty('--fig-w', `${figOpts.canvasW}px`);
+    b.style.setProperty('--fig-h', `${figOpts.canvasH}px`);
+    b.style.setProperty('--fig-list-px', `${(figOpts.tickPt * figPxPerPt()).toFixed(2)}px`);
+    const bar = document.getElementById('figToolbar');
+    if (bar) bar.hidden = !figureMode;
+}
+
+// Re-renders the lattice in the current theme, keeping the camera.
+function figRerender() {
+    if (!currentPayload || viewMode !== 'lattice') return;
+    const div = document.getElementById('plot-container');
+    const cam = figCurrentCamera(div);
+    _figLabelPadPx = figLabelPadPx(currentPayload);
+    renderPartialPanel();
+    renderPlot(currentPayload);
+    installGl3dLabelPadHook(div);
+    // The relayout runs the axes update, which applies the title offset.
+    const upd = cam ? { 'scene.camera': cam } : { 'scene.camera': figCurrentCamera(div) };
+    Plotly.relayout(div, upd).catch(err => console.warn('figure camera:', err));
+}
+
+function setFigureMode(on) {
+    on = Boolean(on);
+    if (on === figureMode) return;
+    if (on && (!currentPayload || viewMode !== 'lattice' || isAnimating)) {
+        figFlash('figModeMsg', 'Open a branch on the Lattice tab first.');
+        return;
+    }
+    figureMode = on;
+    figSyncInputs();
+    figApplyFrame();
+    figRerender();
+    figUpdateReadout();
+    window.scrollTo(0, 0);
+}
+
+function figSyncInputs() {
+    const set = (id, v) => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        if (el.type === 'checkbox') el.checked = Boolean(v); else el.value = String(v);
+    };
+    set('figPrintMm', figOpts.printMm);
+    set('figCanvasW', figOpts.canvasW);
+    set('figCanvasH', figOpts.canvasH);
+    set('figTickPt', figOpts.tickPt);
+    set('figTitlePt', figOpts.titlePt);
+    set('figMarkerScale', figOpts.markerScale);
+    set('figPalette', figOpts.palette);
+    set('figDpi', figOpts.dpi);
+    set('figGrid', figOpts.grid);
+    set('figList', figOpts.list);
+    set('figTitleGap', figOpts.titleGapPt);
+}
+
+function onFigOptChange() {
+    const val = id => {
+        const el = document.getElementById(id);
+        if (!el) return undefined;
+        return el.type === 'checkbox' ? el.checked : el.value;
+    };
+    figOpts = sanitiseFigOpts({
+        printMm: val('figPrintMm'), canvasW: val('figCanvasW'), canvasH: val('figCanvasH'),
+        tickPt: val('figTickPt'), titlePt: val('figTitlePt'), markerScale: val('figMarkerScale'),
+        palette: val('figPalette'), dpi: val('figDpi'), grid: val('figGrid'), list: val('figList'),
+        titleGapPt: val('figTitleGap'),
+    });
+    saveFigOpts();
+    figSyncInputs();          // show the clamped values
+    figApplyFrame();
+    figRerender();
+    figUpdateReadout();
+}
+
+function figResetOpts() {
+    figOpts = sanitiseFigOpts(Object.assign({}, FIG_DEFAULTS));
+    saveFigOpts();
+    figSyncInputs();
+    figApplyFrame();
+    figRerender();
+    figUpdateReadout();
+}
+
+function figUpdateReadout() {
+    const el = document.getElementById('figReadout');
+    if (!el) return;
+    const k = figPxPerPt();
+    const plan = figExportPlan();
+    const warn = plan.capped
+        ? ` <span class="fig-warn" title="Plotly caps the WebGL pixel ratio at ${PLOTLY_MAX_GL_PIXEL_RATIO}. Widen the canvas (the printed type size is kept) to reach ${figOpts.dpi} dpi.">below ${figOpts.dpi} dpi: widen the canvas to ≥ ${Math.ceil(figOpts.dpi * figOpts.printMm / 25.4 / PLOTLY_MAX_GL_PIXEL_RATIO)} px</span>`
+        : '';
+    el.innerHTML = `on screen: ticks ${(figOpts.tickPt * k).toFixed(1)} px, titles ${(figOpts.titlePt * k).toFixed(1)} px`
+        + ` · export ${plan.pxW}×${plan.pxH} px = ${Math.round(plan.dpi)} dpi at ${figOpts.printMm} mm${warn}`;
+}
+
+function figFlash(id, text) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.textContent = text;
+    clearTimeout(el._figTimer);
+    el._figTimer = setTimeout(() => { el.textContent = ''; }, 3500);
+}
+
+// ---- PNG export ------------------------------------------------------
+
+const _CRC_TABLE = (() => {
+    const t = new Uint32Array(256);
+    for (let n = 0; n < 256; n++) {
+        let c = n;
+        for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+        t[n] = c >>> 0;
+    }
+    return t;
+})();
+
+function _crc32(bytes) {
+    let c = 0xFFFFFFFF;
+    for (let i = 0; i < bytes.length; i++) c = _CRC_TABLE[(c ^ bytes[i]) & 0xFF] ^ (c >>> 8);
+    return (c ^ 0xFFFFFFFF) >>> 0;
+}
+
+// Returns a copy of the PNG with one pHYs chunk (pixels per metre) right
+// after IHDR; any existing pHYs is dropped. Throws on a malformed PNG.
+function pngWithDpi(png, dpi) {
+    const SIG = [137, 80, 78, 71, 13, 10, 26, 10];
+    for (let i = 0; i < 8; i++) if (png[i] !== SIG[i]) throw new Error('not a PNG');
+    const dv = new DataView(png.buffer, png.byteOffset, png.byteLength);
+    const chunks = [];
+    let off = 8;
+    while (off + 12 <= png.length) {
+        const len = dv.getUint32(off);
+        const type = String.fromCharCode(png[off + 4], png[off + 5], png[off + 6], png[off + 7]);
+        const end = off + 12 + len;
+        if (end > png.length) throw new Error('truncated PNG chunk');
+        chunks.push({ type, bytes: png.subarray(off, end) });
+        off = end;
+        if (type === 'IEND') break;
+    }
+    if (!chunks.length || chunks[0].type !== 'IHDR') throw new Error('PNG without IHDR');
+    const ppm = Math.round(dpi / 0.0254);
+    const phys = new Uint8Array(21);
+    const pv = new DataView(phys.buffer);
+    pv.setUint32(0, 9);
+    phys.set([0x70, 0x48, 0x59, 0x73], 4);       // 'pHYs'
+    pv.setUint32(8, ppm);
+    pv.setUint32(12, ppm);
+    phys[16] = 1;                                // unit: metre
+    pv.setUint32(17, _crc32(phys.subarray(4, 17)));
+    const parts = [png.subarray(0, 8), chunks[0].bytes, phys];
+    for (let i = 1; i < chunks.length; i++) if (chunks[i].type !== 'pHYs') parts.push(chunks[i].bytes);
+    const total = parts.reduce((a, p) => a + p.length, 0);
+    const out = new Uint8Array(total);
+    let o = 0;
+    for (const p of parts) { out.set(p, o); o += p.length; }
+    return out;
+}
+
+function _dataUrlBytes(url) {
+    const b64 = url.slice(url.indexOf(',') + 1);
+    const bin = atob(b64);
+    const out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+}
+
+function _figFileStem() {
+    const clean = s => String(s || '').replace(/[^A-Za-z0-9._-]+/g, '_').replace(/^_+|_+$/g, '');
+    const dim = activeDimensionality || (currentPayload && currentPayload.metrics ? currentPayload.metrics.d : 3);
+    const feats = currentPayload && currentPayload.selected_features ? currentPayload.selected_features.join('-') : 'lattice';
+    return `vsf_${clean(feats)}_${dim}d`;
+}
+
+async function figExportPng() {
+    const div = document.getElementById('plot-container');
+    if (!figureMode || !div || !Array.isArray(div.data) || !div.layout) return;
+    const btn = document.getElementById('figExportBtn');
+    if (btn) btn.disabled = true;
+    try {
+        const plan = figExportPlan();
+        const w = figOpts.canvasW, h = figOpts.canvasH;
+        const data = JSON.parse(JSON.stringify(div.data));
+        const layout = JSON.parse(JSON.stringify(div.layout));
+        layout.width = w;
+        layout.height = h;
+        layout.autosize = false;
+        const cam = figCurrentCamera(div);
+        if (cam) layout.scene.camera = cam;
+        // The hover projection belongs to the pointer, not to the figure.
+        data.forEach(t => { if (t.name === PROJ_FILL_NAME || t.name === PROJ_LINE_NAME) t.visible = false; });
+        const url = await Plotly.toImage(
+            { data, layout, config: { plotGlPixelRatio: plan.ratio } },
+            { format: 'png', width: w, height: h, scale: plan.ratio }
+        );
+        const raw = _dataUrlBytes(url);
+        // dpi from the width Plotly actually produced (it rounds the canvas).
+        const pxW = new DataView(raw.buffer, raw.byteOffset, raw.byteLength).getUint32(16);
+        const pxH = new DataView(raw.buffer, raw.byteOffset, raw.byteLength).getUint32(20);
+        const dpi = pxW / (figOpts.printMm / 25.4);
+        const png = pngWithDpi(raw, dpi);
+        const blob = new Blob([png], { type: 'image/png' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = `${_figFileStem()}_${figOpts.printMm}mm_${Math.round(dpi)}dpi.png`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+        figFlash('figStatus', `Saved ${pxW}×${pxH} px, ${Math.round(dpi)} dpi at ${figOpts.printMm} mm.`);
+    } catch (err) {
+        console.error('figure export:', err);
+        figFlash('figStatus', `Export failed: ${err && err.message ? err.message : err}`);
+    } finally {
+        if (btn) btn.disabled = false;
+    }
+}
+
+// ---- Caption: the centre list as LaTeX ---------------------------------
+
+function _latexEsc(s) {
+    return String(s).replace(/[\\{}_%&#$^~]/g, ch => ({
+        '\\': '\\textbackslash{}', '{': '\\{', '}': '\\}', '_': '\\_', '%': '\\%',
+        '&': '\\&', '#': '\\#', '$': '\\$', '^': '\\^{}', '~': '\\~{}',
+    })[ch]);
+}
+
+function _latexCondition(cond) {
+    const col = `\\texttt{${_latexEsc(cond.column)}}`;
+    const vals = (cond.values || []).map(v => `\\texttt{${_latexEsc(v)}}`);
+    return vals.length === 1 ? `${col}\\,=\\,${vals[0]}` : `${col}\\,$\\in$\\,\\{${vals.join(', ')}\\}`;
+}
+
+function figCaptionLatex() {
+    const payload = currentPayload;
+    if (!payload) return null;
+    const dim = activeDimensionality || (payload.metrics ? payload.metrics.d : 3);
+    const view = partialViewFor(payload, dim);
+    if (!view || !view.centres || !view.centres.length) return null;
+    const f1 = x => (x * 100).toFixed(1);
+    const items = view.centres.map(c => {
+        const conds = c.conditions.map(_latexCondition).join(' $\\wedge$ ');
+        return `(${c.id + 1})~${conds}: ${c.k}/${c.n} (${f1(c.purity)}\\,\\%; [${f1(c.lower)}, ${f1(c.upper)}])`;
+    });
+    return items.join('; ') + '.';
+}
+
+async function figCopyCaption() {
+    const text = figCaptionLatex();
+    if (!text) { figFlash('figStatus', 'No partial-axis centres in this view.'); return; }
+    try {
+        await navigator.clipboard.writeText(text);
+        figFlash('figStatus', 'Centre list copied as LaTeX.');
+    } catch (_) {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.cssText = 'position:fixed;left:-9999px;top:0;';
+        document.body.appendChild(ta);
+        ta.select();
+        const ok = document.execCommand('copy');
+        ta.remove();
+        figFlash('figStatus', ok ? 'Centre list copied as LaTeX.' : 'Copy failed: clipboard unavailable.');
+    }
+}
+
+document.addEventListener('keydown', ev => {
+    if (ev.key === 'Escape' && figureMode) setFigureMode(false);
+});

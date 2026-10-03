@@ -47,6 +47,18 @@ breast_cancer,recurrence-events,0.7,1,5,4,purity,ssdpp,4,0.0847,0.0549,0.5748,13
 breast_cancer,recurrence-events,0.7,1,5,4,purity,ssdpp,8,0.0847,0.0549,0.5748,13,0.308,-0.0635,0.0788,0.236,1.12,0.1429,-0.1341,0.0836,0.0361,0.1309,ssdpp#0,0.034
 breast_cancer,recurrence-events,0.7,1,5,4,purity,ssdpp,16,0.0847,0.0549,0.5748,13,0.308,-0.0635,0.0788,0.236,1.12,0.1429,-0.1835,0.0879,0.0306,0.1192,ssdpp#0,0.034
 breast_cancer,recurrence-events,0.7,1,5,4,purity,ssdpp,32,0.0847,0.0549,0.5748,13,0.308,-0.0635,0.0788,0.236,1.12,0.1429,-0.1882,0.0858,0.0424,0.1388,ssdpp#0,0.034
+breast_cancer,recurrence-events,0.7,1,5,4,purity,wracc,1,0.0094,0.015,0.1905,7,0.0,-0.062,0.0682,0.377,0.96,0.0259,0.0,0.0,0.0,0.0,X_4=3,0.038
+breast_cancer,recurrence-events,0.7,1,5,4,purity,wracc,2,0.24,0.0626,0.6921,25,0.6,0.0149,0.1289,0.851,2.0,0.2682,0.0,0.0183,-0.0055,0.0724,X_5=2 & X_6=2,0.038
+breast_cancer,recurrence-events,0.7,1,5,4,purity,wracc,4,0.3012,0.0543,0.642,25,0.4,-0.1161,0.1347,0.715,4.0,0.3247,0.0494,0.0269,-0.1153,0.1023,X_5=2 & X_6=2 | X_2=2 & X_6=2,0.038
+breast_cancer,recurrence-events,0.7,1,5,4,purity,wracc,8,0.3059,0.0564,0.6177,25,0.4,-0.2267,0.2184,0.699,7.96,0.3429,0.0871,0.051,-0.1271,0.168,X_5=2 & X_6=2 | X_2=2 & X_6=2 | X_5=2 & X_7=0 | X_6=2 & X_8=2,0.038
+breast_cancer,recurrence-events,0.7,1,5,4,purity,wracc,16,0.3647,0.0571,0.5853,25,0.24,-0.3325,0.2381,0.691,16.0,0.4076,0.0965,0.0456,-0.2384,0.2358,X_5=2 & X_6=2 | X_2=2 & X_6=2 | X_5=2 & X_7=0 | X_6=2 & X_8=2 | X_2=2 & X_6=2 & X_7=0 | X_5=2 & X_6=2 & X_7=0 | X_3=5 & X_6=2,0.038
+breast_cancer,recurrence-events,0.7,1,5,4,purity,wracc,32,0.3906,0.0577,0.5544,25,0.12,-0.4165,0.2239,0.692,31.96,0.4424,0.1176,0.0533,-0.3106,0.2354,X_5=2 & X_6=2 | X_2=2 & X_6=2 | X_5=2 & X_7=0 | X_6=2 & X_8=2 | X_2=2 & X_6=2 & X_7=0 | X_5=2 & X_6=2 & X_7=0 | X_6=2 & X_7=0 & X_8=2 | X_6=2 & X_7=0 & X_9=1 | X_2=2 & X_6=2 & X_9=0 | X_5=2 & X_7=0 & X_9=1 | X_2=2 & X_5=2 & X_6=2 | X_3=5 & X_6=2 | X_4=3,0.038
+breast_cancer,recurrence-events,0.7,1,5,4,purity,wracc_raw,1,0.5294,0.0429,0.5398,25,0.08,-0.5686,0.2196,1.0,1.0,0.5294,0.52,0.0454,-0.5067,0.246,X_6=2,0.038
+breast_cancer,recurrence-events,0.7,1,5,4,purity,wracc_raw,2,0.6212,0.0534,0.4768,25,0.0,-0.9984,0.2299,0.975,2.0,0.6247,0.3812,0.0727,-1.0188,0.1929,X_6=2 | X_5=2,0.038
+breast_cancer,recurrence-events,0.7,1,5,4,purity,wracc_raw,4,0.6212,0.0534,0.4768,25,0.0,-0.9984,0.2299,0.975,4.0,0.6247,0.3694,0.063,-0.9976,0.2092,X_6=2 | X_5=2 | X_6=2 & X_7=0,0.038
+breast_cancer,recurrence-events,0.7,1,5,4,purity,wracc_raw,8,0.64,0.052,0.4577,25,0.0,-1.1827,0.2789,0.886,8.0,0.6594,0.4212,0.0531,-1.0831,0.2748,X_6=2 | X_5=2 | X_6=2 & X_7=0 | X_5=2 & X_6=2 | X_2=2 & X_6=2,0.038
+breast_cancer,recurrence-events,0.7,1,5,4,purity,wracc_raw,16,0.6871,0.0547,0.4255,25,0.0,-1.52,0.2441,0.884,16.0,0.7094,0.4188,0.0788,-1.4259,0.2737,X_6=2 | X_5=2 | X_6=2 & X_7=0 | X_5=2 & X_6=2 | X_2=2 & X_6=2 | X_5=2 & X_7=0 | X_6=2 & X_8=2 | X_6=2 & X_9=0 | X_7=0 & X_9=1,0.038
+breast_cancer,recurrence-events,0.7,1,5,4,purity,wracc_raw,32,0.7035,0.0471,0.4151,25,0.0,-1.6408,0.2376,0.9,32.0,0.73,0.4306,0.0769,-1.5349,0.283,X_6=2 | X_5=2 | X_6=2 & X_7=0 | X_5=2 & X_6=2 | X_2=2 & X_6=2 | X_5=2 & X_7=0 | X_6=2 & X_8=2 | X_6=2 & X_9=0 | X_2=2 & X_6=2 & X_7=0 | X_7=0 & X_9=1 | X_5=2 & X_6=2 & X_7=0 | X_6=2 & X_7=0 & X_8=2 | X_6=2 & X_9=1 | X_6=2 & X_7=0 & X_9=1 | X_2=2 & X_5=2,0.038
 breast_cancer,recurrence-events,0.7,1,5,4,certified,vsf,1,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.083
 breast_cancer,recurrence-events,0.7,1,5,4,certified,vsf,2,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.083
 breast_cancer,recurrence-events,0.7,1,5,4,certified,vsf,4,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.083
@@ -95,3 +107,75 @@ breast_cancer,recurrence-events,0.7,1,5,4,certified,ssdpp,4,0.0,0.0,,0,,0.0,0.0,
 breast_cancer,recurrence-events,0.7,1,5,4,certified,ssdpp,8,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.086
 breast_cancer,recurrence-events,0.7,1,5,4,certified,ssdpp,16,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.086
 breast_cancer,recurrence-events,0.7,1,5,4,certified,ssdpp,32,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.086
+breast_cancer,recurrence-events,0.7,1,5,4,certified,wracc,1,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.112
+breast_cancer,recurrence-events,0.7,1,5,4,certified,wracc,2,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.112
+breast_cancer,recurrence-events,0.7,1,5,4,certified,wracc,4,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.112
+breast_cancer,recurrence-events,0.7,1,5,4,certified,wracc,8,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.112
+breast_cancer,recurrence-events,0.7,1,5,4,certified,wracc,16,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.112
+breast_cancer,recurrence-events,0.7,1,5,4,certified,wracc,32,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.112
+breast_cancer,recurrence-events,0.7,1,5,4,certified,wracc_raw,1,0.5294,0.0429,0.5398,25,0.08,-0.5686,0.2196,1.0,1.0,0.5294,0.5294,0.0429,-0.5686,0.2196,X_6=2,0.132
+breast_cancer,recurrence-events,0.7,1,5,4,certified,wracc_raw,2,0.6212,0.0534,0.4768,25,0.0,-0.9984,0.2299,0.975,2.0,0.6247,0.6212,0.0534,-0.9984,0.2299,X_6=2 | X_5=2,0.132
+breast_cancer,recurrence-events,0.7,1,5,4,certified,wracc_raw,4,0.6212,0.0534,0.4768,25,0.0,-0.9984,0.2299,0.975,4.0,0.6247,0.6212,0.0534,-0.9984,0.2299,X_6=2 | X_5=2 | X_6=2 & X_7=0,0.132
+breast_cancer,recurrence-events,0.7,1,5,4,certified,wracc_raw,8,0.64,0.052,0.4577,25,0.0,-1.1827,0.2789,0.886,8.0,0.6594,0.64,0.052,-1.1827,0.2789,X_6=2 | X_5=2 | X_6=2 & X_7=0 | X_5=2 & X_6=2 | X_2=2 & X_6=2,0.132
+breast_cancer,recurrence-events,0.7,1,5,4,certified,wracc_raw,16,0.6871,0.0547,0.4255,25,0.0,-1.52,0.2441,0.884,16.0,0.7094,0.6871,0.0547,-1.52,0.2441,X_6=2 | X_5=2 | X_6=2 & X_7=0 | X_5=2 & X_6=2 | X_2=2 & X_6=2 | X_5=2 & X_7=0 | X_6=2 & X_8=2 | X_6=2 & X_9=0 | X_7=0 & X_9=1,0.132
+breast_cancer,recurrence-events,0.7,1,5,4,certified,wracc_raw,32,0.7035,0.0471,0.4151,25,0.0,-1.6408,0.2376,0.9,32.0,0.73,0.7035,0.0471,-1.6408,0.2376,X_6=2 | X_5=2 | X_6=2 & X_7=0 | X_5=2 & X_6=2 | X_2=2 & X_6=2 | X_5=2 & X_7=0 | X_6=2 & X_8=2 | X_6=2 & X_9=0 | X_2=2 & X_6=2 & X_7=0 | X_7=0 & X_9=1 | X_5=2 & X_6=2 & X_7=0 | X_6=2 & X_7=0 & X_8=2 | X_6=2 & X_9=1 | X_6=2 & X_7=0 & X_9=1 | X_2=2 & X_5=2,0.132
+breast_cancer,recurrence-events,0.7,1,5,4,split,vsf,1,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.055
+breast_cancer,recurrence-events,0.7,1,5,4,split,vsf,2,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.055
+breast_cancer,recurrence-events,0.7,1,5,4,split,vsf,4,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.055
+breast_cancer,recurrence-events,0.7,1,5,4,split,vsf,8,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.055
+breast_cancer,recurrence-events,0.7,1,5,4,split,vsf,16,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.055
+breast_cancer,recurrence-events,0.7,1,5,4,split,vsf,32,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.055
+breast_cancer,recurrence-events,0.7,1,5,4,split,vsf_partial,1,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.125
+breast_cancer,recurrence-events,0.7,1,5,4,split,vsf_partial,2,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.125
+breast_cancer,recurrence-events,0.7,1,5,4,split,vsf_partial,4,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.125
+breast_cancer,recurrence-events,0.7,1,5,4,split,vsf_partial,8,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.125
+breast_cancer,recurrence-events,0.7,1,5,4,split,vsf_partial,16,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.125
+breast_cancer,recurrence-events,0.7,1,5,4,split,vsf_partial,32,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.125
+breast_cancer,recurrence-events,0.7,1,5,4,split,vsf_greedy,1,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.01
+breast_cancer,recurrence-events,0.7,1,5,4,split,vsf_greedy,2,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.01
+breast_cancer,recurrence-events,0.7,1,5,4,split,vsf_greedy,4,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.01
+breast_cancer,recurrence-events,0.7,1,5,4,split,vsf_greedy,8,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.01
+breast_cancer,recurrence-events,0.7,1,5,4,split,vsf_greedy,16,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.01
+breast_cancer,recurrence-events,0.7,1,5,4,split,vsf_greedy,32,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.01
+breast_cancer,recurrence-events,0.7,1,5,4,split,rules,1,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.033
+breast_cancer,recurrence-events,0.7,1,5,4,split,rules,2,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.033
+breast_cancer,recurrence-events,0.7,1,5,4,split,rules,4,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.033
+breast_cancer,recurrence-events,0.7,1,5,4,split,rules,8,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.033
+breast_cancer,recurrence-events,0.7,1,5,4,split,rules,16,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.033
+breast_cancer,recurrence-events,0.7,1,5,4,split,rules,32,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.033
+breast_cancer,recurrence-events,0.7,1,5,4,split,rules_pure,1,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.033
+breast_cancer,recurrence-events,0.7,1,5,4,split,rules_pure,2,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.033
+breast_cancer,recurrence-events,0.7,1,5,4,split,rules_pure,4,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.033
+breast_cancer,recurrence-events,0.7,1,5,4,split,rules_pure,8,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.033
+breast_cancer,recurrence-events,0.7,1,5,4,split,rules_pure,16,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.033
+breast_cancer,recurrence-events,0.7,1,5,4,split,rules_pure,32,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.033
+breast_cancer,recurrence-events,0.7,1,5,4,split,rules_disjoint,1,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.032
+breast_cancer,recurrence-events,0.7,1,5,4,split,rules_disjoint,2,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.032
+breast_cancer,recurrence-events,0.7,1,5,4,split,rules_disjoint,4,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.032
+breast_cancer,recurrence-events,0.7,1,5,4,split,rules_disjoint,8,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.032
+breast_cancer,recurrence-events,0.7,1,5,4,split,rules_disjoint,16,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.032
+breast_cancer,recurrence-events,0.7,1,5,4,split,rules_disjoint,32,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.032
+breast_cancer,recurrence-events,0.7,1,5,4,split,tree,1,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.095
+breast_cancer,recurrence-events,0.7,1,5,4,split,tree,2,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.095
+breast_cancer,recurrence-events,0.7,1,5,4,split,tree,4,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.095
+breast_cancer,recurrence-events,0.7,1,5,4,split,tree,8,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.095
+breast_cancer,recurrence-events,0.7,1,5,4,split,tree,16,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.095
+breast_cancer,recurrence-events,0.7,1,5,4,split,tree,32,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.095
+breast_cancer,recurrence-events,0.7,1,5,4,split,ssdpp,1,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.06
+breast_cancer,recurrence-events,0.7,1,5,4,split,ssdpp,2,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.06
+breast_cancer,recurrence-events,0.7,1,5,4,split,ssdpp,4,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.06
+breast_cancer,recurrence-events,0.7,1,5,4,split,ssdpp,8,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.06
+breast_cancer,recurrence-events,0.7,1,5,4,split,ssdpp,16,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.06
+breast_cancer,recurrence-events,0.7,1,5,4,split,ssdpp,32,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.06
+breast_cancer,recurrence-events,0.7,1,5,4,split,wracc,1,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.031
+breast_cancer,recurrence-events,0.7,1,5,4,split,wracc,2,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.031
+breast_cancer,recurrence-events,0.7,1,5,4,split,wracc,4,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.031
+breast_cancer,recurrence-events,0.7,1,5,4,split,wracc,8,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.031
+breast_cancer,recurrence-events,0.7,1,5,4,split,wracc,16,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.031
+breast_cancer,recurrence-events,0.7,1,5,4,split,wracc,32,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.031
+breast_cancer,recurrence-events,0.7,1,5,4,split,wracc_raw,1,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.036
+breast_cancer,recurrence-events,0.7,1,5,4,split,wracc_raw,2,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.036
+breast_cancer,recurrence-events,0.7,1,5,4,split,wracc_raw,4,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.036
+breast_cancer,recurrence-events,0.7,1,5,4,split,wracc_raw,8,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.036
+breast_cancer,recurrence-events,0.7,1,5,4,split,wracc_raw,16,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.036
+breast_cancer,recurrence-events,0.7,1,5,4,split,wracc_raw,32,0.0,0.0,,0,,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0.0,,0.036

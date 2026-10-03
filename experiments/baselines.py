@@ -71,6 +71,12 @@ Methods
                list a subgroup-discovery tool returns out of the box. Not a
                solution of the task - its groups need not reach tau - and
                kept to show what the purity floor changes.
+`tree_opt`     an OPTIMAL tree (DL8.5, package `pydl8.5`) of depth <= d for
+               d = 1..max_d on one-hot training rows, minimising the
+               class-weighted error with weights 1 : tau / (1 - tau), whose
+               optimum over leaves is net coverage; leaves then as `tree`.
+               The competitor CART only approximates. Needs `pydl8.5`
+               (a compiled extension; Linux wheels on PyPI).
 `tree`         one CART tree (scikit-learn) on one-hot training rows,
                min_samples_leaf = m; qualifying leaves selected by the same
                greedy. At each budget the tree with the most covered
@@ -101,7 +107,7 @@ import heapq
 import itertools
 import time
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Literal, Optional, Sequence, Tuple
+from typing import Callable, Dict, Iterator, List, Literal, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -137,6 +143,8 @@ __all__ = [
     "SplitOutcome",
     "ALL_METHODS",
     "EXTRA_METHODS",
+    "METHOD_REQUIRES",
+    "unavailable_methods",
     "certify_on_holdout",
     "split_halves",
     "run_comparison",
@@ -144,6 +152,7 @@ __all__ = [
     "summarize_splits",
     "select_rules",
     "select_tree",
+    "select_tree_opt",
     "select_vsf",
     "select_vsf_partial",
     "select_ssdpp",
@@ -775,6 +784,115 @@ def select_tree(
     return result
 
 
+#: Seconds DL8.5 may spend on one fit; a fit that hits it returns its best
+#: tree so far and the split records `timeout` in the group labels.
+TREE_OPT_TIME_LIMIT = 600
+
+
+def _class_replication(tau: float) -> Tuple[int, int]:
+    """
+    (copies of each positive row, copies of each negative row) that make
+    unweighted misclassification equal, up to a constant, to the weighted
+    error with w_pos : w_neg = 1 : tau / (1 - tau) - the Lagrangian of
+    "coverage subject to purity >= tau" (net coverage). With tau = a / b in
+    lowest terms the ratio is a / (b - a), so positives are copied b - a
+    times and negatives a times; a leaf is then labelled positive iff its
+    purity is >= tau. Denominators above 100 are rounded (tau is a user
+    slider, not a measured quantity).
+    """
+    from fractions import Fraction
+    f = Fraction(tau).limit_denominator(100)
+    a, b = f.numerator, f.denominator
+    if not (0 < a < b):
+        raise ValueError(f"tau must be in (0, 1), got {tau}")
+    return b - a, a
+
+
+def _dl85_leaves(node: Dict[str, object], path: Tuple[Tuple[int, bool], ...] = ()) -> Iterator[Tuple[Tuple[Tuple[int, bool], ...], int]]:
+    """(path of (feature, present), predicted label) for every leaf of a DL8.5 tree dict.
+    DL8.5 puts the rows where the feature is 1 in `left`."""
+    if "value" in node:
+        yield path, int(node["value"])  # type: ignore[call-overload]
+        return
+    feat = int(node["feat"])  # type: ignore[call-overload]
+    yield from _dl85_leaves(node["left"], path + ((feat, True),))  # type: ignore[arg-type]
+    yield from _dl85_leaves(node["right"], path + ((feat, False),))  # type: ignore[arg-type]
+
+
+def select_tree_opt(
+    X_all: np.ndarray, train: np.ndarray, z_train: np.ndarray, tau: float, m: int,
+    budgets: Sequence[int], max_depth: int = MAX_BRANCH_D, threshold: Optional[np.ndarray] = None,
+    time_limit: int = TREE_OPT_TIME_LIMIT,
+) -> MethodResult:
+    """
+    Optimal decision tree (DL8.5, Aglin, Nijssen & Schaus 2020; package
+    `pydl8.5`) of depth <= d for each d = 1..max_depth on one-hot training
+    rows, minimising the class-weighted misclassification with weights
+    1 : tau / (1 - tau) - exactly the objective whose optimum over leaves
+    is net coverage - via row replication (`_class_replication`), so no
+    Python callback slows the search. The leaves are then treated exactly
+    like CART's in `select_tree`: qualifying leaves (purity rule or
+    `threshold`, on the ORIGINAL training rows) enter the budgeted greedy
+    at cost = depth, and per budget the depth with the most covered
+    training positives is kept. Like the CART filter, the certificate on
+    these leaves is only a filter: they are grown on the target.
+
+    A fit that reaches `time_limit` seconds returns DL8.5's best tree so
+    far; its groups carry `timeout` in the label so that the summary can
+    count them. Depth 1 and 2 use DL8.5's specialised algorithm and are
+    exact within seconds on every table of the study.
+    """
+    from pydl85 import DL85Classifier
+    from sklearn.preprocessing import OneHotEncoder
+
+    encoder = OneHotEncoder(handle_unknown="ignore", dtype=np.int8)
+    H_train = np.asarray(encoder.fit_transform(X_all[train]).todense(), dtype=np.int8)
+    H_all = np.asarray(encoder.transform(X_all).todense(), dtype=np.int8)
+    z64 = z_train.astype(np.int64)
+    n_pos = max(1, int(z64.sum()))
+    r_pos, r_neg = _class_replication(tau)
+    pos_rows, neg_rows = np.flatnonzero(z64 == 1), np.flatnonzero(z64 == 0)
+    H_rep = np.concatenate([np.repeat(H_train[pos_rows], r_pos, axis=0), np.repeat(H_train[neg_rows], r_neg, axis=0)])
+    z_rep = np.concatenate([np.ones(pos_rows.size * r_pos, dtype=np.int64), np.zeros(neg_rows.size * r_neg, dtype=np.int64)])
+    best: Dict[int, Tuple[int, List[Group]]] = {}
+    for depth in range(1, min(max_depth, H_train.shape[1]) + 1):
+        clf = DL85Classifier(max_depth=depth, min_sup=max(1, m * min(r_pos, r_neg)), time_limit=time_limit)
+        clf.fit(H_rep, z_rep)
+        timed_out = bool(getattr(clf, "timeout_", False))
+        candidates: List[_Candidate] = []
+        members_all: List[np.ndarray] = []
+        for path, label in _dl85_leaves(clf.tree_):
+            if label != 1 or not path:
+                continue
+            in_train = np.ones(train.size, dtype=bool)
+            in_all = np.ones(X_all.shape[0], dtype=bool)
+            for feat, present in path:
+                in_train &= (H_train[:, feat] == 1) == present
+                in_all &= (H_all[:, feat] == 1) == present
+            rows = np.flatnonzero(in_train)
+            if rows.size == 0:
+                continue
+            k = int(z64[rows].sum())
+            if not bool(_qualifying(np.array([k]), np.array([rows.size]), tau, m, threshold)[0]):
+                continue
+            candidates.append(_Candidate(positives=rows[z64[rows] == 1], cost=len(path), key=len(members_all)))
+            members_all.append(in_all)
+        chosen = budgeted_greedy(candidates, budgets, int(train.size))
+        for budget, (idx, covered) in chosen.items():
+            if budget in best and best[budget][0] >= covered:
+                continue
+            groups = [Group(members=members_all[int(candidates[i].key)], cost=candidates[i].cost,  # type: ignore[arg-type]
+                            label=f"dl85-depth{depth}-leaf{candidates[i].key}" + ("-timeout" if timed_out else ""))
+                      for i in idx]
+            best[budget] = (covered, groups)
+    result = MethodResult()
+    for budget in budgets:
+        covered, groups = best.get(int(budget), (0, []))
+        result.groups[int(budget)] = groups
+        result.train_coverage[int(budget)] = covered / n_pos
+    return result
+
+
 def _node_depths(tree: object) -> np.ndarray:
     t = tree.tree_  # type: ignore[attr-defined]
     depth = np.zeros(t.node_count, dtype=np.int64)
@@ -811,8 +929,21 @@ METHODS: Tuple[str, ...] = ("vsf", "vsf_partial", "vsf_greedy", "rules", "rules_
 #: Methods added after the main run. They are NOT part of the cache key of
 #: `compare_baselines.py` (which hashes METHODS), so they are computed on
 #: demand and merged into the existing per-split files.
-EXTRA_METHODS: Tuple[str, ...] = ("wracc", "wracc_raw")
+EXTRA_METHODS: Tuple[str, ...] = ("wracc", "wracc_raw", "tree_opt")
 ALL_METHODS: Tuple[str, ...] = METHODS + EXTRA_METHODS
+#: Optional packages a method needs (checked by `unavailable_methods`).
+METHOD_REQUIRES: Dict[str, str] = {"ssdpp": "rulelist", "tree_opt": "pydl85", "tree": "sklearn"}
+
+
+def unavailable_methods(methods: Sequence[str] = ALL_METHODS) -> Dict[str, str]:
+    """{method: missing package} for the methods whose package does not import here."""
+    import importlib.util
+    out: Dict[str, str] = {}
+    for mth in methods:
+        pkg = METHOD_REQUIRES.get(mth)
+        if pkg is not None and importlib.util.find_spec(pkg) is None:
+            out[mth] = pkg
+    return out
 
 
 @dataclass(frozen=True, eq=False)
@@ -1020,6 +1151,8 @@ def run_split(
                                       threshold=threshold, qualify=True),
         "wracc_raw": lambda: select_wracc(X_all, train, z_train, tau, m, budgets, names, max_d,
                                           threshold=None, qualify=False),
+        "tree_opt": lambda: select_tree_opt(X_all, train, z_train, tau, m, budgets, max_d,
+                                            threshold=threshold),
     }
     out: SplitResult = {}
     for mth in methods:

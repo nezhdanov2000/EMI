@@ -475,3 +475,43 @@ def test_split_halves_are_a_reproducible_uniform_partition() -> None:
     assert not np.array_equal(a1, a3)
     assert np.intersect1d(a1, b1).size == 0 and np.union1d(a1, b1).size == train.size
     assert abs(a1.size - b1.size) <= 1
+
+
+# --------------------------------------------------------------------------
+# Optimal tree (DL8.5) with the net-coverage weights
+# --------------------------------------------------------------------------
+@pytest.mark.parametrize("tau,expected", [(0.5, (1, 1)), (0.7, (3, 7)), (0.9, (1, 9)), (0.3, (7, 3)), (0.8, (1, 4))])
+def test_class_replication_realises_the_net_coverage_weights(tau, expected) -> None:
+    r_pos, r_neg = bl._class_replication(tau)
+    assert (r_pos, r_neg) == expected
+    # weighted error of a positive leaf with n rows, k positives: r_neg (n - k);
+    # of a negative leaf: r_pos k. Positive is cheaper iff k / n >= tau.
+    for n in range(1, 40):
+        for k in range(0, n + 1):
+            assert (r_neg * (n - k) <= r_pos * k) == (k / n >= tau - 1e-12)
+
+
+def test_dl85_leaves_walks_left_as_present() -> None:
+    tree = {"feat": 3, "left": {"value": 1, "error": 0},
+            "right": {"feat": 1, "left": {"value": 0, "error": 2}, "right": {"value": 1, "error": 1}}}
+    leaves = list(bl._dl85_leaves(tree))
+    assert leaves == [(((3, True),), 1), (((3, False), (1, True)), 0), (((3, False), (1, False)), 1)]
+
+
+def test_tree_opt_leaves_are_optimal_for_weighted_error_and_respect_budgets() -> None:
+    pytest.importorskip("pydl85")
+    X, z = _two_region_data(8, n=1500)
+    _, fit, X_all, train, z_train, names = _train_split(X, z)
+    budgets = [2, 4, 8]
+    opt = bl.select_tree_opt(X_all, train, z_train, 0.9, 5, budgets, max_depth=2)
+    cart = bl.select_tree(X_all, train, z_train, 0.9, 5, budgets, max_depth=2)
+    for b in budgets:
+        assert sum(g.cost for g in opt.groups[b]) <= b
+        for g in opt.groups[b]:
+            assert g.cost <= 2
+            assert z_train[g.members[train]].mean() >= 0.9 - 1e-12
+    # a depth-2 optimal tree with these weights finds a planted 2-condition
+    # region: at budget 2 it covers the region's positives (about half)
+    assert opt.train_coverage[2] >= 0.4
+    # never below CART at the largest budget on planted data (both exact here)
+    assert opt.train_coverage[8] >= cart.train_coverage[8] - 0.05

@@ -22,7 +22,10 @@ of new splits and writes the summary once every split of every
 configuration is present. Large datasets are therefore finished by
 repeating the same command. Methods listed in `baselines.EXTRA_METHODS`
 (added after the main run) are not part of the cache key: a cached split
-that lacks one is topped up - only the missing methods run - and rewritten.
+that lacks one is topped up - only the missing methods run - and the
+result goes to results/cache_extra/<same file name>, merged on load, so the
+main cache files are never rewritten and extra methods computed on another
+machine can be dropped in as files.
 
 Selection rules: `purity` and `certified` (the family certificate) as in
 the paper's main tables, and `split` (Webb's exploratory/holdout split;
@@ -55,7 +58,8 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from baselines import ALL_METHODS, BUDGETS, METHODS, SplitOutcome, SplitResult, run_split, summarize_splits  # noqa: E402
+from baselines import (ALL_METHODS, BUDGETS, METHODS, SplitOutcome, SplitResult, run_split,  # noqa: E402
+                       summarize_splits, unavailable_methods)
 from datasets import load_dataset  # noqa: E402
 from vsf.centers import paired_gain  # noqa: E402
 
@@ -171,6 +175,8 @@ def synthetic(name: str, seed: int = 0, n: int = 2000) -> Tuple[np.ndarray, np.n
 
 N_SPLITS = 5
 CACHE = RESULTS / "cache"
+#: Methods of `baselines.EXTRA_METHODS`, per split, same file name as in CACHE.
+CACHE_EXTRA = RESULTS / "cache_extra"
 #: Bump when a method's selection or the cached fields change: old splits are then recomputed.
 CACHE_VERSION = 5
 
@@ -193,6 +199,8 @@ def _unpack(text: str, n_rows: int) -> np.ndarray:
 
 
 def _save(path: Path, result: SplitResult, seconds: float) -> None:
+    if not result:
+        raise ValueError("nothing to save")
     n_rows = int(next(iter(next(iter(result.values())).values())).inside.size)
     payload = {
         "version": CACHE_VERSION,
@@ -213,7 +221,7 @@ def _save(path: Path, result: SplitResult, seconds: float) -> None:
     tmp.replace(path)
 
 
-def _load(path: Path) -> Tuple[SplitResult, float]:
+def _load_one(path: Path) -> Tuple[SplitResult, float]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     if payload.get("version") != CACHE_VERSION:
         raise ValueError(f"{path}: cache version {payload.get('version')} != {CACHE_VERSION}")
@@ -230,6 +238,29 @@ def _load(path: Path) -> Tuple[SplitResult, float]:
             for b, o in per.items()
         }
     return result, float(payload["seconds"])
+
+
+def _load(path: Path) -> Tuple[SplitResult, float]:
+    """The main cache file plus, when present, the extra-methods file of the same name."""
+    result, seconds = _load_one(path)
+    extra_path = CACHE_EXTRA / path.name
+    if extra_path.exists():
+        extra, extra_seconds = _load_one(extra_path)
+        for mth, per in extra.items():
+            result.setdefault(mth, per)
+        seconds += extra_seconds
+    return result, seconds
+
+
+def _save_extra(path: Path, extra: SplitResult, seconds: float) -> None:
+    """Merge `extra` into results/cache_extra/<path.name> (methods already there are kept)."""
+    extra_path = CACHE_EXTRA / path.name
+    merged: SplitResult = {}
+    total = 0.0
+    if extra_path.exists():
+        merged, total = _load_one(extra_path)
+    merged.update(extra)
+    _save(extra_path, merged, total + seconds)
 
 
 def _pct(value: object) -> str:
@@ -251,7 +282,7 @@ def rows_for(tag: str, cfg: Config, per_split: List[SplitResult], seconds: float
             cv = e["coverage"]
             net = e["net_coverage"]
             pur = np.asarray(e["per_split_purity"], dtype=float)
-            if mth != "vsf":
+            if mth != "vsf" and "vsf" in summary:
                 g = paired_gain(cv, summary["vsf"][b]["coverage"])  # type: ignore[arg-type]
                 gn = paired_gain(net, summary["vsf"][b]["net_coverage"])  # type: ignore[arg-type]
                 diff, diff_se, ndiff, ndiff_se = g.difference, g.se, gn.difference, gn.se
@@ -289,14 +320,25 @@ def main() -> int:
     ap.add_argument("--max-seconds", type=float, default=150.0,
                     help="stop starting new splits after this many seconds")
     ap.add_argument("--selection", choices=("purity", "certified", "split"), default=None,
-                    help="run only the configurations with this selection rule")
-    ap.add_argument("--methods", default=",".join(ALL_METHODS),
-                    help="comma-separated methods to have in every split (default: all, extras topped up)")
+                    help="compute new splits only for this selection rule (complete configurations of "
+                         "the other rules are still summarised)")
+    ap.add_argument("--methods", default=None,
+                    help="comma-separated methods to have in every split (default: every method whose "
+                         "package imports here; extra methods are topped up)")
     args = ap.parse_args()
-    wanted = tuple(m for m in args.methods.split(",") if m)
-    unknown = set(wanted) - set(ALL_METHODS)
-    if unknown:
-        raise SystemExit(f"unknown methods: {sorted(unknown)}")
+    if args.methods is None:
+        absent = unavailable_methods(ALL_METHODS)
+        wanted = tuple(m for m in ALL_METHODS if m not in absent)
+        for mth, pkg in absent.items():
+            print(f"note: {mth} skipped, package {pkg!r} is not installed")
+    else:
+        wanted = tuple(m for m in args.methods.split(",") if m)
+        unknown = set(wanted) - set(ALL_METHODS)
+        if unknown:
+            raise SystemExit(f"unknown methods: {sorted(unknown)}")
+        absent = unavailable_methods(wanted)
+        if absent:
+            raise SystemExit("missing packages: " + ", ".join(f"{m} needs {p}" for m, p in absent.items()))
 
     if args.synthetic:
         X, Z = synthetic(args.synthetic, args.seed, args.n)
@@ -310,10 +352,8 @@ def main() -> int:
         frame, entry = load_dataset(args.only)
         feats = [c for c in frame.columns if c != entry.target]
         jobs = [(args.only, c, frame[feats].values, frame[entry.target].values) for c in configs]
-    if args.selection is not None:
-        jobs = [j for j in jobs if j[1].selection == args.selection]
-        if not jobs:
-            raise SystemExit(f"no configuration with selection {args.selection!r}")
+    if args.selection is not None and not any(j[1].selection == args.selection for j in jobs):
+        raise SystemExit(f"no configuration with selection {args.selection!r}")
 
     started = time.perf_counter()
     rows: List[Dict[str, object]] = []
@@ -321,30 +361,39 @@ def main() -> int:
     for tag, cfg, X, Z in jobs:
         per_split: List[SplitResult] = []
         seconds = 0.0
+        # --selection restricts what is COMPUTED; every complete configuration of
+        # the dataset is still summarised, so compare_<name>.csv keeps all rows.
+        may_compute = args.selection is None or cfg.selection == args.selection
         for i in range(N_SPLITS * cfg.n_repeats):
             path = _cache_path(tag, cfg, X, Z, args.seed, i)
             if path.exists():
                 result, sec = _load(path)
                 todo = [m for m in wanted if m not in result]
-                if todo and time.perf_counter() - started < args.max_seconds:
+                if todo and may_compute and time.perf_counter() - started < args.max_seconds:
                     # top up: only the methods the cached split lacks are run
                     t0 = time.perf_counter()
                     extra = run_split(X, Z, cfg.positive, cfg.tau, cfg.min_samples, i, N_SPLITS,
                                       cfg.n_repeats, args.seed, BUDGETS, todo, cfg.max_d,
                                       cfg.selection)  # type: ignore[arg-type]
-                    sec += time.perf_counter() - t0
+                    extra_sec = time.perf_counter() - t0
+                    sec += extra_sec
                     result.update(extra)
-                    _save(path, result, sec)
+                    _save_extra(path, extra, extra_sec)
                 elif todo:
                     missing += 1
                     continue
-            elif time.perf_counter() - started < args.max_seconds:
+            elif may_compute and time.perf_counter() - started < args.max_seconds:
                 t0 = time.perf_counter()
                 result = run_split(X, Z, cfg.positive, cfg.tau, cfg.min_samples, i, N_SPLITS,
                                    cfg.n_repeats, args.seed, BUDGETS, wanted, cfg.max_d,
                                    cfg.selection)  # type: ignore[arg-type]
                 sec = time.perf_counter() - t0
-                _save(path, result, sec)
+                main = {mth: per for mth, per in result.items() if mth in METHODS}
+                extra = {mth: per for mth, per in result.items() if mth not in METHODS}
+                if main:
+                    _save(path, main, sec)
+                if extra:
+                    _save_extra(path, extra, 0.0 if main else sec)
             else:
                 missing += 1
                 continue
@@ -369,6 +418,9 @@ def main() -> int:
         sys.stdout.flush()
     if missing:
         print(f"{missing} split(s) left: run the same command again")
+        return 0
+    if "vsf" not in wanted:
+        print("no compare csv written: --methods without vsf (extra methods only)")
         return 0
     name = jobs[0][0] if args.synthetic else args.only
     out = RESULTS / f"compare_{name}.csv"

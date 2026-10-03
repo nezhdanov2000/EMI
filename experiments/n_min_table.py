@@ -52,8 +52,8 @@ ALPHA = 0.05
 N_MAX = 20_000
 
 
-def family_counts(X: np.ndarray, max_d: int) -> Tuple[int, int]:
-    """(cells listed with repetition, distinct row sets) of the family."""
+def family_counts(X: np.ndarray, max_d: int) -> Tuple[int, int, np.ndarray]:
+    """(cells listed with repetition, distinct row sets, sorted sizes of the distinct row sets)."""
     X_discrete, bin_counts = discretize_dataset(X)
     ordered = ordered_columns(X)
     factory = _CandidateFactory(X_discrete, bin_counts, X.shape[0], ordered=ordered)
@@ -63,7 +63,52 @@ def family_counts(X: np.ndarray, max_d: int) -> Tuple[int, int]:
         if factory.last_coarsened:
             listed += int(factory.last_raw_cells)
     fresh = _CandidateFactory(X_discrete, bin_counts, X.shape[0], ordered=ordered)
-    return listed, fresh.family_cell_count(max_d)
+    sizes = fresh.family_cell_sizes(max_d)
+    return listed, int(sizes.shape[0]), sizes
+
+
+def _pure_n_min(tau: float, level: float) -> int:
+    """Exact smallest n for a pure cell (k = n) under heterogeneous certificate. O(1)."""
+    import math
+    target = math.log(level * (1.0 - 1e-9))
+    n = max(1, int(math.ceil(target / math.log(tau))))
+    num, den = float(tau).as_integer_ratio()
+    while True:
+        k_guard = -((-n * num) // den) + 1
+        if k_guard <= n and (n * math.log(tau)) <= target:
+            return n
+        n += 1
+
+
+def tarone_family(sizes: np.ndarray, tau: float, alpha: float = ALPHA) -> Tuple[int, int]:
+    """
+    Tarone (1990) for the family certificate at a FIXED tau: the number K of
+    hypotheses that can reach the threshold at level alpha / K, and the
+    resulting per-cell level's n_min for a pure cell. A row set of n rows
+    can be certified at level L iff n >= n_min_pure(L), so m(K) = #{sizes >=
+    n_min_pure(alpha / K)} is the number of testable hypotheses at alpha / K;
+    m is non-increasing in K, and K* is the smallest K with m(K) <= K (found
+    by bisection on [1, T]). Valid only when tau is fixed before the data
+    are read (PMD 4.14): the family then depends on tau, which the
+    interactive product does not allow.
+    """
+    if sizes.size == 0:
+        return 0, -1
+    T = int(sizes.shape[0])
+
+    def testable(K: int) -> int:
+        pure = _pure_n_min(tau, alpha / K)
+        return int(np.count_nonzero(sizes >= pure)) if pure > 0 else 0
+
+    lo, hi = 1, T                      # m(T) <= T always
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if testable(mid) <= mid:
+            hi = mid
+        else:
+            lo = mid + 1
+    pure = _pure_n_min(tau, alpha / lo)
+    return lo, pure
 
 
 def n_min(tau: float, rho: float, level: float) -> Tuple[int, int]:
@@ -71,19 +116,10 @@ def n_min(tau: float, rho: float, level: float) -> Tuple[int, int]:
     (n_min_pure, n_min_mid) for one floor, from one table of thresholds for
     n = 1 .. N_MAX. -1 means "not reached within N_MAX rows".
     """
-    n = np.arange(1, N_MAX + 1)
-    k_min = min_successes_to_certify_heterogeneous(n, tau, level)
-    pure = np.flatnonzero(k_min <= n)
-    # k = ceil(rho * n) in Python integers (num * n overflows int64)
-    num, den = float(rho).as_integer_ratio()
-    k_mid = np.fromiter((-((-int(v) * num) // den) for v in n.tolist()), dtype=np.int64, count=n.size)
-    ok = k_min <= k_mid
-    if not ok[-1]:
-        mid = -1
-    else:
-        bad = np.flatnonzero(~ok)
-        mid = int(bad[-1] + 2) if bad.size else 1
-    return (int(n[pure[0]]) if pure.size else -1), mid
+    from certificate_price import n_min as cp_n_min
+    pure = cp_n_min(tau, level, 1.0)
+    mid = cp_n_min(tau, level, rho)
+    return (pure if pure is not None else -1), (mid if mid is not None else -1)
 
 
 def main() -> int:
@@ -104,7 +140,7 @@ def main() -> int:
         X = np.random.default_rng(0).integers(0, 4, size=(n, m)).astype(str)
         source = f"synthetic L=4 M={m} N={n}"
     t0 = time.perf_counter()
-    listed, distinct = family_counts(X, args.max_d)
+    listed, distinct, sizes = family_counts(X, args.max_d)
     seconds = time.perf_counter() - t0
     level = ALPHA / distinct
 
@@ -113,6 +149,8 @@ def main() -> int:
         rho = min(1.0, (1.0 + tau) / 2.0)
         pure, mid = n_min(tau, rho, level)
         pure_listed, _ = n_min(tau, 1.0, ALPHA / listed)
+        k_tarone, pure_tarone = tarone_family(sizes, tau)
+        _, mid_tarone = n_min(tau, rho, ALPHA / max(1, k_tarone))
         rows.append({
             "source": source, "N": int(X.shape[0]), "M": int(X.shape[1]), "max_d": args.max_d,
             "T_listed": listed, "T_distinct": distinct, "alpha": ALPHA,
@@ -121,12 +159,16 @@ def main() -> int:
             "purity_mid": rho,
             "n_min_mid": mid,
             "n_min_pure_listed_T": pure_listed,
+            "K_tarone": k_tarone,
+            "n_min_pure_tarone": pure_tarone,
+            "n_min_mid_tarone": mid_tarone,
             "seconds_family": round(seconds, 1),
         })
     print(f"{source}: N={X.shape[0]} M={X.shape[1]} T listed {listed:,} distinct {distinct:,} ({seconds:.1f} s)")
     for r in rows:
         print(f"  tau={r['tau']:.2f}: pure cell >= {r['n_min_pure']} rows "
-              f"(without dedup {r['n_min_pure_listed_T']}); purity {r['purity_mid']:.3f} from {r['n_min_mid']} rows")
+              f"(without dedup {r['n_min_pure_listed_T']}, Tarone K={r['K_tarone']}: {r['n_min_pure_tarone']}); "
+              f"purity {r['purity_mid']:.3f} from {r['n_min_mid']} rows (Tarone {r['n_min_mid_tarone']})")
     args.out.parent.mkdir(parents=True, exist_ok=True)
     new_file = not args.out.exists()
     with args.out.open("a", newline="", encoding="utf-8") as fh:

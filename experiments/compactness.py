@@ -68,7 +68,12 @@ def build(rows: List[Dict[str, str]], budget: int) -> Dict[str, Dict[str, Dict[s
     best: Dict[Tuple[str, str], float] = defaultdict(float)
     for r in at_budget:
         key = (r["selection"], r["config"])
-        best[key] = max(best[key], float(r["coverage"]))
+        # informative by the methods of the comparison only: wracc_raw (no
+        # purity floor) would make every certified configuration informative
+        if r["method"] in METHOD_ORDER:
+            best[key] = max(best[key], float(r["coverage"]))
+        else:
+            best.setdefault(key, 0.0)
     present: Dict[Tuple[str, str], set] = defaultdict(set)
     for r in at_budget:
         present[(r["selection"], r["config"])].add(r["method"])

@@ -1447,3 +1447,145 @@ body.absence-mode .pc-row.pc-focus { background: rgba(239, 68, 68, 0.14); border
 .pc-empty { color: var(--text-dim); padding: 0.3rem 0.5rem; }
 
 .slice-tab.slice-dim { opacity: 0.3; }
+
+/* ---- Figure mode (app.js, "Figure mode") -------------------------------
+   The lattice alone on white, for a journal figure. The frame
+   (.viz-viewport) holds the canvas and, optionally, the centre list; the
+   toolbar sits above it and is never inside the frame. */
+.fig-mode-btn {
+    background: rgba(255, 255, 255, 0.06);
+    color: var(--text-main);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 0.35rem 0.8rem;
+    font: 500 0.8rem 'Inter', sans-serif;
+    cursor: pointer;
+}
+.fig-mode-btn:hover { border-color: var(--border-glow); }
+.fig-mode-msg { color: var(--amber); font-size: 0.8rem; }
+
+.fig-toolbar[hidden] { display: none; }
+.fig-toolbar {
+    position: sticky;
+    top: 0;
+    z-index: 200;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem 1.5rem;
+    padding: 0.6rem 1.25rem;
+    background: #f3f4f6;
+    border-bottom: 1px solid #d1d5db;
+    color: #111827;
+    font: 400 0.8rem 'Inter', sans-serif;
+}
+.fig-group { display: flex; align-items: center; gap: 0.9rem; flex-wrap: wrap; }
+.fig-group label { display: flex; align-items: center; gap: 0.3rem; white-space: nowrap; }
+.fig-toolbar input[type="number"] {
+    width: 4.2rem;
+    padding: 0.15rem 0.3rem;
+    border: 1px solid #9ca3af;
+    border-radius: 4px;
+    background: #fff;
+    color: #111827;
+    font: inherit;
+}
+.fig-toolbar select {
+    padding: 0.15rem 0.3rem;
+    border: 1px solid #9ca3af;
+    border-radius: 4px;
+    background: #fff;
+    color: #111827;
+    font: inherit;
+}
+.fig-btn {
+    padding: 0.3rem 0.75rem;
+    border: 1px solid #9ca3af;
+    border-radius: 6px;
+    background: #fff;
+    color: #111827;
+    font: 500 0.8rem 'Inter', sans-serif;
+    cursor: pointer;
+}
+.fig-btn:hover { border-color: #4b5563; }
+.fig-btn:disabled { opacity: 0.5; cursor: progress; }
+.fig-btn-primary { background: #111827; border-color: #111827; color: #fff; }
+.fig-readout { flex-basis: 100%; color: #4b5563; font-family: 'JetBrains Mono', monospace; font-size: 0.72rem; }
+.fig-warn { color: #b45309; }
+.fig-status { color: #047857; margin-left: 0.75rem; }
+
+body.fig-mode {
+    background: #ffffff;
+    background-image: none;
+    color: #000000;
+}
+body.fig-mode header,
+body.fig-mode .catalog-sidebar,
+body.fig-mode .settings-sidebar,
+body.fig-mode .viewport-toolbar,
+body.fig-mode #centresModeNote,
+body.fig-mode #axesListContainer,
+body.fig-mode #slice-controller,
+body.fig-mode #welcomeState { display: none !important; }
+
+body.fig-mode main {
+    display: flex;
+    justify-content: center;
+    align-items: flex-start;
+    max-width: none;
+    padding: 2rem;
+}
+body.fig-mode .viz-viewport {
+    flex: none;
+    background: #ffffff;
+    border: none;
+    border-radius: 0;
+    box-shadow: none;
+    overflow: visible;
+}
+body.fig-mode #resultsArea {
+    display: flex !important;
+    flex-direction: column;
+    width: var(--fig-w);
+}
+body.fig-mode #plot-container {
+    order: 1;
+    flex: none;
+    width: var(--fig-w);
+    height: var(--fig-h);
+    min-height: 0;
+}
+
+/* Centre list: off unless asked for; black on white at the tick size. */
+body.fig-mode:not(.fig-list) #partialPanel { display: none !important; }
+body.fig-mode #partialPanel {
+    order: 2;
+    margin: 0;
+    padding: 0.4em 0 0 0;
+    background: #ffffff;
+    border: none;
+    border-radius: 0;
+    color: #000000;
+    font-family: Arial, Helvetica, sans-serif;
+    font-size: var(--fig-list-px);
+    line-height: 1.3;
+}
+body.fig-mode .pc-title,
+body.fig-mode .pc-cmp,
+body.fig-mode .pc-notes,
+body.fig-mode .pc-warn,
+body.fig-mode .pc-legend,
+body.fig-mode .pc-tags,
+body.fig-mode .pc-legend a { display: none; }
+body.fig-mode .pc-num b { color: #000000; }
+body.fig-mode .pc-list { max-height: none; overflow: visible; margin-top: 0.3em; }
+body.fig-mode .pc-row,
+body.fig-mode .pc-row:hover,
+body.fig-mode .pc-row.pc-hover { background: none; border-color: transparent; padding: 0.15em 0; cursor: default; }
+body.fig-mode .pc-row.pc-focus { background: none; border-color: transparent; font-weight: 700; }
+body.fig-mode .pc-idx,
+body.fig-mode .pc-cond,
+body.fig-mode .pc-stats,
+body.fig-mode .pc-cost { color: #000000; font-family: Arial, Helvetica, sans-serif; }
+body.fig-mode .pc-shape,
+body.fig-mode .pc-ci { color: #444444; font-size: 0.9em; }

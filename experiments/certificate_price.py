@@ -40,6 +40,7 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 FAMILY_TAIL_MARGIN = 1e-9
+_ALL_ROWS: List[Dict[str, str]] = []
 ALPHA = 0.05
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -193,10 +194,17 @@ def price_table(sources: Sequence[Dict[str, str]], split_candidates: Sequence[in
     """
     taus = (0.7, 0.9)
     n_split = len(split_candidates)
-    lines = [r"\begin{tabular}{lr" + "rr" * (1 + n_split) + "}", r"\toprule",
-             r"& & \multicolumn{2}{c}{family} " + " ".join(
+    # Tarone columns when n_min_table.py recorded K (it needs the cell sizes, hence numpy)
+    has_tarone = all(r.get("K_tarone", "") not in ("", None) for r in sources)
+    tarone_by_key: Dict[Tuple[str, str, str, float], Dict[str, str]] = {}
+    if has_tarone:
+        for r in _ALL_ROWS:
+            tarone_by_key[(r["source"], r["N"], r["M"], float(r["tau"]))] = r
+    groups = 1 + (1 if has_tarone else 0) + n_split
+    lines = [r"\begin{tabular}{lr" + "rr" * groups + "}", r"\toprule",
+             r"& & \multicolumn{2}{c}{family} " + (r"& \multicolumn{2}{c}{family, Tarone} " if has_tarone else "") + " ".join(
                  rf"& \multicolumn{{2}}{{c}}{{split, $T_B={tb}$}}" for tb in split_candidates) + r"\\",
-             r"data & $T$ " + " ".join(rf"& $\tau={t}$" for _ in range(1 + n_split) for t in taus) + r"\\",
+             r"data & $T$ " + " ".join(rf"& $\tau={t}$" for _ in range(groups) for t in taus) + r"\\",
              r"\midrule"]
     for r in sources:
         T = int(r["T_distinct"])
@@ -204,6 +212,15 @@ def price_table(sources: Sequence[Dict[str, str]], split_candidates: Sequence[in
         for t in taus:
             lvl = ALPHA / T
             cells.append(f"{n_min(t, lvl, 1.0)} / {n_min(t, lvl, t + 0.05)}")
+        if has_tarone:
+            for t in taus:
+                row = tarone_by_key.get((r["source"], r["N"], r["M"], t))
+                if row is None:
+                    cells.append("--")
+                    continue
+                K = int(row["K_tarone"])
+                lvl = ALPHA / max(1, K)
+                cells.append(f"{n_min(t, lvl, 1.0)} / {n_min(t, lvl, t + 0.05)}")
         for tb in split_candidates:
             for t in taus:
                 lvl = ALPHA / tb
@@ -255,6 +272,8 @@ def main() -> int:
 
     with args.n_min_table.open(newline="", encoding="utf-8") as fh:
         rows = list(csv.DictReader(fh))
+    global _ALL_ROWS
+    _ALL_ROWS = rows
     # one row per (source, N, M): the T does not depend on tau
     seen: Dict[Tuple[str, str, str], Dict[str, str]] = {}
     for r in rows:
@@ -266,7 +285,9 @@ def main() -> int:
 
     tables = args.paper / "tables"
     tables.mkdir(parents=True, exist_ok=True)
-    price = price_table(sources, split_candidates=(10, 50))
+    # with the Tarone columns present the table keeps one split column so that it fits the page
+    has_tarone = all(r.get("K_tarone", "") not in ("", None) for r in sources)
+    price = price_table(sources, split_candidates=(10,) if has_tarone else (10, 50))
     (tables / "certificate_price.tex").write_text(price, encoding="utf-8")
     print(price)
 

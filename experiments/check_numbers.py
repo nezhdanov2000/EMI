@@ -124,12 +124,10 @@ def run(tex_path: Path) -> int:
     p_g = counts(obs, "partial_vs_vsf")
     ck.expect("grid vs disjoint, observed", rf"loses to free disjoint rules in {g_rd['-']} of {n_obs} cells and wins {g_rd['+']}")
     ck.expect("partial vs disjoint, observed", rf"loses {p_rd['-']} and wins {p_rd['+']}")
-    ck.expect("conclusion: grid losses", rf"loses {g_rd['-']} of {n_obs} observed-purity cells and {counts(cert, 'vsf_vs_rules_disjoint')['-']} of {n_cert} certified ones")
     cg_rd = counts(cert, "vsf_vs_rules_disjoint")
     cp_rd = counts(cert, "partial_vs_rules_disjoint")
     cp_g = counts(cert, "partial_vs_vsf")
     ck.expect("grid vs disjoint, certified", rf"the full grid loses {cg_rd['-']} of {n_cert} cells; partial centres lose {cp_rd['-']}")
-    ck.expect("abstract: certified counts", rf"{cp_rd['+']} wins, {cp_rd['-']} losses, {cp_rd['=']} ties over {n_cert} configuration--budget cells")
     ck.expect("7.3: ties/wins/losses", rf"ties free disjoint rules in {cp_rd['=']} of {n_cert} cells, wins {cp_rd['+']}")
     ck.expect("7.3: partial vs grid", rf"better in {cp_g['+']} of {n_cert} cells")
 
@@ -143,13 +141,18 @@ def run(tex_path: Path) -> int:
     # --- gap closed
     gap_o = statistics.median(floats(obs, "gap_closed"))
     ck.expect("gap closed, observed (7.1)", rf"closes a median {pct(gap_o)}\\,\\% of the gap")
-    ck.expect("gap closed, observed (abstract)", rf"closes a median {pct(gap_o)}\\,\\% of the gap under the observed-purity rule")
 
     # --- union purity reaches tau
     ok_rules_o = mean(floats(obs, "purity_ok_rules"))
     ok_any_c = mean(floats(cert, "purity_ok_partial"))
     ck.expect("union purity, certified vs overlapping observed",
               rf"reaches \$\\tau\$ in {pct(ok_any_c)}\\,\\% of splits for every method under the certificate, against {pct(ok_rules_o)}\\,\\% for overlapping rules")
+
+    # --- why the disjoint baseline (Section 5) and the abstract's share
+    ok_g, ok_p, ok_rd = (mean(floats(obs, k)) for k in ("purity_ok_vsf", "purity_ok_partial", "purity_ok_rules_disjoint"))
+    lo, hi = min(pct(ok_g), pct(ok_p), pct(ok_rd)), max(pct(ok_g), pct(ok_p), pct(ok_rd))
+    ck.expect("disjoint baseline shares", rf"reaches \$\\tau\$ in {pct(ok_rules_o)}\\,\\% of the splits, against {lo}--{hi}\\,\\% for")
+    ck.expect("abstract: overlapping unions below tau", rf"its unions fall below \$\\tau\$ on held-out rows in {100 - int(pct(ok_rules_o))}\\,\\% of the splits")
 
     # --- net coverage means over informative cells
     def net_means(rows: Sequence[Row]) -> Dict[str, float]:
@@ -190,7 +193,7 @@ def run(tex_path: Path) -> int:
     po, ro = comp[("purity", "partial centres")], comp[("purity", r"rules$_{\mathrm{disj}}$")]
     pc, rc = comp[("certified", "partial centres")], comp[("certified", r"rules$_{\mathrm{disj}}$")]
     ov = comp[("purity", "rules")]
-    ck.expect("abstract: compactness", rf"fewer conditions \({po['conditions']:.1f} against {ro['conditions']:.1f} at a budget of 32\) and fewer than half the columns \({po['columns']:.1f} against {ro['columns']:.1f}\)")
+    ck.expect("abstract: compactness", rf"fewer than half the columns of the free rules \({po['columns']:.1f} against {ro['columns']:.1f} at budget 32\)")
     share_cov = pct(po["coverage"] / ro["coverage"])
     share_cond = pct(po["conditions"] / ro["conditions"])
     ck.expect("7.2 observed", rf"reach {share_cov}\\,\\% of the coverage of free disjoint rules \(\${po['coverage']:.2f}\$ against \${ro['coverage']:.2f}\$\) with {share_cond}\\,\\% of the conditions \(\${po['conditions']:.1f}\$ against \${ro['conditions']:.1f}\$\) and fewer than half the columns \(\${po['columns']:.1f}\$ against \${ro['columns']:.1f}\$\)")
@@ -202,14 +205,63 @@ def run(tex_path: Path) -> int:
     # --- certified configurations that certify anything (comparison_summary, real tables)
     cs = read_csv(RESULTS / "comparison_summary.csv")
     best: Dict[Tuple[str, str, str, str], float] = defaultdict(float)
+    main_methods = {"vsf", "vsf_partial", "vsf_greedy", "rules", "rules_pure", "rules_disjoint", "tree", "ssdpp"}
     for r in cs:
         if r["selection"] == "certified" and not r["dataset"].startswith("synthetic"):
             key = (r["dataset"], r["positive"], r["tau"], r["min_samples"])
-            best[key] = max(best[key], float(r["coverage"]))
+            # the extra methods do not count: wracc_raw ignores the purity floor
+            if r["method"] in main_methods:
+                best[key] = max(best[key], float(r["coverage"]))
+            else:
+                best.setdefault(key, 0.0)
     n_real = len(best)
     n_nonempty = sum(1 for v in best.values() if v > 0.01)
     ck.expect("7.3: certified configurations on real tables", rf"Of the {n_real} certified configurations on real tables, {n_nonempty} certify anything at all")
     ck.expect("Section 4: non-empty certificate", rf"non-empty on {n_nonempty} of the {n_real} real configurations")
+
+    # --- optimal tree (Section 7.5), on the cells where tree_opt was run
+    to_o = [r for r in obs if r.get("cov_tree_opt", "") not in ("", "nan")]
+    to_c = [r for r in cert if r.get("cov_tree_opt", "") not in ("", "nan")]
+    if to_o and to_c:
+        o32 = [r for r in to_o if r["budget"] == "32"]
+        c32 = [r for r in to_c if r["budget"] == "32"]
+        m_o, m_c = counts(to_o, "partial_vs_tree_opt"), counts(to_c, "partial_vs_tree_opt")
+        ck.expect("tree_opt counts and coverage",
+                  rf"partial centres beat it in {m_o['+']} of {len(to_o)} cells and lose {m_o['-']} \(at \$B=32\$: \${mean(floats(o32, 'cov_partial')):.2f}\$ against \${mean(floats(o32, 'cov_tree_opt')):.2f}\$ mean coverage\); under the certificate they win {m_c['+']} and lose {m_c['-']} \(\${mean(floats(c32, 'cov_partial')):.2f}\$ against \${mean(floats(c32, 'cov_tree_opt')):.2f}\$\)")
+        ck.expect("tree_opt net coverage",
+                  rf"\(\${mean(floats(o32, 'net_tree_opt')):.2f}\$ against \${mean(floats(o32, 'net_partial')):.2f}\$ and \${mean(floats(c32, 'net_tree_opt')):.2f}\$ against \${mean(floats(c32, 'net_partial')):.2f}\$ at \$B=32\$\)")
+        more = sum(1 for r in o32 if float(r["cov_tree_opt"]) - float(r["cov_tree"]) >= 0.01)
+        less = sum(1 for r in o32 if float(r["cov_tree"]) - float(r["cov_tree_opt"]) >= 0.01)
+        words = {4: "four", 5: "five", 6: "six", 7: "seven", 8: "eight", 9: "nine"}
+        ck.expect("tree_opt vs CART", rf"covers more on {words.get(more, str(more))} tables at \$B=32\$ and less on {words.get(less, str(less))}")
+
+    # --- WRAcc lists (Section 7.6), on the cells where wracc was run
+    w_o = [r for r in obs if r.get("cov_wracc", "") not in ("", "nan")]
+    w_c = [r for r in cert if r.get("cov_wracc", "") not in ("", "nan")]
+    if w_o and w_c:
+        wo32 = [r for r in w_o if r["budget"] == "32"]
+        mw_o, mw_c = counts(w_o, "partial_vs_wracc"), counts(w_c, "partial_vs_wracc")
+        mr_o = counts(w_o, "partial_vs_wracc_raw")
+        ck.expect("wracc vs max coverage", rf"\(\${mean(floats(wo32, 'cov_wracc')):.2f}\$ against \${mean(floats(wo32, 'cov_rules')):.2f}\$ at \$B=32\$ under the observed rule\)")
+        ck.expect("wracc purity vs rules", rf"reaches \$\\tau\$ in \${pct(mean(floats(w_o, 'purity_ok_wracc')))}\\,\\%\$ of the splits against \${pct(mean(floats(w_o, 'purity_ok_rules')))}\\,\\%\$ for maximum coverage")
+        ck.expect("partial vs wracc counts", rf"\(\${mean(floats(wo32, 'cov_wracc')):.2f}\$ against \${mean(floats(wo32, 'cov_partial')):.2f}\$; partial centres win {mw_o['+']} of {len(w_o)} cells and lose {mw_o['-']}, under the certificate {mw_c['+']} and {mw_c['-']}\)")
+        ck.expect("wracc_raw", rf"\(\${mean(floats(wo32, 'cov_wracc_raw')):.2f}\$ at \$B=32\$, beating partial centres in {mr_o['-']} of {len(w_o)} cells\) with a union that reaches \$\\tau\$ in \${pct(mean(floats(w_o, 'purity_ok_wracc_raw')))}\\,\\%\$ of the splits")
+        zero = sum(1 for r in wo32 if float(r["purity_ok_wracc_raw"]) == 0.0)
+        ck.expect("wracc_raw zero share", rf"in none of them on {zero} of the {len(wo32)} configurations at \$B=32\$")
+
+    # --- holdout split (Section 4)
+    spl = [r for r in pw if r["selection"] == "split"]
+    if spl:
+        fam32 = {(r["dataset"], r["tau"]): r for r in cert32}
+        spl32 = {(r["dataset"], r["tau"]): r for r in spl if r["budget"] == "32"}
+        common = sorted(set(fam32) & set(spl32))
+        lower = sum(1 for k in common if float(spl32[k]["cov_partial"]) < float(fam32[k]["cov_partial"]))
+        words = {8: "eight", 9: "nine", 10: "ten", 11: "eleven"}
+        ck.expect("split: lower on n of the common configurations",
+                  rf"on the {words.get(len(common), str(len(common)))} configurations that certify anything under the family bound, partial centres certified by the split cover less on {words.get(lower, str(lower))} \(mean \${round(100 * mean(float(spl32[k]['cov_partial']) for k in common))}\$ against \${round(100 * mean(float(fam32[k]['cov_partial']) for k in common))}\$ points at \$B=32\$")
+        ok_split = mean(floats(spl, "purity_ok_partial"))
+        ck.expect("conclusion: split purity shares", rf"\({pct(ok_any_c)} against {pct(ok_split)}\\,\\%\)")
+        ck.expect("split: held-out purity share", rf"reaches \$\\tau\$ in \${pct(ok_split)}\\,\\%\$ of the splits for partial centres, against \${pct(ok_any_c)}\\,\\%\$ under the family bound")
 
     return ck.report()
 

@@ -27,7 +27,7 @@ import pandas as pd
 from scipy.stats import t as student_t
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from compare_baselines import CONFIGS, N_SPLITS, RESULTS, BUDGETS, _cache_path  # noqa: E402
+from compare_baselines import CONFIGS, N_SPLITS, RESULTS, BUDGETS, _cache_path, CACHE_EXTRA  # noqa: E402
 from datasets import load_dataset  # noqa: E402
 
 
@@ -81,7 +81,13 @@ def main() -> int:
             p = _cache_path(cfg.dataset, cfg, X, Z, 0, i)
             if not p.exists():
                 break
-            splits.append(json.loads(p.read_text())["methods"])
+            methods = json.loads(p.read_text())["methods"]
+            extra_p = CACHE_EXTRA / p.name
+            if extra_p.exists():
+                extra_methods = json.loads(extra_p.read_text()).get("methods", {})
+                for k, v in extra_methods.items():
+                    methods.setdefault(k, v)
+            splits.append(methods)
         if len(splits) < N_SPLITS * cfg.n_repeats:
             print(f"{cfg.dataset} {cfg.tau} {cfg.selection}: incomplete, skipped")
             continue
@@ -90,13 +96,14 @@ def main() -> int:
         config_rows: List[Dict[str, object]] = []
         for b in BUDGETS:
             present = [m for m in ("vsf", "vsf_partial", "vsf_greedy", "rules_disjoint", "rules", "tree", "ssdpp",
-                                   "wracc", "wracc_raw")
+                                   "wracc", "wracc_raw", "tree_opt")
                        if all(m in s for s in splits)]
             cov = {m: np.array([s[m][str(b)]["k_in"] / max(1, s[m][str(b)]["n_pos"]) for s in splits])
                    for m in present}
             pur = {m: np.array([s[m][str(b)]["k_in"] / s[m][str(b)]["n_in"] if s[m][str(b)]["n_in"] else np.nan
                                 for s in splits]) for m in cov}
-            if max(c.mean() for c in cov.values()) < 0.01:
+            main_cov = [cov[m].mean() for m in ("vsf", "vsf_partial", "vsf_greedy", "rules_disjoint", "rules", "tree", "ssdpp") if m in cov]
+            if not main_cov or max(main_cov) < 0.01:
                 continue
             t_full = nb_t(cov["vsf_partial"] - cov["vsf"], rho)
             t_rules = nb_t(cov["vsf_partial"] - cov["rules_disjoint"], rho)
@@ -104,17 +111,6 @@ def main() -> int:
             t_tree = nb_t(cov["vsf_partial"] - cov["tree"], rho)
             t_ssd = nb_t(cov["vsf_partial"] - cov["ssdpp"], rho)
             t_greedy = nb_t(cov["vsf"] - cov["vsf_greedy"], rho)
-            # WRAcc top-k lists (EXTRA_METHODS): present only where the cache was topped up
-            wr = {}
-            for m in ("wracc", "wracc_raw"):
-                if m in cov:
-                    wr[f"cov_{m}"] = cov[m].mean()
-                    wr[f"partial_vs_{m}"] = mark(nb_t(cov["vsf_partial"] - cov[m], rho))
-                    wr[f"purity_ok_{m}"] = np.nanmean(pur[m] >= cfg.tau)
-                else:
-                    wr[f"cov_{m}"] = np.nan
-                    wr[f"partial_vs_{m}"] = ""
-                    wr[f"purity_ok_{m}"] = np.nan
             # net coverage (k - tau/(1-tau)(n-k))/P and stability (mean pairwise Jaccard of held-out unions)
             net = {}
             stab = {}
@@ -126,6 +122,21 @@ def main() -> int:
             t_net = nb_t(np.array([(s["vsf_partial"][str(b)]["k_in"] - cfg.tau / (1 - cfg.tau) * (s["vsf_partial"][str(b)]["n_in"] - s["vsf_partial"][str(b)]["k_in"])) / max(1, s["vsf_partial"][str(b)]["n_pos"])
                                     - (s["rules"][str(b)]["k_in"] - cfg.tau / (1 - cfg.tau) * (s["rules"][str(b)]["n_in"] - s["rules"][str(b)]["k_in"])) / max(1, s["rules"][str(b)]["n_pos"])
                                     for s in splits]), rho)
+            # WRAcc top-k lists (EXTRA_METHODS): present only where the cache was topped up
+            wr = {}
+            for m in ("wracc", "wracc_raw", "tree_opt"):
+                if m in cov:
+                    wr[f"cov_{m}"] = cov[m].mean()
+                    wr[f"partial_vs_{m}"] = mark(nb_t(cov["vsf_partial"] - cov[m], rho))
+                    wr[f"purity_ok_{m}"] = np.nanmean(pur[m] >= cfg.tau)
+                    wr[f"net_{m}"] = net[m]
+                else:
+                    wr[f"cov_{m}"] = np.nan
+                    wr[f"partial_vs_{m}"] = ""
+                    wr[f"purity_ok_{m}"] = np.nan
+                    wr[f"net_{m}"] = np.nan
+            wr["tree_opt_timeouts"] = (float(np.mean([any("timeout" in lab for lab in s["tree_opt"][str(b)]["labels"]) for s in splits]))
+                                       if "tree_opt" in cov else np.nan)
             gap = cov["rules_disjoint"].mean() - cov["vsf"].mean()
             closed = (cov["vsf_partial"].mean() - cov["vsf"].mean()) / gap if gap >= 0.01 else np.nan
             config_rows.append(dict(

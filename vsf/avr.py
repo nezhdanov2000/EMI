@@ -553,13 +553,31 @@ class _CandidateFactory:
         rng = np.random.default_rng(_FINGERPRINT_SEED)
         w1 = rng.integers(0, np.iinfo(np.uint64).max, size=n, dtype=np.uint64, endpoint=True)
         w2 = rng.integers(0, np.iinfo(np.uint64).max, size=n, dtype=np.uint64, endpoint=True)
+        return int(self.family_cell_sizes(max_d).shape[0])
+
+    def family_cell_sizes(self, max_d: int) -> np.ndarray:
+        """
+        The sizes (rows) of the T distinct row sets that `family_cell_count`
+        counts, sorted ascending, as int64. This is what Tarone's procedure
+        needs: a row set of n rows can reach the certificate at level L
+        only if a pure cell of n rows can, so the number of testable
+        hypotheses at L is the number of sizes at or above n_min(L).
+        """
+        n = self.n_samples
+        if n == 0:
+            for _ in self.iter_candidates(max_d):
+                pass
+            return np.zeros(0, dtype=np.int64)
+        rng = np.random.default_rng(_FINGERPRINT_SEED)
+        w1 = rng.integers(0, np.iinfo(np.uint64).max, size=n, dtype=np.uint64, endpoint=True)
+        w2 = rng.integers(0, np.iinfo(np.uint64).max, size=n, dtype=np.uint64, endpoint=True)
         seen = _FingerprintSet()
         for _, codes, n_cells in self.iter_candidates(max_d):
             if n_cells:
                 seen.add(_cell_fingerprints(codes, n_cells, w1, w2))
             if self.last_coarsened and self.last_raw_codes is not None:
                 seen.add(_cell_fingerprints(self.last_raw_codes, self.last_raw_cells, w1, w2))
-        return seen.count()
+        return np.sort(seen.sizes().astype(np.int64))
 
 
 _FAMILY_CACHE_MAX_ENTRIES = 64
@@ -716,6 +734,11 @@ class _FingerprintSet:
     def count(self) -> int:
         self._flush()
         return int(self._unique.shape[0])
+
+    def sizes(self) -> np.ndarray:
+        """The `size` field of every distinct fingerprint (unsorted)."""
+        self._flush()
+        return np.asarray(self._unique["size"])
 
 
 def _subset_codes(
