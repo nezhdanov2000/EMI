@@ -90,3 +90,6 @@ experiments/results/*.tar.gz
 
 # local experiment venv
 .venv-exp/
+
+# archived paper drafts (kept locally, not versioned)
+_archive_drafts/
