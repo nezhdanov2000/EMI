@@ -1,0 +1,3 @@
+n,runs,permutations,features,max_d,family_T_mean,planted_purity,background,tau,alpha,cell_rows_mean,cell_purity_mean,certified_share,hypergeom_p_median,wy_adjusted_p_median,wy_flagged_share,seconds
+1000,20,200,6,3,693.0,0.85,0.1,0.9,0.05,108.5,0.8485,0.0,1.9463258074819338e-59,0.004975124378109453,1.0,76.8
+3000,20,200,6,3,693.0,0.85,0.1,0.9,0.05,334.3,0.8552,0.0,4.449730578835385e-188,0.004975124378109453,1.0,197.3
