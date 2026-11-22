@@ -144,6 +144,17 @@ def run(tex_path: Path) -> int:
     others = sorted({(r["dataset"], r["tau"], r["budget"]) for r in lost if r["dataset"] != "connect_4"})
     words = {1: "one", 2: "two", 3: "three", 4: "four", 5: "five", 6: "six"}
     ck.expect("certified losses on connect_4", rf"lose {len(lost)} \({words[on_c4]} on \\texttt\{{connect\\_4\}}")
+    Words = {1: "One", 2: "Two", 3: "Three", 4: "Four", 5: "Five", 6: "Six"}
+    if on_c4 < len(lost):
+        ck.expect("7.8: certified losses on connect_4", rf"{Words[on_c4]} of the {words[len(lost)]} certified losses to disjoint rules are on \\texttt\{{connect\\_4\}}")
+    else:
+        ck.expect("7.8: certified losses on connect_4", rf"All {words[len(lost)]} certified losses to disjoint rules are on \\texttt\{{connect\\_4\}}")
+    # per-configuration held-out share quoted in 7.3
+    full = sum(1 for r in cert32 if float(r["purity_ok_partial"]) == 1.0)
+    rest = [r for r in cert32 if float(r["purity_ok_partial"]) < 1.0]
+    nums = {7: "seven", 8: "eight", 9: "nine", 10: "ten"}
+    if len(rest) == 1:
+        ck.expect("7.3: held-out share per configuration", rf"in every split on {nums.get(full, str(full))} of the {nums.get(len(cert32), str(len(cert32)))} and in {pct(float(rest[0]['purity_ok_partial']))}\\,\\% of the splits on \\texttt\{{{rest[0]['dataset'].replace('_', chr(92) * 2 + '_')}\}}")
     for ds, tau, b in others:
         ck.expect(f"certified loss on {ds}", rf"\\texttt\{{{ds}\}} at \$\\tau={float(tau):.1f}\$, \$B={b}\$")
 
@@ -210,7 +221,12 @@ def run(tex_path: Path) -> int:
     po, ro = comp[("purity", "partial centres")], comp[("purity", r"rules$_{\mathrm{disj}}$")]
     pc, rc = comp[("certified", "partial centres")], comp[("certified", r"rules$_{\mathrm{disj}}$")]
     ov = comp[("purity", "rules")]
-    ck.expect("abstract: compactness", rf"fewer than half the columns of the free rules \({po['columns']:.1f} against {ro['columns']:.1f} at budget 32\)")
+    ck.expect("abstract: compactness", rf"fewer columns than the free rules \({pc['columns']:.1f} against {rc['columns']:.1f} under the certificate, {po['columns']:.1f} against {ro['columns']:.1f} under the observed-purity rule, at budget 32\)")
+    ck.expect("contributions: compactness", rf"{pc['columns']:.1f} against {rc['columns']:.1f} under the certificate and fewer than half, {po['columns']:.1f} against {ro['columns']:.1f}, under the observed-purity rule")
+    ck.expect("conclusion: compactness", rf"\(\${pc['columns']:.1f}\$ against \${rc['columns']:.1f}\$ under the certificate, \${po['columns']:.1f}\$ against \${ro['columns']:.1f}\$ under the observed-purity rule\)")
+    if ro["columns"] > 0 and rc["columns"] > 0:
+        # "fewer than half" is claimed for the observed-purity rule only
+        assert po["columns"] / ro["columns"] < 0.5 <= pc["columns"] / rc["columns"], "the 'fewer than half' wording no longer matches the compactness table"
     share_cov = pct(po["coverage"] / ro["coverage"])
     share_cond = pct(po["conditions"] / ro["conditions"])
     ck.expect("7.2 observed", rf"reach {share_cov}\\,\\% of the coverage of free disjoint rules \(\${po['coverage']:.2f}\$ against \${ro['coverage']:.2f}\$\) with {share_cond}\\,\\% of the conditions \(\${po['conditions']:.1f}\$ against \${ro['conditions']:.1f}\$\) and fewer than half the columns \(\${po['columns']:.1f}\$ against \${ro['columns']:.1f}\$\)")

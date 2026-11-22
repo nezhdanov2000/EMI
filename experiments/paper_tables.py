@@ -17,13 +17,36 @@ def esc(s: str) -> str:
     return s.replace("_", r"\_").replace(">", r"\textgreater{}").replace("<", r"\textless{}")
 
 
+def with_labels(d: pd.DataFrame) -> pd.DataFrame:
+    """
+    Add a `label` column that identifies a configuration unambiguously in a
+    table row: the dataset name, followed by the target value in brackets
+    when the dataset is run for more than one target, and by the size floor
+    when the same (dataset, target, tau) is run at more than one `m`.
+    """
+    d = d.copy()
+    n_pos = d.groupby("dataset")["positive"].transform("nunique")
+    n_m = d.groupby(["dataset", "positive", "tau"])["m"].transform("nunique")
+    m_default = d.groupby(["dataset", "positive", "tau"])["m"].transform("min")
+    labels: list[str] = []
+    for ds, pos, m, k_pos, k_m, m0 in zip(d["dataset"], d["positive"], d["m"], n_pos, n_m, m_default):
+        notes: list[str] = []
+        if k_pos > 1:
+            notes.append(esc(str(pos)))
+        if k_m > 1 and m != m0:
+            notes.append(f"$m{{=}}{int(m)}$")
+        labels.append(esc(str(ds)) + (f" ({', '.join(notes)})" if notes else ""))
+    d["label"] = labels
+    return d
+
+
 def coverage_table(d: pd.DataFrame, selection: str, budget: int) -> str:
     s = d[(d.selection == selection) & (d.budget == budget)].copy()
     lines = [r"\begin{tabular}{llrrrrrcc}", r"\toprule",
              r"dataset & $\tau$ & grid & partial & rules$_{\mathrm{disj}}$ & rules & tree & p$\,$vs$\,$g & p$\,$vs$\,$r\\",
              r"\midrule"]
     for _, r in s.iterrows():
-        lines.append(f"{esc(r.dataset)} & {r.tau:.1f} & {100*r.cov_vsf:.0f} & {100*r.cov_partial:.0f} & "
+        lines.append(f"{r.label} & {r.tau:.1f} & {100*r.cov_vsf:.0f} & {100*r.cov_partial:.0f} & "
                      f"{100*r.cov_rules_disjoint:.0f} & {100*r.cov_rules:.0f} & {100*r.cov_tree:.0f} & "
                      f"{r.partial_vs_vsf} & {r.partial_vs_rules_disjoint}\\\\")
     lines += [r"\bottomrule", r"\end{tabular}"]
@@ -84,7 +107,7 @@ def net_table(d: pd.DataFrame, budget: int) -> str:
                 n = getattr(r, net, float("nan"))
                 cells.append("--" if pd.isna(c) else f"{100*c:.0f}")
                 cells.append("--" if pd.isna(n) else f"{100*n:.0f}")
-            lines.append(f"{sel} & {esc(r.dataset)} & {r.tau:.1f} & " + " & ".join(cells) + r"\\")
+            lines.append(f"{sel} & {r.label} & {r.tau:.1f} & " + " & ".join(cells) + r"\\")
         means = []
         for cov, net, _ in cols:
             means.append(f"{100*s[cov].mean():.0f}" if cov in s else "--")
@@ -105,8 +128,8 @@ def split_table(d: pd.DataFrame, budget: int) -> str:
     centres. "--" where a configuration was not run under that rule.
     """
     cols = (("cov_vsf", "grid"), ("cov_partial", "partial"), ("cov_rules_disjoint", r"rules$_{\mathrm{disj}}$"), ("cov_tree", "tree"))
-    fam = d[(d.selection == "certified") & (d.budget == budget)].set_index(["dataset", "tau"])
-    spl = d[(d.selection == "split") & (d.budget == budget)].set_index(["dataset", "tau"])
+    fam = d[(d.selection == "certified") & (d.budget == budget)].set_index(["label", "tau"])
+    spl = d[(d.selection == "split") & (d.budget == budget)].set_index(["label", "tau"])
     keys = sorted(set(fam.index) | set(spl.index))
     head = " & ".join(name for _, name in cols)
     lines = [r"\begin{tabular}{ll" + "r" * (2 * len(cols) + 2) + "}", r"\toprule",
@@ -123,7 +146,7 @@ def split_table(d: pd.DataFrame, budget: int) -> str:
         return " & ".join(out)
 
     for key in keys:
-        lines.append(f"{esc(key[0])} & {float(key[1]):.1f} & {cells(fam, key)} & {cells(spl, key)}\\\\")
+        lines.append(f"{key[0]} & {float(key[1]):.1f} & {cells(fam, key)} & {cells(spl, key)}\\\\")
     lines += [r"\bottomrule", r"\end{tabular}"]
     return "\n".join(lines)
 
@@ -143,7 +166,7 @@ def tree_opt_table(d: pd.DataFrame, budget: int) -> str:
     for sel in ("purity", "certified"):
         s = d[(d.selection == sel) & (d.budget == budget) & d["cov_tree_opt"].notna()]
         for _, r in s.iterrows():
-            lines.append(f"{sel} & {esc(r.dataset)} & {r.tau:.1f} & {100*r.cov_partial:.0f} & {100*r.cov_tree_opt:.0f} & {100*r.cov_tree:.0f} & "
+            lines.append(f"{sel} & {r.label} & {r.tau:.1f} & {100*r.cov_partial:.0f} & {100*r.cov_tree_opt:.0f} & {100*r.cov_tree:.0f} & "
                          f"{100*r.net_partial:.0f} & {100*r.net_tree_opt:.0f} & {100*r.net_tree:.0f} & {r.partial_vs_tree_opt} & "
                          f"{100*float(r.tree_opt_timeouts):.0f}\\%\\\\")
         lines.append(rf"{sel} & \emph{{mean}} & & {100*s.cov_partial.mean():.0f} & {100*s.cov_tree_opt.mean():.0f} & {100*s.cov_tree.mean():.0f} & "
@@ -155,23 +178,31 @@ def tree_opt_table(d: pd.DataFrame, budget: int) -> str:
 
 
 def data_table() -> str:
+    """
+    One row per (dataset, target value): rows, columns, the target value, its
+    base rate, the smallest ratio of a purity floor to that base rate, and
+    every (tau / m / repeats) setting run for it. A dataset run for two
+    target values (nursery, connect_4) gets two rows, each with its own base
+    rate.
+    """
     m = pd.read_csv(ROOT / "benchmark_data" / "MANIFEST.csv")
     cfg = pd.DataFrame([c.__dict__ for c in CONFIGS])
-    lines = [r"\begin{tabular}{lrrlrl}", r"\toprule", r"dataset & $N$ & $M$ & positive value & base rate & $\tau$ / $m$ / repeats\\", r"\midrule"]
-    for ds, g in cfg.groupby("dataset", sort=False):
+    lines = [r"\begin{tabular}{lrrlrrl}", r"\toprule",
+             r"dataset & $N$ & $M$ & positive value & base rate & $\tau/\text{base}$ & $\tau$ / $m$ / repeats\\", r"\midrule"]
+    for (ds, pos), g in cfg.groupby(["dataset", "positive"], sort=False):
         row = m[m.file == f"{ds}.csv"].iloc[0]
-        frame = pd.read_csv(row.path if "path" in row else ROOT / "benchmark_data" / row.file, dtype=str)
-        pos = g.positive.iloc[0]
-        base = (frame[row.target] == pos).mean()
+        frame = pd.read_csv(ROOT / "benchmark_data" / row.file, dtype=str)
+        base = float((frame[row.target] == pos).mean())
+        ratio = float(g.tau.min()) / base
         settings = "; ".join(sorted({f"{r.tau}/{r.min_samples}/{r.n_repeats}" for r in g.itertuples()}))
-        lines.append(f"{esc(ds)} & {row.rows} & {row.columns - 1} & {esc(str(pos))} & {100*base:.0f}\\,\\% & {settings}\\\\")
+        lines.append(f"{esc(ds)} & {row.rows} & {row.columns - 1} & {esc(str(pos))} & {100*base:.0f}\\,\\% & {ratio:.1f} & {settings}\\\\")
     lines += [r"\bottomrule", r"\end{tabular}"]
     return "\n".join(lines)
 
 
 def main() -> int:
     OUT.mkdir(parents=True, exist_ok=True)
-    d = pd.read_csv(ROOT / "experiments" / "results" / "pairwise_partial.csv")
+    d = with_labels(pd.read_csv(ROOT / "experiments" / "results" / "pairwise_partial.csv"))
     (OUT / "coverage_certified_B32.tex").write_text(coverage_table(d, "certified", 32) + "\n")
     (OUT / "coverage_purity_B32.tex").write_text(coverage_table(d, "purity", 32) + "\n")
     (OUT / "coverage_purity_B8.tex").write_text(coverage_table(d, "purity", 8) + "\n")
