@@ -795,10 +795,12 @@ def min_successes_to_certify_heterogeneous(
 
     Why (i) is needed and not decorative: without it the binomial test can
     be anti-conservative for heterogeneous rows. With n = 3, tau = 0.01 the
-    binomial threshold at level 0.05 is k = 1 (tail 0.0297), while rows with
-    p = (0.03, 0, 0) have mean 0.01 and P(S >= 1) = 0.03 > 0.0297: by AM-GM
-    the probability of at least one success is SMALLEST when the p_i are
-    equal.
+    binomial tail at k = 1 is P(Bin(3, 0.01) >= 1) = 0.029701, so at any
+    level in [0.029701, 0.03) the threshold without (i) would be k = 1 (at
+    level 0.0298, say); rows with p = (0.03, 0, 0) have mean 0.01 and
+    P(S >= 1) = 0.03 > 0.0298, which exceeds the level. (At level 0.05
+    nothing is violated: 0.03 < 0.05.) By AM-GM the probability of at
+    least one success is SMALLEST when the p_i are equal.
 
     Simultaneity over tau. If the cell is certified at some tau' >= pbar,
     then k >= ceil(n tau') + 1 >= ceil(n pbar) + 1 and

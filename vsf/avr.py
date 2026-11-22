@@ -550,9 +550,6 @@ class _CandidateFactory:
             for _ in self.iter_candidates(max_d):
                 pass
             return 0
-        rng = np.random.default_rng(_FINGERPRINT_SEED)
-        w1 = rng.integers(0, np.iinfo(np.uint64).max, size=n, dtype=np.uint64, endpoint=True)
-        w2 = rng.integers(0, np.iinfo(np.uint64).max, size=n, dtype=np.uint64, endpoint=True)
         return int(self.family_cell_sizes(max_d).shape[0])
 
     def family_cell_sizes(self, max_d: int) -> np.ndarray:

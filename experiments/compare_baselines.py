@@ -47,11 +47,12 @@ import base64
 import csv
 import hashlib
 import json
+import os
 import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -107,9 +108,9 @@ CONFIGS: List[Config] = [
     Config("mushroom", "poisonous", 0.9, n_repeats=2),
     Config("mushroom", "poisonous", 0.9, n_repeats=2, selection="certified"),
     Config("mushroom", "poisonous", 0.9, n_repeats=2, selection="split"),
-    Config("chess_krkp", "won", 0.9, n_repeats=1),
-    Config("chess_krkp", "won", 0.9, n_repeats=1, selection="certified"),
-    Config("chess_krkp", "won", 0.9, n_repeats=1, selection="split"),
+    Config("chess_krkp", "won", 0.9, n_repeats=3),
+    Config("chess_krkp", "won", 0.9, n_repeats=3, selection="certified"),
+    Config("chess_krkp", "won", 0.9, n_repeats=3, selection="split"),
     # 2026-09-24: seven real tables built by experiments/build_external_benchmarks.py
     # (N 1 470 - 48 842, M 11 - 24, base rates 8 - 28 %). m = 20 throughout:
     # m = 1 lets free rules overfit tiny training-pure cells (PMD 4.16).
@@ -143,9 +144,9 @@ CONFIGS: List[Config] = [
     Config("connect_4", "win", 0.9, min_samples=20, n_repeats=1),
     Config("connect_4", "win", 0.9, min_samples=20, n_repeats=1, selection="certified"),
     Config("connect_4", "win", 0.9, min_samples=20, n_repeats=1, selection="split"),
-    Config("splice", "site_b", 0.9, min_samples=20, n_repeats=1, max_d=3),
-    Config("splice", "site_b", 0.9, min_samples=20, n_repeats=1, max_d=3, selection="certified"),
-    Config("splice", "site_b", 0.9, min_samples=20, n_repeats=1, max_d=3, selection="split"),
+    Config("splice", "site_b", 0.9, min_samples=20, n_repeats=3, max_d=3),
+    Config("splice", "site_b", 0.9, min_samples=20, n_repeats=3, max_d=3, selection="certified"),
+    Config("splice", "site_b", 0.9, min_samples=20, n_repeats=3, max_d=3, selection="split"),
 ]
 # 2026-09-28: every certified configuration is also listed with selection="split"
 # (Webb's exploratory/holdout split): the comparison of the two certificates
@@ -216,13 +217,32 @@ def _save(path: Path, result: SplitResult, seconds: float) -> None:
         },
     }
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
+    tmp = path.with_suffix(f".{os.getpid()}.tmp")
     tmp.write_text(json.dumps(payload), encoding="utf-8")
-    tmp.replace(path)
+    # Windows refuses the rename while another process has the target open
+    # (a concurrent worker reading it); retry briefly, then fail loudly - a
+    # split that was computed and not saved must never pass silently.
+    last: Optional[Exception] = None
+    for _attempt in range(10):
+        try:
+            tmp.replace(path)
+            break
+        except OSError as exc:
+            last = exc
+            time.sleep(0.5)
+    else:
+        raise RuntimeError(f"could not write {path} after 10 attempts") from last
 
 
 def _load_one(path: Path) -> Tuple[SplitResult, float]:
-    payload = json.loads(path.read_text(encoding="utf-8"))
+    for attempt in range(10):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            break
+        except Exception:
+            time.sleep(0.5)
+    else:
+        payload = json.loads(path.read_text(encoding="utf-8"))
     if payload.get("version") != CACHE_VERSION:
         raise ValueError(f"{path}: cache version {payload.get('version')} != {CACHE_VERSION}")
     n_rows = int(payload["n_rows"])
@@ -257,8 +277,15 @@ def _save_extra(path: Path, extra: SplitResult, seconds: float) -> None:
     extra_path = CACHE_EXTRA / path.name
     merged: SplitResult = {}
     total = 0.0
-    if extra_path.exists():
-        merged, total = _load_one(extra_path)
+    for attempt in range(10):
+        if extra_path.exists():
+            try:
+                merged, total = _load_one(extra_path)
+                break
+            except Exception:
+                time.sleep(0.5)
+        else:
+            break
     merged.update(extra)
     _save(extra_path, merged, total + seconds)
 
@@ -325,6 +352,12 @@ def main() -> int:
     ap.add_argument("--methods", default=None,
                     help="comma-separated methods to have in every split (default: every method whose "
                          "package imports here; extra methods are topped up)")
+    ap.add_argument("--reverse", action="store_true",
+                    help="compute splits in reverse order to facilitate parallel workers")
+    ap.add_argument("--splits", default=None,
+                    help="comma-separated list of split indices to compute (e.g. 5,6,7)")
+    ap.add_argument("--positive", default=None,
+                    help="filter dataset configurations by positive target class")
     args = ap.parse_args()
     if args.methods is None:
         absent = unavailable_methods(ALL_METHODS)
@@ -347,6 +380,8 @@ def main() -> int:
                 for sel in ("purity", "certified", "split")]
     else:
         configs = [c for c in CONFIGS if c.dataset == args.only]
+        if args.positive is not None:
+            configs = [c for c in configs if c.positive == args.positive]
         if not configs:
             raise SystemExit(f"no configuration for {args.only!r}")
         frame, entry = load_dataset(args.only)
@@ -364,7 +399,13 @@ def main() -> int:
         # --selection restricts what is COMPUTED; every complete configuration of
         # the dataset is still summarised, so compare_<name>.csv keeps all rows.
         may_compute = args.selection is None or cfg.selection == args.selection
-        for i in range(N_SPLITS * cfg.n_repeats):
+        if args.splits is not None:
+            splits_to_run = [int(s.strip()) for s in args.splits.split(",") if s.strip()]
+        elif args.reverse:
+            splits_to_run = list(reversed(range(N_SPLITS * cfg.n_repeats)))
+        else:
+            splits_to_run = list(range(N_SPLITS * cfg.n_repeats))
+        for i in splits_to_run:
             path = _cache_path(tag, cfg, X, Z, args.seed, i)
             if path.exists():
                 result, sec = _load(path)
@@ -397,8 +438,15 @@ def main() -> int:
             else:
                 missing += 1
                 continue
-            per_split.append(result)
-            seconds += sec
+        per_split = []
+        seconds = 0.0
+        for i in range(N_SPLITS * cfg.n_repeats):
+            path = _cache_path(tag, cfg, X, Z, args.seed, i)
+            if path.exists():
+                res, sec = _load(path)
+                if all(m in res for m in wanted):
+                    per_split.append(res)
+                    seconds += sec
         label = (f"{tag} {cfg.positive} tau={cfg.tau} m={cfg.min_samples} R={cfg.n_repeats}"
                  f" d<={cfg.max_d} {cfg.selection}")
         if len(per_split) < N_SPLITS * cfg.n_repeats:

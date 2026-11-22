@@ -125,10 +125,17 @@ def test_rules_describe_what_one_grid_cannot() -> None:
     assert rules - vsf > 0.3
 
 
+def _installed_methods() -> tuple:
+    """bl.METHODS without the ones whose optional package is missing here."""
+    missing = bl.unavailable_methods(bl.METHODS)
+    return tuple(m for m in bl.METHODS if m not in missing)
+
+
 def test_run_comparison_respects_budgets_and_pairs_folds() -> None:
     X, z = _two_region_data(4, n=500)
-    res = bl.run_comparison(X, z, 1, tau=0.8, m=3, n_repeats=1, budgets=(1, 2, 4))
-    for mth in bl.METHODS:
+    methods = _installed_methods()
+    res = bl.run_comparison(X, z, 1, tau=0.8, m=3, n_repeats=1, budgets=(1, 2, 4), methods=methods)
+    for mth in methods:
         for b in (1, 2, 4):
             entry = res["summary"][mth][b]
             assert entry["cost_mean"] <= b
@@ -205,7 +212,8 @@ def test_description_stability() -> None:
 
 def test_split_outcome_matches_evaluate_groups_and_summary_fields() -> None:
     X, z = _two_region_data(5, n=500)
-    out = bl.run_split(X, z, 1, 0.8, 3, split_index=0, n_repeats=1, budgets=(2, 4))
+    methods = _installed_methods()
+    out = bl.run_split(X, z, 1, 0.8, 3, split_index=0, n_repeats=1, budgets=(2, 4), methods=methods)
     for mth, per in out.items():
         for b, o in per.items():
             assert o.inside.shape == (500,)
@@ -214,8 +222,8 @@ def test_split_outcome_matches_evaluate_groups_and_summary_fields() -> None:
                 assert o.net_coverage(0.8) == pytest.approx(
                     (o.k_in - 4.0 * (o.n_in - o.k_in)) / o.n_pos)
             assert o.seconds >= 0.0
-    res = bl.run_comparison(X, z, 1, tau=0.8, m=3, n_repeats=1, budgets=(4,))
-    for mth in bl.METHODS:
+    res = bl.run_comparison(X, z, 1, tau=0.8, m=3, n_repeats=1, budgets=(4,), methods=methods)
+    for mth in methods:
         e = res["summary"][mth][4]
         assert e["net_coverage"].mean <= e["coverage"].mean + 1e-12
         assert 0.0 <= e["stability"] <= 1.0

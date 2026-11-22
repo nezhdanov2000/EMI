@@ -136,7 +136,24 @@ def run(tex_path: Path) -> int:
     hp_rd_c = counts(cert, "partial_vs_rules_disjoint_holm")
     hp_g_o = counts(obs, "partial_vs_vsf_holm")
     hp_g_c = counts(cert, "partial_vs_vsf_holm")
-    ck.expect("Holm sentence", rf"still lose {hp_rd_o['-']} observed-purity cells and {hp_rd_c['-']} certified ones to disjoint rules.*\({hp_g_o['+']} and {hp_g_c['+']} wins survive\)")
+    ck.expect("Holm sentence", rf"lose {hp_rd_o['-']} of {n_obs} observed-purity cells and {hp_rd_c['-']} of {n_cert} certified ones to disjoint rules.*\({hp_g_o['+']} and {hp_g_c['+']} wins survive\)")
+
+    # --- where the certified losses to disjoint rules are (7.1, contributions)
+    lost = [r for r in cert if r["partial_vs_rules_disjoint"] == "-"]
+    on_c4 = sum(1 for r in lost if r["dataset"] == "connect_4")
+    others = sorted({(r["dataset"], r["tau"], r["budget"]) for r in lost if r["dataset"] != "connect_4"})
+    words = {1: "one", 2: "two", 3: "three", 4: "four", 5: "five", 6: "six"}
+    ck.expect("certified losses on connect_4", rf"lose {len(lost)} \({words[on_c4]} on \\texttt\{{connect\\_4\}}")
+    for ds, tau, b in others:
+        ck.expect(f"certified loss on {ds}", rf"\\texttt\{{{ds}\}} at \$\\tau={float(tau):.1f}\$, \$B={b}\$")
+
+    # --- one cell per configuration at B = 32 (7.1)
+    c32_rd, c32_g = counts(cert32, "partial_vs_rules_disjoint"), counts(cert32, "partial_vs_vsf")
+    o32_rd, o32_g = counts(obs32, "partial_vs_rules_disjoint"), counts(obs32, "partial_vs_vsf")
+    ck.expect("B=32 certified summary", rf"tie disjoint rules on {c32_rd['=']} of the {len(cert32)} configurations and lose {c32_rd['-']}, and beat the full grid on {c32_g['+']}")
+    ck.expect("B=32 observed summary", rf"win {o32_rd['+']} of {len(obs32)}, tie {o32_rd['=']} and lose {o32_rd['-']}, and beat the full grid on {o32_g['+']}")
+    ck.expect("contributions: observed-rule losses", rf"lose {p_rd['-']} of {n_obs} cells \({o32_rd['-']} of {len(obs32)} configurations at \$B=32\$\)")
+    ck.expect("abstract: certified ties", rf"tie free disjoint rules in {cp_rd['=']} of {n_cert} \(configuration, budget\) cells")
 
     # --- gap closed
     gap_o = statistics.median(floats(obs, "gap_closed"))
@@ -262,6 +279,58 @@ def run(tex_path: Path) -> int:
         ok_split = mean(floats(spl, "purity_ok_partial"))
         ck.expect("conclusion: split purity shares", rf"\({pct(ok_any_c)} against {pct(ok_split)}\\,\\%\)")
         ck.expect("split: held-out purity share", rf"reaches \$\\tau\$ in \${pct(ok_split)}\\,\\%\$ of the splits for partial centres, against \${pct(ok_any_c)}\\,\\%\$ under the family bound")
+
+    # --- exact packing (Section 7.10, 3.3)
+    pk_path = RESULTS / "packing_exact.csv"
+    if pk_path.exists():
+        pk = read_csv(pk_path)
+        pko = [r for r in pk if r["selection"] == "purity"]
+        pkc = [r for r in pk if r["selection"] == "certified"]
+        gp = lambda rows: 100 * mean(float(r["partial_exact"]) - float(r["partial_greedy"]) for r in rows)
+        gr = lambda rows: 100 * mean(float(r["rules_disj_exact"]) - float(r["rules_disj_greedy"]) for r in rows)
+        gap = lambda rows, which: 100 * mean(float(r[f"rules_disj_{which}"]) - float(r[f"partial_{which}"]) for r in rows)
+        pk32 = [r for r in pko if r["budget"] == "32"]
+        unsolved = sum(1 for r in pk if r["partial_exact_status"] != "optimal" or r["rules_disj_exact_status"] != "optimal")
+        ck.expect("packing: cells", rf"{len(pk)} cells; every program reached proven optimality" if unsolved == 0 else rf"{len(pk)} cells")
+        ck.expect("packing: certified gaps", rf"within \${gp(pkc):.2f}\$ points of the exact optimum on average for partial centres \(largest gap \${max(100 * (float(r['partial_exact']) - float(r['partial_greedy'])) for r in pkc):.1f}\$")
+        ck.expect("packing: observed gaps", rf"the mean gap is \${gp(pko):.1f}\$ points for partial centres and \${gr(pko):.1f}\$ for disjoint rules")
+        ck.expect("packing: exact vs greedy gap", rf"\(\${gap(pko, 'exact'):.1f}\$ against \${gap(pko, 'greedy'):.1f}\$ points on average over these cells, \${gap(pk32, 'exact'):.1f}\$ against \${gap(pk32, 'greedy'):.1f}\$ at \$B=32\$\)")
+        ck.expect("3.3: packing sentence", rf"within \${gp(pkc):.2f}\$ coverage points of the optimum on average under the certificate and \${gp(pko):.1f}\$ points under the observed-purity rule, less than the \${gr(pko):.1f}\$ points")
+
+    # --- pure-noise false certificates (Section 4)
+    def thin(n: int) -> str:
+        """The number as the text typesets it: a thin space every three digits (regex-escaped)."""
+        return f"{n:,}".replace(",", r"\\,")
+
+    nc = read_csv(RESULTS / "null_certificate.csv")
+    any_rows = {r["method"]: r for r in nc if r["d"] == "any"}
+    if "per_schema" in any_rows and "family_bonferroni" in any_rows:
+        ps, fb = any_rows["per_schema"], any_rows["family_bonferroni"]
+        ck.expect("noise: per-schema rate",
+                  rf"false-certificate rate of {round(100 * float(ps['rate']))}\\,\\% on pure noise at \$d\\le4\$ \({thin(int(ps['runs']))} runs; 95\\,\\% interval \${round(100 * float(ps['ci95_low']))}\$--\${round(100 * float(ps['ci95_high']))}\\,\\%\$\)")
+        if int(fb["false_certificates"]) == 0:
+            ck.expect("noise: family rate", rf"makes none in \${thin(int(fb['runs']))}\$ runs")
+
+    # --- power curve over N (Section 4)
+    pc_path = RESULTS / "certificate_power_curve.csv"
+    if pc_path.exists():
+        pc = {int(r["n"]): r for r in read_csv(pc_path) if r["method"] == "family_bonferroni"}
+        if {500, 1000, 2000, 5000, 20000} <= set(pc):
+            def fmt(x: float) -> str:
+                v = 100 * x
+                return f"{v:.1f}" if 99 <= v < 100 else f"{int(v + 0.5 + 1e-9)}"  # 99.5 stays, 56.5 rounds up
+            ck.expect("power curve", rf"{fmt(float(pc[500]['power']))}\\,\\% at \$N=500\$, {fmt(float(pc[1000]['power']))}\\,\\% at \$N=1\\,000\$, {fmt(float(pc[2000]['power']))}\\,\\% at \$N=2\\,000\$")
+            false_total = sum(round(float(r["fwer"]) * int(r["runs"])) for r in pc.values())
+            total = sum(int(r["runs"]) for r in pc.values())
+            words = {0: "no", 1: "one", 2: "two", 3: "three"}
+            ck.expect("power curve: false certificates", rf"with {words.get(false_total, str(false_total))} false certificates? in the \${thin(total)}\$ runs")
+
+    # --- permutation null (Related work, Section 4)
+    pn_path = RESULTS / "permutation_null.csv"
+    if pn_path.exists():
+        pn = read_csv(pn_path)
+        if all(float(r["wy_flagged_share"]) == 1.0 and float(r["certified_share"]) == 0.0 and float(r["wy_adjusted_p_median"]) < 0.01 for r in pn):
+            ck.expect("permutation null", r"adjusted \$p<0.01\$ in every run, certificate empty in every run")
 
     return ck.report()
 

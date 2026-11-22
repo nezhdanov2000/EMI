@@ -588,9 +588,8 @@ def _rule_candidates(
         raise ValueError("top_k must be positive")
     # (wracc, -cost, combo, cell): a heap of the best top_k cells when top_k is set
     heap: List[Tuple[float, int, Tuple[int, ...], int]] = []
-    kept: List[Tuple[Tuple[int, ...], np.ndarray, np.ndarray, np.ndarray]] = []  # combo, codes, order, bounds
-    combo_index: Dict[Tuple[int, ...], int] = {}
-    picks: List[Tuple[Tuple[int, ...], int]] = []
+    candidates: List[_Candidate] = []
+    seen: Dict[bytes, int] = {}
     for d in range(1, max_len + 1):
         for combo in itertools.combinations(range(n_features), d):
             codes, n_cells = cell_codes(X_train[:, combo])
@@ -605,11 +604,19 @@ def _rule_candidates(
             if q.size == 0:
                 continue
             if top_k is None:
-                combo_index[combo] = len(kept)
                 order = np.argsort(codes, kind="stable")
                 bounds = np.searchsorted(codes[order], np.arange(n_cells + 1))
-                kept.append((combo, codes, order, bounds))
-                picks.extend((combo, int(c)) for c in q.tolist())
+                for c in q.tolist():
+                    rows = order[bounds[c]:bounds[c + 1]]
+                    key = rows.tobytes()
+                    if key in seen:
+                        continue
+                    seen[key] = len(candidates)
+                    values = tuple(int(v) for v in X_train[rows[0], list(combo)])
+                    candidates.append(_Candidate(
+                        positives=rows[z64[rows] == 1], cost=len(combo), key=(combo, values),
+                        negatives=rows[z64[rows] == 0],
+                    ))
                 continue
             wr = (k[q] - n[q] * base_rate) / n_train
             for c, w in zip(q.tolist(), wr.tolist()):
@@ -622,29 +629,25 @@ def _rule_candidates(
         by_combo: Dict[Tuple[int, ...], List[int]] = {}
         for _, _, combo, c in heap:
             by_combo.setdefault(combo, []).append(c)
+        picks: List[Tuple[Tuple[int, ...], int]] = []
         for combo, cells in by_combo.items():
+            picks.extend((combo, c) for c in cells)
+        picks.sort(key=lambda t: (len(t[0]), t[0], t[1]))
+        for combo, c in picks:
             codes, n_cells = cell_codes(X_train[:, combo])
             codes = np.asarray(codes, dtype=np.int64)
             order = np.argsort(codes, kind="stable")
             bounds = np.searchsorted(codes[order], np.arange(n_cells + 1))
-            combo_index[combo] = len(kept)
-            kept.append((combo, codes, order, bounds))
-            picks.extend((combo, c) for c in cells)
-        picks.sort(key=lambda t: (len(t[0]), t[0], t[1]))
-    candidates: List[_Candidate] = []
-    seen: Dict[bytes, int] = {}
-    for combo, c in picks:
-        _, _, order, bounds = kept[combo_index[combo]]
-        rows = order[bounds[c]:bounds[c + 1]]
-        key = rows.tobytes()
-        if key in seen:  # same training rows, described by fewer or equal conditions
-            continue
-        seen[key] = len(candidates)
-        values = tuple(int(v) for v in X_train[rows[0], list(combo)])
-        candidates.append(_Candidate(
-            positives=rows[z64[rows] == 1], cost=len(combo), key=(combo, values),
-            negatives=rows[z64[rows] == 0],
-        ))
+            rows = order[bounds[c]:bounds[c + 1]]
+            key = rows.tobytes()
+            if key in seen:
+                continue
+            seen[key] = len(candidates)
+            values = tuple(int(v) for v in X_train[rows[0], list(combo)])
+            candidates.append(_Candidate(
+                positives=rows[z64[rows] == 1], cost=len(combo), key=(combo, values),
+                negatives=rows[z64[rows] == 0],
+            ))
     return candidates
 
 
@@ -1190,7 +1193,16 @@ def summarize_splits(
     if len(per_split) != n_splits * n_repeats:
         raise ValueError(f"expected {n_splits * n_repeats} splits, got {len(per_split)}")
     summary: Dict[str, Dict[int, Dict[str, object]]] = {}
-    for mth, per_budget in per_split[0].items():
+    # Only methods present in EVERY split are summarised (an extra method
+    # topped up on some splits only is not paired); say so rather than drop
+    # them silently.
+    methods = [mth for mth in per_split[0] if all(mth in r for r in per_split)]
+    dropped = sorted({m for r in per_split for m in r} - set(methods))
+    if dropped:
+        import sys as _sys
+        print(f"note: not summarised, missing on some splits: {', '.join(dropped)}", file=_sys.stderr)
+    for mth in methods:
+        per_budget = per_split[0][mth]
         summary[mth] = {}
         for b in per_budget:
             outs = [r[mth][b] for r in per_split]
