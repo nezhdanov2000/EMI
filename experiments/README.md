@@ -3,7 +3,10 @@
 Every number quoted in `Project_Master_Document.md` or in a paper must be
 produced by a script in this folder, with a fixed seed, from data loaded
 through `datasets.load_dataset` (which checks the manifest hash). Results go
-to `experiments/results/` (ignored by git; regenerate them).
+to `experiments/results/`, which is committed, including the per-split caches
+`results/cache/` and `results/cache_extra/`, so that every table of the paper
+can be rebuilt without rerunning the search; a rerun from an empty cache
+reproduces the committed files (checked on titanic, 125 splits).
 
 Run from the repository root with the versions in `requirements-lock.txt`.
 
