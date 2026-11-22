@@ -87,3 +87,6 @@ paper/_preview/
 # one-off local helpers and transfer archives
 /scratch/
 experiments/results/*.tar.gz
+
+# local experiment venv
+.venv-exp/
