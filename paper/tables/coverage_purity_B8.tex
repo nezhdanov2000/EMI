@@ -4,13 +4,13 @@ dataset & $\tau$ & grid & partial & rules$_{\mathrm{disj}}$ & rules & tree & p$\
 \midrule
 titanic & 0.9 & 47 & 52 & 53 & 53 & 51 & + & =\\
 titanic & 0.7 & 68 & 74 & 74 & 82 & 68 & + & =\\
-titanic & 0.9 & 47 & 46 & 47 & 51 & 47 & = & =\\
+titanic ($m{=}20$) & 0.9 & 47 & 46 & 47 & 51 & 47 & = & =\\
 breast\_cancer & 0.7 & 22 & 27 & 30 & 33 & 28 & = & =\\
 thyroid\_recurrence & 0.9 & 83 & 87 & 87 & 87 & 82 & = & =\\
 breast\_cancer\_wisconsin & 0.9 & 72 & 74 & 65 & 88 & 90 & = & =\\
 car\_evaluation & 0.9 & 7 & 7 & 2 & 2 & 0 & = & =\\
-nursery & 0.9 & 21 & 37 & 37 & 40 & 23 & + & =\\
-nursery & 0.7 & 63 & 63 & 63 & 63 & 67 & = & =\\
+nursery (spec\_prior) & 0.9 & 21 & 37 & 37 & 40 & 23 & + & =\\
+nursery (priority) & 0.7 & 63 & 63 & 63 & 63 & 67 & = & =\\
 mushroom & 0.9 & 97 & 99 & 100 & 100 & 99 & + & =\\
 chess\_krkp & 0.9 & 70 & 84 & 84 & 96 & 41 & + & =\\
 adult & 0.7 & 26 & 36 & 36 & 44 & 19 & + & =\\
@@ -20,8 +20,8 @@ credit & 0.7 & 16 & 22 & 22 & 32 & 17 & + & =\\
 resume & 0.3 & 3 & 4 & 6 & 5 & 3 & = & =\\
 wa\_churn & 0.7 & 30 & 33 & 34 & 39 & 30 & + & =\\
 mlc\_churn & 0.7 & 11 & 23 & 25 & 34 & 18 & + & =\\
-connect\_4 & 0.7 & 9 & 9 & 12 & 14 & 11 & = & -\\
-connect\_4 & 0.9 & 17 & 25 & 25 & 30 & 11 & + & =\\
+connect\_4 (loss) & 0.7 & 9 & 9 & 12 & 14 & 11 & = & -\\
+connect\_4 (win) & 0.9 & 17 & 25 & 25 & 30 & 11 & + & =\\
 splice & 0.9 & 4 & 4 & 4 & 5 & 0 & = & =\\
 \bottomrule
 \end{tabular}
