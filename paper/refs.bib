@@ -1,78 +1,356 @@
-@article{klosgen1996, author={Kl{\"o}sgen, Willi}, title={Explora: A multipattern and multistrategy discovery assistant}, journal={Advances in Knowledge Discovery and Data Mining}, year={1996}, pages={249--271}}
-@inproceedings{wrobel1997, author={Wrobel, Stefan}, title={An algorithm for multi-relational discovery of subgroups}, booktitle={PKDD}, year={1997}, pages={78--87}}
-@article{atzmueller2015, author={Atzmueller, Martin}, title={Subgroup discovery}, journal={WIREs Data Mining and Knowledge Discovery}, volume={5}, number={1}, pages={35--49}, year={2015}}
-@inproceedings{atzmueller2006, author={Atzmueller, Martin and Puppe, Frank}, title={{SD-Map}: A fast algorithm for exhaustive subgroup discovery}, booktitle={PKDD}, year={2006}, pages={6--17}}
-@article{lavrac2004, author={Lavra{\v{c}}, Nada and Kavsek, Branko and Flach, Peter and Todorovski, Ljup{\v{c}}o}, title={Subgroup discovery with {CN2-SD}}, journal={Journal of Machine Learning Research}, volume={5}, pages={153--188}, year={2004}}
-@inproceedings{lemmerich2018, author={Lemmerich, Florian and Becker, Martin}, title={pysubgroup: Easy-to-use subgroup discovery in {Python}}, booktitle={ECML PKDD}, year={2018}, pages={658--662}}
-@article{vanleeuwen2012, author={van Leeuwen, Matthijs and Knobbe, Arno}, title={Diverse subgroup set discovery}, journal={Data Mining and Knowledge Discovery}, volume={25}, pages={208--242}, year={2012}}
-@article{proenca2022, author={Proen{\c{c}}a, Hugo M. and Gr{\"u}nwald, Peter and B{\"a}ck, Thomas and van Leeuwen, Matthijs}, title={Robust subgroup discovery}, journal={Data Mining and Knowledge Discovery}, volume={36}, pages={1885--1970}, year={2022}}
-@article{webb2007, author={Webb, Geoffrey I.}, title={Discovering significant patterns}, journal={Machine Learning}, volume={68}, pages={1--33}, year={2007}}
-@article{terada2013, author={Terada, Aika and Okada-Hatakeyama, Mariko and Tsuda, Koji and Sese, Jun}, title={Statistical significance of combinatorial regulations}, journal={PNAS}, volume={110}, number={32}, pages={12996--13001}, year={2013}}
-@inproceedings{llinares2015, author={Llinares-L{\'o}pez, Felipe and Sugiyama, Mahito and Papaxanthos, Laetitia and Borgwardt, Karsten}, title={Fast and memory-efficient significant pattern mining via permutation testing}, booktitle={KDD}, year={2015}, pages={725--734}}
-@article{hoeffding1956, author={Hoeffding, Wassily}, title={On the distribution of the number of successes in independent trials}, journal={Annals of Mathematical Statistics}, volume={27}, number={3}, pages={713--721}, year={1956}}
-@inproceedings{zhao2017, author={Zhao, Zheguang and De Stefani, Lorenzo and Zgraggen, Emanuel and Binnig, Carsten and Upfal, Eli and Kraska, Tim}, title={Controlling false discoveries during interactive data exploration}, booktitle={SIGMOD}, year={2017}, pages={527--540}}
-@inproceedings{zgraggen2018, author={Zgraggen, Emanuel and Zhao, Zheguang and Zeleznik, Robert and Kraska, Tim}, title={Investigating the effect of the multiple comparisons problem in visual analysis}, booktitle={CHI}, year={2018}}
-@article{atzmueller2005, author={Atzmueller, Martin and Puppe, Frank}, title={Semi-automatic visual subgroup mining using {VIKAMINE}}, journal={Journal of Universal Computer Science}, volume={11}, number={11}, pages={1752--1765}, year={2005}}
-@inproceedings{cabrera2019, author={Cabrera, {\'A}ngel Alexander and Epperson, Will and Hohman, Fred and Kahng, Minsuk and Morgenstern, Jamie and Chau, Duen Horng}, title={{FairVis}: Visual analytics for discovering intersectional bias in machine learning}, booktitle={IEEE VAST}, year={2019}}
-@article{friendly1994, author={Friendly, Michael}, title={Mosaic displays for multi-way contingency tables}, journal={Journal of the American Statistical Association}, volume={89}, number={425}, pages={190--200}, year={1994}}
-@article{demirovic2022, author={Demirovi{\'c}, Emir and Lukina, Anna and Hebrard, Emmanuel and Chan, Jeffrey and Bailey, James and Leckie, Christopher and Ramamohanarao, Kotagiri and Stuckey, Peter J.}, title={{MurTree}: Optimal decision trees via dynamic programming and search}, journal={Journal of Machine Learning Research}, volume={23}, pages={1--47}, year={2022}}
-@inproceedings{chung2019, author={Chung, Yeounoh and Kraska, Tim and Polyzotis, Neoklis and Tae, Ki Hyun and Whang, Steven Euijong}, title={Slice finder: Automated data slicing for model validation}, booktitle={ICDE}, year={2019}, pages={1550--1553}}
-@article{nadeau2003, author={Nadeau, Claude and Bengio, Yoshua}, title={Inference for the generalization error}, journal={Machine Learning}, volume={52}, pages={239--281}, year={2003}}
-@article{khuller1999, author={Khuller, Samir and Moss, Anna and Naor, Joseph}, title={The budgeted maximum coverage problem}, journal={Information Processing Letters}, volume={70}, number={1}, pages={39--45}, year={1999}}
-@inproceedings{krause2005, author={Krause, Andreas and Guestrin, Carlos}, title={Near-optimal nonmyopic value of information in graphical models}, booktitle={UAI}, year={2005}}
-@article{herrera2011, author={Herrera, Francisco and Carmona, Crist{\'o}bal J. and Gonz{\'a}lez, Pedro and del Jesus, Mar{\'i}a Jos{\'e}}, title={An overview on subgroup discovery: foundations and applications}, journal={Knowledge and Information Systems}, volume={29}, number={3}, pages={495--525}, year={2011}}
-@article{hamalainen2019, author={H{\"a}m{\"a}l{\"a}inen, Wilhelmiina and Webb, Geoffrey I.}, title={A tutorial on statistically sound pattern discovery}, journal={Data Mining and Knowledge Discovery}, volume={33}, number={2}, pages={325--377}, year={2019}}
-@inproceedings{lin2020, author={Lin, Jimmy and Zhong, Chudi and Hu, Diane and Rudin, Cynthia and Seltzer, Margo}, title={Generalized and scalable optimal sparse decision trees}, booktitle={Proceedings of the 37th International Conference on Machine Learning (ICML)}, pages={6150--6160}, year={2020}}
-@inproceedings{fischer2019, author={Fischer, Jonas and Vreeken, Jilles}, title={Sets of robust rules, and how to find them}, booktitle={Machine Learning and Knowledge Discovery in Databases (ECML PKDD)}, pages={38--54}, year={2019}}
+@incollection{klosgen1996,
+  author    = {Kl{\"o}sgen, Willi},
+  title     = {Explora: A Multipattern and Multistrategy Discovery Assistant},
+  booktitle = {Advances in Knowledge Discovery and Data Mining},
+  editor    = {Fayyad, Usama M. and Piatetsky-Shapiro, Gregory and Smyth, Padhraic and Uthurusamy, Ramasamy},
+  chapter   = {10},
+  pages     = {249--271},
+  publisher = {AAAI Press / The MIT Press},
+  address   = {Menlo Park, CA},
+  year      = {1996}
+}
 
-@inproceedings{aglin2020,
-  author    = {Ga\"el Aglin and Siegfried Nijssen and Pierre Schaus},
-  title     = {Learning Optimal Decision Trees Using Caching Branch-and-Bound Search},
-  booktitle = {Proceedings of the AAAI Conference on Artificial Intelligence},
-  volume    = {34},
-  pages     = {3146--3153},
+@inproceedings{wrobel1997,
+  author    = {Wrobel, Stefan},
+  title     = {An Algorithm for Multi-relational Discovery of Subgroups},
+  booktitle = {Principles of Data Mining and Knowledge Discovery, First European Symposium, PKDD '97},
+  editor    = {Komorowski, Jan and {\.Z}ytkow, Jan},
+  series    = {Lecture Notes in Computer Science},
+  volume    = {1263},
+  pages     = {78--87},
+  publisher = {Springer},
+  address   = {Berlin, Heidelberg},
+  year      = {1997},
+  doi       = {10.1007/3-540-63223-9_108}
+}
+
+@article{atzmueller2015,
+  author    = {Atzmueller, Martin},
+  title     = {Subgroup Discovery},
+  journal   = {Wiley Interdisciplinary Reviews: Data Mining and Knowledge Discovery},
+  volume    = {5},
+  number    = {1},
+  pages     = {35--49},
+  year      = {2015},
+  doi       = {10.1002/widm.1144}
+}
+
+@inproceedings{atzmueller2006,
+  author    = {Atzmueller, Martin and Puppe, Frank},
+  title     = {{SD-Map} -- A Fast Algorithm for Exhaustive Subgroup Discovery},
+  booktitle = {Knowledge Discovery in Databases: PKDD 2006, 10th European Conference on Principles and Practice of Knowledge Discovery in Databases},
+  editor    = {F{\"u}rnkranz, Johannes and Scheffer, Tobias and Spiliopoulou, Myra},
+  series    = {Lecture Notes in Computer Science},
+  volume    = {4213},
+  pages     = {6--17},
+  publisher = {Springer},
+  address   = {Berlin, Heidelberg},
+  year      = {2006},
+  doi       = {10.1007/11871637_6}
+}
+
+@article{lavrac2004,
+  author    = {Lavra{\v{c}}, Nada and Kav{\v{s}}ek, Branko and Flach, Peter and Todorovski, Ljup{\v{c}}o},
+  title     = {Subgroup Discovery with {CN2-SD}},
+  journal   = {Journal of Machine Learning Research},
+  volume    = {5},
+  pages     = {153--188},
+  year      = {2004}
+}
+
+@inproceedings{lemmerich2018,
+  author    = {Lemmerich, Florian and Becker, Martin},
+  title     = {pysubgroup: Easy-to-Use Subgroup Discovery in {Python}},
+  booktitle = {Machine Learning and Knowledge Discovery in Databases: European Conference, ECML PKDD 2018, Proceedings, Part III},
+  editor    = {Brefeld, Ulf and Curry, Edward and Daly, Elizabeth and MacNamee, Brian and Marascu, Alice and Pinelli, Fabio and Berlingerio, Michele and Hurley, Neil},
+  series    = {Lecture Notes in Computer Science},
+  volume    = {11053},
+  pages     = {658--662},
+  publisher = {Springer},
+  address   = {Cham},
+  year      = {2018},
+  note      = {Proceedings volume published 2019},
+  doi       = {10.1007/978-3-030-10997-4_46}
+}
+
+@article{vanleeuwen2012,
+  author    = {van Leeuwen, Matthijs and Knobbe, Arno},
+  title     = {Diverse Subgroup Set Discovery},
+  journal   = {Data Mining and Knowledge Discovery},
+  volume    = {25},
+  number    = {2},
+  pages     = {208--242},
+  year      = {2012},
+  doi       = {10.1007/s10618-012-0273-y}
+}
+
+@article{proenca2022,
+  author    = {Proen{\c{c}}a, Hugo Manuel and Gr{\"u}nwald, Peter and B{\"a}ck, Thomas and van Leeuwen, Matthijs},
+  title     = {Robust Subgroup Discovery},
+  journal   = {Data Mining and Knowledge Discovery},
+  volume    = {36},
+  number    = {5},
+  pages     = {1885--1970},
+  year      = {2022},
+  doi       = {10.1007/s10618-022-00856-x}
+}
+
+@article{webb2007,
+  author    = {Webb, Geoffrey I.},
+  title     = {Discovering Significant Patterns},
+  journal   = {Machine Learning},
+  volume    = {68},
+  number    = {1},
+  pages     = {1--33},
+  year      = {2007},
+  doi       = {10.1007/s10994-007-5006-x}
+}
+
+@article{terada2013,
+  author    = {Terada, Aika and Okada-Hatakeyama, Mariko and Tsuda, Koji and Sese, Jun},
+  title     = {Statistical Significance of Combinatorial Regulations},
+  journal   = {Proceedings of the National Academy of Sciences},
+  volume    = {110},
+  number    = {32},
+  pages     = {12996--13001},
+  year      = {2013},
+  doi       = {10.1073/pnas.1302233110}
+}
+
+@inproceedings{llinares2015,
+  author    = {Llinares-L{\'o}pez, Felipe and Sugiyama, Mahito and Papaxanthos, Laetitia and Borgwardt, Karsten},
+  title     = {Fast and Memory-Efficient Significant Pattern Mining via Permutation Testing},
+  booktitle = {Proceedings of the 21th ACM SIGKDD International Conference on Knowledge Discovery and Data Mining (KDD '15)},
+  pages     = {725--734},
+  publisher = {ACM},
+  year      = {2015},
+  doi       = {10.1145/2783258.2783363}
+}
+
+@article{hoeffding1956,
+  author    = {Hoeffding, Wassily},
+  title     = {On the Distribution of the Number of Successes in Independent Trials},
+  journal   = {The Annals of Mathematical Statistics},
+  volume    = {27},
+  number    = {3},
+  pages     = {713--721},
+  year      = {1956},
+  doi       = {10.1214/aoms/1177728178}
+}
+
+@inproceedings{zhao2017,
+  author    = {Zhao, Zheguang and De Stefani, Lorenzo and Zgraggen, Emanuel and Binnig, Carsten and Upfal, Eli and Kraska, Tim},
+  title     = {Controlling False Discoveries During Interactive Data Exploration},
+  booktitle = {Proceedings of the 2017 ACM International Conference on Management of Data (SIGMOD '17)},
+  pages     = {527--540},
+  publisher = {ACM},
+  year      = {2017},
+  doi       = {10.1145/3035918.3064019}
+}
+
+@inproceedings{zgraggen2018,
+  author    = {Zgraggen, Emanuel and Zhao, Zheguang and Zeleznik, Robert and Kraska, Tim},
+  title     = {Investigating the Effect of the Multiple Comparisons Problem in Visual Analysis},
+  booktitle = {Proceedings of the 2018 CHI Conference on Human Factors in Computing Systems (CHI '18)},
+  pages     = {1--12},
+  publisher = {ACM},
+  year      = {2018},
+  doi       = {10.1145/3173574.3174053}
+}
+
+@article{atzmueller2005,
+  author    = {Atzmueller, Martin and Puppe, Frank},
+  title     = {Semi-Automatic Visual Subgroup Mining using {VIKAMINE}},
+  journal   = {Journal of Universal Computer Science},
+  volume    = {11},
+  number    = {11},
+  pages     = {1752--1765},
+  year      = {2005},
+  doi       = {10.3217/jucs-011-11-1752}
+}
+
+@inproceedings{cabrera2019,
+  author    = {Cabrera, {\'A}ngel Alexander and Epperson, Will and Hohman, Fred and Kahng, Minsuk and Morgenstern, Jamie and Chau, Duen Horng},
+  title     = {{FairVis}: Visual Analytics for Discovering Intersectional Bias in Machine Learning},
+  booktitle = {2019 IEEE Conference on Visual Analytics Science and Technology (VAST)},
+  pages     = {46--56},
+  publisher = {IEEE},
+  year      = {2019},
+  doi       = {10.1109/VAST47406.2019.8986948}
+}
+
+@article{friendly1994,
+  author    = {Friendly, Michael},
+  title     = {Mosaic Displays for Multi-Way Contingency Tables},
+  journal   = {Journal of the American Statistical Association},
+  volume    = {89},
+  number    = {425},
+  pages     = {190--200},
+  year      = {1994},
+  doi       = {10.1080/01621459.1994.10476460}
+}
+
+@article{demirovic2022,
+  author    = {Demirovi{\'c}, Emir and Lukina, Anna and Hebrard, Emmanuel and Chan, Jeffrey and Bailey, James and Leckie, Christopher and Ramamohanarao, Kotagiri and Stuckey, Peter J.},
+  title     = {{MurTree}: Optimal Decision Trees via Dynamic Programming and Search},
+  journal   = {Journal of Machine Learning Research},
+  volume    = {23},
+  number    = {26},
+  pages     = {1--47},
+  year      = {2022}
+}
+
+@inproceedings{chung2019,
+  author    = {Chung, Yeounoh and Kraska, Tim and Polyzotis, Neoklis and Tae, Ki Hyun and Whang, Steven Euijong},
+  title     = {Slice Finder: Automated Data Slicing for Model Validation},
+  booktitle = {2019 IEEE 35th International Conference on Data Engineering (ICDE)},
+  pages     = {1550--1553},
+  publisher = {IEEE},
+  year      = {2019},
+  doi       = {10.1109/ICDE.2019.00139}
+}
+
+@article{nadeau2003,
+  author    = {Nadeau, Claude and Bengio, Yoshua},
+  title     = {Inference for the Generalization Error},
+  journal   = {Machine Learning},
+  volume    = {52},
+  number    = {3},
+  pages     = {239--281},
+  year      = {2003},
+  doi       = {10.1023/A:1024068626366}
+}
+
+@article{khuller1999,
+  author    = {Khuller, Samir and Moss, Anna and Naor, Joseph (Seffi)},
+  title     = {The Budgeted Maximum Coverage Problem},
+  journal   = {Information Processing Letters},
+  volume    = {70},
+  number    = {1},
+  pages     = {39--45},
+  year      = {1999},
+  doi       = {10.1016/S0020-0190(99)00031-9}
+}
+
+@inproceedings{krause2005,
+  author    = {Krause, Andreas and Guestrin, Carlos},
+  title     = {Near-optimal Nonmyopic Value of Information in Graphical Models},
+  booktitle = {Proceedings of the 21st Conference on Uncertainty in Artificial Intelligence (UAI 2005)},
+  pages     = {324--331},
+  publisher = {AUAI Press},
+  year      = {2005}
+}
+
+@article{herrera2011,
+  author    = {Herrera, Francisco and Carmona, Crist{\'o}bal J. and Gonz{\'a}lez, Pedro and del Jesus, Mar{\'i}a Jos{\'e}},
+  title     = {An Overview on Subgroup Discovery: Foundations and Applications},
+  journal   = {Knowledge and Information Systems},
+  volume    = {29},
+  number    = {3},
+  pages     = {495--525},
+  year      = {2011},
+  doi       = {10.1007/s10115-010-0356-2}
+}
+
+@article{hamalainen2019,
+  author    = {H{\"a}m{\"a}l{\"a}inen, Wilhelmiina and Webb, Geoffrey I.},
+  title     = {A Tutorial on Statistically Sound Pattern Discovery},
+  journal   = {Data Mining and Knowledge Discovery},
+  volume    = {33},
+  number    = {2},
+  pages     = {325--377},
+  year      = {2019},
+  doi       = {10.1007/s10618-018-0590-x}
+}
+
+@inproceedings{lin2020,
+  author    = {Lin, Jimmy and Zhong, Chudi and Hu, Diane and Rudin, Cynthia and Seltzer, Margo},
+  title     = {Generalized and Scalable Optimal Sparse Decision Trees},
+  booktitle = {Proceedings of the 37th International Conference on Machine Learning (ICML 2020)},
+  editor    = {Daum{\'e} III, Hal and Singh, Aarti},
+  series    = {Proceedings of Machine Learning Research},
+  volume    = {119},
+  pages     = {6150--6160},
+  publisher = {PMLR},
   year      = {2020}
 }
 
+@inproceedings{fischer2019,
+  author    = {Fischer, Jonas and Vreeken, Jilles},
+  title     = {Sets of Robust Rules, and How to Find Them},
+  booktitle = {Machine Learning and Knowledge Discovery in Databases: European Conference, ECML PKDD 2019, W{\"u}rzburg, Germany, September 16--20, 2019, Proceedings, Part I},
+  editor    = {Brefeld, Ulf and Fromont, Elisa and Hotho, Andreas and Knobbe, Arno and Maathuis, Marloes and Robardet, C{\'e}line},
+  series    = {Lecture Notes in Computer Science},
+  volume    = {11906},
+  pages     = {38--54},
+  publisher = {Springer},
+  address   = {Cham},
+  year      = {2019},
+  note      = {Proceedings volume published 2020},
+  doi       = {10.1007/978-3-030-46150-8_3}
+}
+
+@inproceedings{aglin2020,
+  author    = {Aglin, Ga{\"e}l and Nijssen, Siegfried and Schaus, Pierre},
+  title     = {Learning Optimal Decision Trees Using Caching Branch-and-Bound Search},
+  booktitle = {Proceedings of the AAAI Conference on Artificial Intelligence},
+  volume    = {34},
+  number    = {04},
+  pages     = {3146--3153},
+  year      = {2020},
+  doi       = {10.1609/aaai.v34i04.5711}
+}
+
 @inproceedings{pellegrina2019,
-  author    = {Leonardo Pellegrina and Matteo Riondato and Fabio Vandin},
+  author    = {Pellegrina, Leonardo and Riondato, Matteo and Vandin, Fabio},
   title     = {{SPuManTE}: Significant Pattern Mining with Unconditional Testing},
-  booktitle = {KDD},
+  booktitle = {Proceedings of the 25th ACM SIGKDD International Conference on Knowledge Discovery \& Data Mining (KDD '19)},
+  pages     = {1528--1538},
+  publisher = {ACM},
   year      = {2019},
   doi       = {10.1145/3292500.3330978}
 }
 
 @article{pellegrina2020,
-  author    = {Leonardo Pellegrina and Fabio Vandin},
-  title     = {Efficient mining of the most significant patterns with permutation testing},
+  author    = {Pellegrina, Leonardo and Vandin, Fabio},
+  title     = {Efficient Mining of the Most Significant Patterns with Permutation Testing},
   journal   = {Data Mining and Knowledge Discovery},
   volume    = {34},
+  number    = {4},
+  pages     = {1201--1234},
   year      = {2020},
   doi       = {10.1007/s10618-020-00687-8}
 }
 
 @article{pellegrina2024,
-  author    = {Leonardo Pellegrina and Fabio Vandin},
+  author    = {Pellegrina, Leonardo and Vandin, Fabio},
   title     = {Efficient Discovery of Significant Patterns with Few-Shot Resampling},
   journal   = {Proceedings of the VLDB Endowment},
   volume    = {17},
   number    = {10},
+  pages     = {2668--2680},
   year      = {2024},
   doi       = {10.14778/3675034.3675055}
 }
 
 @inproceedings{pellegrina2026,
-  author    = {Leonardo Pellegrina and Fabio Vandin},
+  author    = {Pellegrina, Leonardo and Vandin, Fabio},
   title     = {Few-Shot Resampling for Scalable Statistically-Sound Data Mining},
-  booktitle = {KDD},
+  booktitle = {Proceedings of the 32nd ACM SIGKDD Conference on Knowledge Discovery and Data Mining V.2 (KDD '26)},
+  pages     = {3943--3954},
+  publisher = {ACM},
   year      = {2026},
+  doi       = {10.1145/3770855.3817752},
   note      = {arXiv:2606.11235}
 }
 
 @article{schnell2023,
-  author  = {Patrick M. Schnell},
-  title   = {Controlling the false-discovery rate when identifying the subgroup benefiting from treatment},
-  journal = {Clinical Trials},
-  year    = {2023},
-  doi     = {10.1177/17407745231169300}
+  author    = {Schnell, Patrick M.},
+  title     = {Controlling the False-Discovery Rate When Identifying the Subgroup Benefiting from Treatment},
+  journal   = {Clinical Trials},
+  volume    = {20},
+  number    = {4},
+  pages     = {394--404},
+  year      = {2023},
+  doi       = {10.1177/17407745231169300}
 }
