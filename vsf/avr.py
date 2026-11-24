@@ -985,6 +985,31 @@ class Landscape:
             "mass": (self.n_sel[i] / self.n_samples) if self.n_samples else 0.0,
         }
 
+    def locate(self, features: Sequence[int]) -> Optional[Dict[str, int]]:
+        """
+        Where the schema on `features` (any order) is drawn: its lattice
+        column `ix`, its row in the lattice of its own dimensionality (`iy`)
+        and in the lattice of all dimensionalities together (`iy_all`), under
+        the binning of `bins` / `cell`. None when the search did not score
+        this feature set or it has no centre (such a schema is not drawn).
+        """
+        index = getattr(self, "_feature_index", None)
+        if index is None:
+            index = {tuple(sorted(f)): i for i, f in enumerate(self.features)}
+            self._feature_index = index
+        i = index.get(tuple(sorted(int(j) for j in features)))
+        if i is None or int(self.n_centers[i]) <= 0:
+            return None
+        d = int(self.d[i])
+        n = self.N_BINS
+        k = float(self.n_centers[i])
+        return {
+            "d": d,
+            "ix": int(self.bin_index(self.x_values()[i:i + 1], n)[0]),
+            "iy": int(self.bin_index(np.asarray([k / self.k_max(d)]), n)[0]),
+            "iy_all": int(self.bin_index(np.asarray([k / self.k_max(None)]), n)[0]),
+        }
+
     def cell(
         self, d: Optional[int], ix: int, iy: int, limit: int = 100, offset: int = 0
     ) -> Dict[str, object]:

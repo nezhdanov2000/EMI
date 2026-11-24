@@ -103,7 +103,6 @@ stability      mean pairwise Jaccard index, over the splits, of the sets of
 """
 from __future__ import annotations
 
-import heapq
 import itertools
 import time
 from dataclasses import dataclass, field
@@ -125,7 +124,13 @@ from vsf.centers import (
     stratified_repeated_kfold,
     summarize_cv,
 )
-from vsf.metrics import cell_codes
+from vsf.free_rules import (
+    Candidate as _Candidate,
+    budgeted_greedy,
+    certification_threshold,
+    qualifying as _qualifying,
+    rule_candidates as _rule_candidates,
+)
 
 __all__ = [
     "BUDGETS",
@@ -181,116 +186,13 @@ class MethodResult:
     train_coverage: Dict[int, float] = field(default_factory=dict)
 
 
-@dataclass(frozen=True)
-class _Candidate:
-    """A qualifying group on the training rows: its positive training rows and cost."""
-
-    positives: np.ndarray  # int64 row indices (into the training subset)
-    cost: int
-    key: object
-    negatives: Optional[np.ndarray] = None  # needed only with min_union_purity
-
-
 # --------------------------------------------------------------------------
 # Budgeted selection
 # --------------------------------------------------------------------------
-def budgeted_greedy(
-    candidates: Sequence[_Candidate], budgets: Sequence[int], n_train: int,
-    min_union_purity: Optional[float] = None, disjoint: bool = False,
-) -> Dict[int, Tuple[List[int], int]]:
-    """
-    Budgeted maximum coverage by the cost-effectiveness greedy with lazy
-    evaluation, run once per budget, each result compared with the best
-    single affordable candidate and the better kept (Khuller, Moss & Naor,
-    1999: the combination is a (1 - 1/e) / 2 approximation). Returns, per
-    budget, (chosen candidate indices in order, covered training positives).
-    Coverage is monotone submodular, so a stale heap entry's ratio is an
-    upper bound on its current ratio and lazy re-evaluation is exact.
-
-    `min_union_purity`: a candidate whose addition would take the union's
-    training purity below it is skipped for the rest of that budget's run
-    (a heuristic: the guarantee above no longer applies).
-
-    `disjoint`: a candidate sharing any training row (positive or negative)
-    with an already chosen one is skipped. Needs the candidates' negatives.
-    The union of disjoint groups of purity >= tau has purity >= tau.
-    """
-    if (min_union_purity is not None or disjoint) and any(c.negatives is None for c in candidates):
-        raise ValueError("min_union_purity / disjoint need the candidates' negatives")
-    out: Dict[int, Tuple[List[int], int]] = {}
-    sizes = np.array([c.positives.size for c in candidates], dtype=np.int64)
-    costs = np.array([c.cost for c in candidates], dtype=np.int64)
-    for budget in budgets:
-        covered = np.zeros(n_train, dtype=bool)
-        covered_neg = np.zeros(n_train, dtype=bool)
-        occupied = np.zeros(n_train, dtype=bool)
-        n_neg = 0
-        heap: List[Tuple[float, int, int]] = [
-            (-(sizes[i] / costs[i]), -int(sizes[i]), i)
-            for i in range(len(candidates)) if sizes[i] > 0 and costs[i] <= budget
-        ]
-        heapq.heapify(heap)
-        chosen: List[int] = []
-        spent = 0
-        total = 0
-        while heap:
-            neg_ratio, _, i = heapq.heappop(heap)
-            if costs[i] > budget - spent:
-                continue
-            if disjoint:
-                neg_d = candidates[i].negatives
-                assert neg_d is not None
-                if occupied[candidates[i].positives].any() or occupied[neg_d].any():
-                    continue
-            gain = int(np.count_nonzero(~covered[candidates[i].positives]))
-            if gain == 0:
-                continue
-            ratio = gain / costs[i]
-            if heap and ratio < -heap[0][0] - 1e-12:
-                heapq.heappush(heap, (-ratio, -gain, i))
-                continue
-            if min_union_purity is not None:
-                neg = candidates[i].negatives
-                assert neg is not None
-                new_neg = int(np.count_nonzero(~covered_neg[neg]))
-                if (total + gain) < min_union_purity * (total + gain + n_neg + new_neg) - 1e-9:
-                    continue
-                covered_neg[neg] = True
-                n_neg += new_neg
-            chosen.append(i)
-            covered[candidates[i].positives] = True
-            if disjoint:
-                occupied[candidates[i].positives] = True
-                occupied[candidates[i].negatives] = True  # type: ignore[index]
-            spent += int(costs[i])
-            total += gain
-        affordable = np.flatnonzero((costs <= budget) & (sizes > 0))
-        if affordable.size:
-            best_single = int(affordable[np.lexsort((costs[affordable], -sizes[affordable]))[0]])
-            if sizes[best_single] > total:
-                chosen, total = [best_single], int(sizes[best_single])
-        out[int(budget)] = (chosen, total)
-    return out
-
-
-def _qualifying(
-    k: np.ndarray, n: np.ndarray, tau: float, m: int, threshold: Optional[np.ndarray] = None,
-) -> np.ndarray:
-    """
-    Groups with n >= m and, when `threshold` is None, k / n >= tau (the
-    product's observed-purity rule); otherwise k >= threshold[n] (a
-    size-dependent count, see `certification_threshold`).
-    """
-    n = np.asarray(n, dtype=np.int64)
-    k = np.asarray(k, dtype=np.int64)
-    if threshold is None:
-        need = np.maximum(np.ceil(tau * n.astype(np.float64) - 1e-9).astype(np.int64), 1)
-    else:
-        if n.size and int(n.max()) >= threshold.size:
-            raise ValueError(f"threshold covers n <= {threshold.size - 1}, got n = {int(n.max())}")
-        need = threshold[n]
-    return (n >= max(1, m)) & (n > 0) & (k >= need)
-
+# `_Candidate`, `budgeted_greedy`, `_qualifying`, `certification_threshold`
+# and `_rule_candidates` live in `vsf.free_rules` (imported above under the
+# names this module has always used): the interactive app's "Free rules"
+# overlay runs the selection of `rules_disjoint` through the same code.
 
 #: Selection rules a comparison can run under.
 #:   purity     - training purity >= tau (the product's observed rule);
@@ -305,18 +207,6 @@ def _qualifying(
 #:                the Bonferroni bound over T_B is exact; the price is that
 #:                A sees half the rows and B certifies with half the rows.
 Selection = Literal["purity", "certified", "split"]
-
-
-def certification_threshold(n_max: int, tau: float, alpha_eff: float) -> np.ndarray:
-    """
-    Per n = 0..n_max, the smallest positive count certified at `alpha_eff`
-    for rows with possibly different success probabilities
-    (`vsf.centers.min_successes_to_certify_heterogeneous`; n + 1 = never).
-    """
-    sizes = np.arange(n_max + 1, dtype=np.int64)
-    out = np.asarray(min_successes_to_certify_heterogeneous(sizes, tau, alpha_eff), dtype=np.int64)
-    out[0] = 1
-    return out
 
 
 # --------------------------------------------------------------------------
@@ -568,89 +458,6 @@ def greedy_chain(
 # --------------------------------------------------------------------------
 # Rules
 # --------------------------------------------------------------------------
-def _rule_candidates(
-    X_train: np.ndarray, z64: np.ndarray, tau: float, m: int, max_len: int,
-    threshold: Optional[np.ndarray], qualify: bool = True, top_k: Optional[int] = None,
-) -> List[_Candidate]:
-    """
-    Every conjunction of <= max_len (column = value) conditions that occurs
-    in the training rows, one candidate per distinct training row set
-    (described by the fewest conditions). With `qualify` the purity rule (or
-    `threshold`) and the size floor filter the cells; without it only the
-    size floor does, and `top_k` keeps the cells with the largest WRAcc
-    (n/N)(k/n - P/N) so that the unfiltered family stays bounded. Candidate
-    keys are (columns, values).
-    """
-    n_train, n_features = X_train.shape
-    base_rate = float(z64.sum()) / max(1, n_train)
-    max_len = min(max_len, n_features)
-    if top_k is not None and top_k <= 0:
-        raise ValueError("top_k must be positive")
-    # (wracc, -cost, combo, cell): a heap of the best top_k cells when top_k is set
-    heap: List[Tuple[float, int, Tuple[int, ...], int]] = []
-    candidates: List[_Candidate] = []
-    seen: Dict[bytes, int] = {}
-    for d in range(1, max_len + 1):
-        for combo in itertools.combinations(range(n_features), d):
-            codes, n_cells = cell_codes(X_train[:, combo])
-            codes = np.asarray(codes, dtype=np.int64)
-            table = np.bincount(codes * 2 + z64, minlength=2 * n_cells).reshape(n_cells, 2)
-            n = table.sum(axis=1)
-            k = table[:, 1]
-            if qualify:
-                q = np.flatnonzero(_qualifying(k, n, tau, m, threshold))
-            else:
-                q = np.flatnonzero(n >= max(1, m))
-            if q.size == 0:
-                continue
-            if top_k is None:
-                order = np.argsort(codes, kind="stable")
-                bounds = np.searchsorted(codes[order], np.arange(n_cells + 1))
-                for c in q.tolist():
-                    rows = order[bounds[c]:bounds[c + 1]]
-                    key = rows.tobytes()
-                    if key in seen:
-                        continue
-                    seen[key] = len(candidates)
-                    values = tuple(int(v) for v in X_train[rows[0], list(combo)])
-                    candidates.append(_Candidate(
-                        positives=rows[z64[rows] == 1], cost=len(combo), key=(combo, values),
-                        negatives=rows[z64[rows] == 0],
-                    ))
-                continue
-            wr = (k[q] - n[q] * base_rate) / n_train
-            for c, w in zip(q.tolist(), wr.tolist()):
-                item = (float(w), -d, combo, int(c))
-                if len(heap) < top_k:
-                    heapq.heappush(heap, item)
-                elif item > heap[0]:
-                    heapq.heapreplace(heap, item)
-    if top_k is not None:
-        by_combo: Dict[Tuple[int, ...], List[int]] = {}
-        for _, _, combo, c in heap:
-            by_combo.setdefault(combo, []).append(c)
-        picks: List[Tuple[Tuple[int, ...], int]] = []
-        for combo, cells in by_combo.items():
-            picks.extend((combo, c) for c in cells)
-        picks.sort(key=lambda t: (len(t[0]), t[0], t[1]))
-        for combo, c in picks:
-            codes, n_cells = cell_codes(X_train[:, combo])
-            codes = np.asarray(codes, dtype=np.int64)
-            order = np.argsort(codes, kind="stable")
-            bounds = np.searchsorted(codes[order], np.arange(n_cells + 1))
-            rows = order[bounds[c]:bounds[c + 1]]
-            key = rows.tobytes()
-            if key in seen:
-                continue
-            seen[key] = len(candidates)
-            values = tuple(int(v) for v in X_train[rows[0], list(combo)])
-            candidates.append(_Candidate(
-                positives=rows[z64[rows] == 1], cost=len(combo), key=(combo, values),
-                negatives=rows[z64[rows] == 0],
-            ))
-    return candidates
-
-
 def _rule_groups(
     X_all: np.ndarray, candidates: Sequence[_Candidate], idx: Sequence[int], names: Sequence[str],
 ) -> List[Group]:

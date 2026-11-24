@@ -43,6 +43,9 @@ let currentDefaultTarget = null;
 
 async function init() {
     initColorScale();
+    // First line of this page's session log: the mode a participant starts
+    // in ("Free rules" is off until switched on).
+    logSessionEvent('page_load', { free_rules: false, url: window.location.pathname + window.location.search });
     // Defensive, not load-bearing: index.html already ships btnStartScan
     // with the disabled attribute matching the field's empty default, but
     // deriving it here too means the two never have to be kept in sync by
@@ -3390,6 +3393,7 @@ async function refreshLandscape() {
     const d = landscapeDimRequested();
     if (landscapeState.bins && landscapeState.dSelection === d && landscapeState.key === JSON.stringify(p)) {
         rerenderLandscapeFromCache();
+        refreshFreeRules();
         return;
     }
     try {
@@ -3404,6 +3408,7 @@ async function refreshLandscape() {
         landscapeState.dSelection = d;
         renderLandscape();
         if (landscapeState.cell) openLandscapeCell(landscapeState.cell.ix, landscapeState.cell.iy, 0);
+        refreshFreeRules();
         return;
     } catch (err) {
         showAnalysisError('Landscape request failed: ' + err.message);
@@ -3458,9 +3463,17 @@ function renderLandscape() {
     if (summary) {
         const shown = bins.n_total - bins.n_zero;
         const scope = bins.d === null || bins.d === undefined ? 'all dimensionalities' : `${bins.d}D`;
-        summary.innerHTML = `<strong>${shown}</strong> of <strong>${bins.n_total}</strong> schemas (${scope}) certify at least one `
-            + (bins.direction === 'absence' ? 'value-free cell' : 'centre')
-            + ` at tau = ${(activeTau * 100).toFixed(0)}%; <strong>${bins.n_zero}</strong> certify none and are not drawn. K max = <strong>${bins.k_max}</strong>.`;
+        // "Certify" is the word for the exact test of "Certified centres
+        // only" (rule = certified). With it off the server counts the cells
+        // whose OBSERVED share reaches the boundary (rule = purity,
+        // vsf.centers.min_successes_to_select: ceil(tau * n)), which
+        // certifies nothing - say what was counted.
+        const what = bins.direction === 'absence' ? 'value-free cell' : 'centre';
+        summary.innerHTML = landscapeIsCertified()
+            ? `<strong>${shown}</strong> of <strong>${bins.n_total}</strong> schemas (${scope}) certify at least one ${what}`
+                + ` at tau = ${(activeTau * 100).toFixed(0)}%; <strong>${bins.n_zero}</strong> certify none and are not drawn. K max = <strong>${bins.k_max}</strong>.`
+            : `<strong>${shown}</strong> of <strong>${bins.n_total}</strong> schemas (${scope}) have at least one ${what}`
+                + ` at tau = ${(activeTau * 100).toFixed(0)}% (observed share); <strong>${bins.n_zero}</strong> have none and are not drawn. K max = <strong>${bins.k_max}</strong>.`;
     }
 
     const xLabels = [], yLabels = [];
@@ -3528,6 +3541,19 @@ function renderLandscape() {
             customdata: hl.xs.map((x, i) => [x, hl.ys[i]]),
         });
     }
+    // Free rules (toggle on): a ring on every circle holding a schema one of
+    // the selected rules is a cell of, with "used of all" beside it - a
+    // circle stands for several schemas. Nothing is added with the toggle off.
+    const fr = freeRulesHighlightPoints(bins);
+    if (fr && fr.xs.length) {
+        traces.push({
+            type: 'scatter', mode: 'markers+text', x: fr.xs, y: fr.ys,
+            text: fr.labels, textposition: 'top right', textfont: { size: 11, color: FREE_RULES_COLOR },
+            marker: { symbol: 'circle-open', size: markerPx + 10, color: FREE_RULES_COLOR, line: { width: 3 } },
+            hovertext: fr.hov, hoverinfo: 'text', name: 'free rules',
+            customdata: fr.xs.map((x, i) => [x, fr.ys[i]]), cliponaxis: false,
+        });
+    }
     // Cell boundaries, as in the main lattice (buildPlotData draws its grid at
     // k - 0.5): a category is the open interval BETWEEN two lines, so its
     // label and its circle sit at the integer centre and the lines at the
@@ -3545,12 +3571,12 @@ function renderLandscape() {
         shapes: gridShapes,
         margin: { l: 90, r: 20, t: 20, b: 70 }, font: { family: 'Inter', color: '#94a3b8' },
         xaxis: {
-            title: { text: bins.x === 'mass' ? 'Mass of certified value-free cells' : 'Coverage of the value', font: { color: '#c084fc', size: 13 } },
+            title: { text: bins.x === 'mass' ? (landscapeIsCertified() ? 'Mass of certified value-free cells' : 'Mass of value-free cells') : 'Coverage of the value', font: { color: '#c084fc', size: 13 } },
             tickvals: xLabels.map((_, i) => i), ticktext: xLabels, range: [-0.5, n - 0.5],
             tickfont: { size: 10 }, showgrid: false, ticks: '', zeroline: false, fixedrange: true,
         },
         yaxis: {
-            title: { text: `Certified centres (of K max = ${bins.k_max})`, font: { color: '#c084fc', size: 13 } },
+            title: { text: `${landscapeIsCertified() ? 'Certified centres' : 'Centres'} (of K max = ${bins.k_max})`, font: { color: '#c084fc', size: 13 } },
             tickvals: yLabels.map((_, i) => i), ticktext: yLabels, range: [-0.5, n - 0.5],
             tickfont: { size: 10 }, showgrid: false, ticks: '', zeroline: false, fixedrange: true,
         },
@@ -3659,6 +3685,350 @@ function renderLandscapeCell() {
 async function openSchemaFromLandscape(features) {
     if (lastTargetCol === null) return;
     await runAnalysis(lastTargetCol, lastCriterion, features.slice());
+}
+
+// True when the centres on screen passed the exact test ("Certified centres
+// only" on). Off, a centre is a cell whose observed share reaches the
+// boundary, and the Landscape's wording must not say "certify".
+function landscapeIsCertified() {
+    return activeRule === 'certified';
+}
+
+// ---------------------------------------------------------------------------
+// Session log
+// ---------------------------------------------------------------------------
+// One line per event in the file the server was started with
+// (`vsf.serve(session_log=...)`, `/api/session/log`). Written for the
+// reading study: which mode a participant was in when answering is read
+// back from here. `participant` comes from the page URL (?participant=P07).
+// `sessionLogStatus` is what the server last answered: true = written,
+// false = no log file configured or the request failed, null = not asked yet.
+const SESSION_ID = (window.crypto && typeof window.crypto.randomUUID === 'function')
+    ? window.crypto.randomUUID()
+    : `s-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+const SESSION_PARTICIPANT = new URLSearchParams(window.location.search).get('participant');
+let sessionLogStatus = null;
+let _sessionClientSeq = 0;
+
+async function logSessionEvent(event, data) {
+    const body = {
+        session: SESSION_ID, event,
+        data: Object.assign({
+            participant: SESSION_PARTICIPANT, client_seq: ++_sessionClientSeq,
+            client_time: new Date().toISOString(),
+        }, data || {}),
+    };
+    const before = sessionLogStatus;
+    try {
+        const res = await fetch('/api/session/log', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body), keepalive: true,
+        });
+        const out = res.ok ? await res.json() : null;
+        sessionLogStatus = Boolean(out && out.logged);
+    } catch (err) {
+        sessionLogStatus = false;
+    }
+    // Redraw the panel only when its "not being recorded" line has to appear
+    // or go: rebuilding it on every answer would replace the rule buttons
+    // under the pointer and swallow a click in progress.
+    if (freeRulesState.on && sessionLogStatus !== before) renderFreeRulesPanel();
+    return sessionLogStatus;
+}
+
+// ---------------------------------------------------------------------------
+// Free rules on the Landscape
+// ---------------------------------------------------------------------------
+// Toggle off (the default): nothing below draws anything and the Landscape
+// is what it was before this feature. Toggle on: `/api/landscape/free_rules`
+// returns the best set of rules that share no row - each a conjunction of
+// up to four (column = value) conditions, i.e. a cell of some 1D-4D schema -
+// under a budget of conditions (the field at the top of the rule list, default 8; it
+// is NOT the selected branch's condition count), at the current green
+// boundary, minimum rows per centre and "Certified centres only". It is the
+// selection of the paper's `rules_disjoint` baseline run on all rows
+// (`vsf.free_rules`). Then:
+//   * the circles holding the rules' schemas are ringed, with "u of n"
+//     beside each (u schemas of the n in the circle supply a rule). A rule
+//     of L conditions is a cell of an L-D schema, so each dimensionality's
+//     lattice rings its own rules ("all d together" rings all of them);
+//   * the rules are listed beside the plot; clicking one opens its schema;
+//   * two numbers stand side by side: the coverage of the selected branch
+//     and the coverage of the rule set, both on all rows.
+// Every switch of the toggle, every budget change and every rule set shown
+// is written to the session log.
+const FREE_RULES_COLOR = '#2dd4bf';
+const FREE_RULES_DEFAULT_BUDGET = 8;
+const FREE_RULES_MAX_BUDGET = 64;
+let freeRulesState = {
+    on: false,
+    budget: FREE_RULES_DEFAULT_BUDGET,   // last budget acted on (and logged)
+    key: null,       // JSON of the request the rules on screen answer
+    data: null,      // /api/landscape/free_rules response
+    error: null,     // text shown in the panel instead of the rules
+    loading: false,
+};
+let _freeRulesRequestSeq = 0;
+
+function freeRulesBudget() {
+    const el = document.getElementById('freeRulesBudget');
+    const v = el ? Math.round(Number(el.value)) : FREE_RULES_DEFAULT_BUDGET;
+    if (!Number.isFinite(v)) return FREE_RULES_DEFAULT_BUDGET;
+    return Math.max(1, Math.min(FREE_RULES_MAX_BUDGET, v));
+}
+
+function freeRulesRequest() {
+    const p = landscapeParams();
+    if (!p) return null;
+    delete p.d;
+    return Object.assign({ budget: freeRulesBudget() }, p);
+}
+
+// What the session log says about the state the page is in.
+function freeRulesLogContext() {
+    const p = landscapeParams();
+    return {
+        on: freeRulesState.on,
+        budget: freeRulesBudget(),
+        view_mode: viewMode,
+        landscape_d: landscapeDimRequested(),
+        target: p ? p.target : null,
+        criterion: p ? p.criterion : null,
+        also: p && p.also ? p.also : [],
+        tau: p ? p.tau : null,
+        rule: p ? p.rule : null,
+        min_samples: p ? p.min_samples : null,
+        direction: p ? p.direction : null,
+    };
+}
+
+function onFreeRulesToggle() {
+    const el = document.getElementById('freeRulesToggle');
+    freeRulesState.on = Boolean(el && el.checked);
+    logSessionEvent('free_rules_toggle', freeRulesLogContext());
+    if (freeRulesState.on) {
+        renderFreeRulesPanel();
+        refreshFreeRules();
+    } else {
+        _freeRulesRequestSeq++;          // drop a response still on its way
+        freeRulesState.loading = false;
+        renderFreeRulesPanel();          // hides the panel
+        if (landscapeState.bins) renderLandscape();
+    }
+}
+
+function onFreeRulesBudgetChange() {
+    const el = document.getElementById('freeRulesBudget');
+    const budget = freeRulesBudget();
+    if (el) el.value = String(budget);
+    if (budget === freeRulesState.budget) return;   // e.g. the field lost focus unchanged
+    freeRulesState.budget = budget;
+    logSessionEvent('free_rules_budget', freeRulesLogContext());
+    refreshFreeRules();
+}
+
+async function refreshFreeRules() {
+    if (!freeRulesState.on) return;
+    const req = freeRulesRequest();
+    if (!req) { renderFreeRulesPanel(); return; }
+    const key = JSON.stringify(req);
+    if (freeRulesState.key === key && (freeRulesState.data || freeRulesState.error)) {
+        renderFreeRulesPanel();
+        return;
+    }
+    if (req.direction === 'absence') {
+        freeRulesState.key = key; freeRulesState.data = null; freeRulesState.loading = false;
+        freeRulesState.error = 'Free rules are offered for a Presence search only.';
+        renderFreeRulesPanel();
+        if (landscapeState.bins) renderLandscape();
+        return;
+    }
+    const seq = ++_freeRulesRequestSeq;
+    freeRulesState.loading = true;
+    renderFreeRulesPanel();
+    let data = null, error = null;
+    try {
+        const res = await fetch('/api/landscape/free_rules', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: key,
+        });
+        data = await res.json();
+        if (!res.ok) { error = 'Free rules: ' + (data.error || res.status); data = null; }
+    } catch (err) {
+        error = 'Free rules request failed: ' + err.message;
+    }
+    if (seq !== _freeRulesRequestSeq || !freeRulesState.on) return;   // superseded
+    freeRulesState.key = key; freeRulesState.data = data; freeRulesState.error = error;
+    freeRulesState.loading = false;
+    renderFreeRulesPanel();
+    if (viewMode === 'landscape' && landscapeState.bins) renderLandscape();
+    if (data) {
+        const branch = freeRulesBranchSummary();
+        logSessionEvent('free_rules_shown', Object.assign(freeRulesLogContext(), {
+            conditions: data.conditions, n_rules: data.rules.length,
+            coverage: data.coverage, k_covered: data.k_covered, n_covered: data.n_covered,
+            rules: data.rules.map(r => r.conditions.map(c => [c.column, c.value])),
+            branch_d: branch ? branch.d : null,
+            branch_coverage: branch ? branch.coverage : null,
+            branch_conditions: branch ? branch.conditions : null,
+            branch_features: branch ? branch.features : null,
+        }));
+    } else if (error) {
+        logSessionEvent('free_rules_error', Object.assign(freeRulesLogContext(), { error }));
+    }
+}
+
+// The rule set on screen, or null while the toggle is off or the rules
+// belong to another request (a boundary just moved, a budget just changed).
+function freeRulesCurrent() {
+    if (!freeRulesState.on || !freeRulesState.data) return null;
+    const req = freeRulesRequest();
+    return (req && JSON.stringify(req) === freeRulesState.key) ? freeRulesState.data : null;
+}
+
+// Rings for the lattice in `bins`: per circle, the distinct schemas among
+// the selected rules that are drawn there. A rule of another dimensionality
+// than the lattice shown is ringed on its own lattice, not here.
+function freeRulesHighlightPoints(bins) {
+    const data = freeRulesCurrent();
+    if (!data) return null;
+    const all = bins.d === null || bins.d === undefined;
+    const cells = new Map();
+    data.rules.forEach(r => {
+        const loc = r.landscape;
+        if (!loc || (!all && Number(loc.d) !== Number(bins.d))) return;
+        const iy = all ? loc.iy_all : loc.iy;
+        const k = `${loc.ix},${iy}`;
+        if (!cells.has(k)) cells.set(k, { ix: loc.ix, iy, schemas: new Map() });
+        const entry = cells.get(k).schemas;
+        const sk = r.features.join(',');
+        if (!entry.has(sk)) entry.set(sk, { names: r.feature_names, ranks: [] });
+        entry.get(sk).ranks.push(r.rank);
+    });
+    const xs = [], ys = [], labels = [], hov = [];
+    cells.forEach(c => {
+        const total = (bins.counts[c.iy] && bins.counts[c.iy][c.ix]) || 0;
+        const used = c.schemas.size;
+        xs.push(c.ix); ys.push(c.iy);
+        labels.push(`${used} of ${total}`);
+        const lines = Array.from(c.schemas.values()).map(sc =>
+            `${escHtml(sc.names.join(' + '))} — rule${sc.ranks.length === 1 ? '' : 's'} ${sc.ranks.join(', ')}`);
+        hov.push(`<b>${used} of the ${total} schema${total === 1 ? '' : 's'} here</b> ${used === 1 ? 'supplies' : 'supply'} selected free rules:<br>`
+            + lines.join('<br>') + '<br><i>click to list the schemas</i>');
+    });
+    return { xs, ys, labels, hov };
+}
+
+// Coverage of the selected branch as the header shows it (the displayed
+// partition; the regions of the view under partial-axis centres).
+function freeRulesBranchSummary() {
+    if (!currentPayload || !currentPayload.metrics) return null;
+    const d = Number(currentPayload.metrics.d);
+    const cov = formatCoverage(currentPayload, d);
+    let conditions = (cov.n_centers !== undefined && cov.n_centers !== null) ? cov.n_centers * d : null;
+    const pView = partialViewFor(currentPayload, d);
+    if (pView) {
+        cov.coverage = pView.summary.coverage;
+        cov.n_centers = pView.summary.n_centers;
+        conditions = pView.summary.conditions;
+    }
+    if (cov.coverage === undefined || cov.coverage === null) return null;
+    return {
+        d, coverage: cov.coverage, n_centers: cov.n_centers, conditions,
+        features: (currentPayload.selected_features || []).slice(),
+        partial: Boolean(pView),
+    };
+}
+
+function renderFreeRulesPanel() {
+    const panel = document.getElementById('freeRulesPanel');
+    const body = document.getElementById('freeRulesBody');
+    if (!panel || !body) return;
+    const wasShown = panel.style.display !== 'none';
+    if (!freeRulesState.on) {
+        panel.style.display = 'none';
+        body.innerHTML = '';
+        body._frHtml = null;
+        if (wasShown) fitLandscapePlot();
+        return;
+    }
+    panel.style.display = '';
+    const data = freeRulesCurrent();
+    const parts = [];
+    if (sessionLogStatus === false) {
+        parts.push('<div class="fr-warn">The session log is off: this switch is not being recorded. '
+            + 'Start the server with a session log (run.py does) before a study session.</div>');
+    }
+    if (freeRulesState.error && freeRulesState.key === JSON.stringify(freeRulesRequest())) {
+        parts.push(`<div class="fr-warn">${escHtml(freeRulesState.error)}</div>`);
+    } else if (!data) {
+        parts.push(`<div class="fr-sub">${freeRulesState.loading ? 'Selecting rules…' : 'Run an analysis to select rules.'}</div>`);
+    } else {
+        const branch = freeRulesBranchSummary();
+        const ruleWord = data.rule === 'certified' ? 'certified at' : 'observed share at least';
+        parts.push(`<div class="fr-sub">The best set of rules that share no row, up to four conditions each, `
+            + `${ruleWord} ${(data.tau * 100).toFixed(0)}%, at least ${data.min_samples} row${data.min_samples === 1 ? '' : 's'} per rule, `
+            + `within <strong>${data.budget}</strong> condition${data.budget === 1 ? '' : 's'} in total. `
+            + `Chosen from ${data.n_candidates} qualifying rule${data.n_candidates === 1 ? '' : 's'}.</div>`);
+        const branchBox = branch
+            ? `<div class="fr-number"><span class="lab">Selected branch (${branch.d}D)</span>`
+                + `<span class="val" id="frBranchCoverage">${pct(branch.coverage)}</span>`
+                + `<span class="det">${branch.n_centers} ${branch.partial ? 'partial centre' : 'centre'}${branch.n_centers === 1 ? '' : 's'}`
+                + `${branch.conditions === null ? '' : ` · ${branch.conditions} condition${branch.conditions === 1 ? '' : 's'}`}</span></div>`
+            : `<div class="fr-number"><span class="lab">Selected branch</span><span class="val" id="frBranchCoverage">—</span><span class="det">no coverage reported</span></div>`;
+        parts.push(`<div class="fr-numbers" title="Share of all rows of the value that fall inside the centres of the selected branch, and inside the selected rules.">${branchBox}`
+            + `<div class="fr-number rules"><span class="lab">Free rules</span>`
+            + `<span class="val" id="frRulesCoverage">${pct(data.coverage)}</span>`
+            + `<span class="det">${data.rules.length} rule${data.rules.length === 1 ? '' : 's'} · ${data.conditions} of ${data.budget} conditions</span></div></div>`);
+        parts.push('<div class="fr-caption" id="frCaption">computed on all rows, not checked on new data</div>');
+        const dShown = landscapeState.bins ? landscapeState.bins.d : landscapeDimRequested();
+        const all = dShown === null || dShown === undefined;
+        if (!data.rules.length) {
+            parts.push('<div class="fr-sub">No rule qualifies at this boundary and minimum size.</div>');
+        } else if (!all) {
+            const here = data.rules.filter(r => r.landscape && Number(r.landscape.d) === Number(dShown)).length;
+            parts.push(`<div class="fr-sub">The lattice shows ${dShown}D schemas: <strong>${here}</strong> of ${data.rules.length} `
+                + `rule${data.rules.length === 1 ? '' : 's'} ${here === 1 ? 'is' : 'are'} ringed here. A rule of L conditions is ringed on the L-D lattice `
+                + `(or choose “all d together”).</div>`);
+        }
+        parts.push('<div class="fr-list" id="frList">' + data.rules.map((r, i) => {
+            const conds = r.conditions.map(c => `${escHtml(c.column_label)} = ${escHtml(c.value_label)}`)
+                .join(' <span class="and">∧</span> ');
+            const drawn = Boolean(r.landscape);
+            const onThisLattice = drawn && (all || Number(r.landscape.d) === Number(dShown));
+            const where = !drawn
+                ? 'schema not drawn on the Landscape (not scored, or no centre on the search partition)'
+                : (onThisLattice ? 'ringed on this lattice' : `ringed on the ${r.landscape.d}D lattice`);
+            return `<button type="button" class="fr-rule${drawn ? (onThisLattice ? '' : ' other-d') : ' undrawn'}" data-rule="${i}" `
+                + `title="Open this rule's schema as a lattice">`
+                + `<span class="cond"><strong>${r.rank}.</strong> ${conds}</span>`
+                + `<span class="meta">schema: <strong>${escHtml(r.feature_names.join(' + '))}</strong> (${r.d}D)</span>`
+                + `<span class="meta"><strong>${r.n}</strong> row${r.n === 1 ? '' : 's'} · share of the value <strong>${pct(r.purity)}</strong> (${r.k} of ${r.n})</span>`
+                + `<span class="meta">adds <strong>+${r.new_positives}</strong> row${r.new_positives === 1 ? '' : 's'} of the value (+${pct(r.coverage_gain)} coverage)</span>`
+                + `<span class="where">${where}</span></button>`;
+        }).join('') + '</div>');
+    }
+    // Same content as on screen: leave the DOM alone. Replacing the rule
+    // buttons while the pointer is down on one would swallow the click.
+    const html = parts.join('');
+    if (body._frHtml === html) {
+        if (!wasShown) fitLandscapePlot();
+        return;
+    }
+    body._frHtml = html;
+    body.innerHTML = html;
+    body.querySelectorAll('.fr-rule').forEach(btn => {
+        btn.onclick = () => {
+            const d = freeRulesCurrent();
+            const r = d && d.rules[Number(btn.dataset.rule)];
+            if (!r) return;
+            logSessionEvent('free_rules_open_schema', Object.assign(freeRulesLogContext(), {
+                rank: r.rank, features: r.feature_names,
+                rule: r.conditions.map(c => [c.column, c.value]),
+            }));
+            openSchemaFromLandscape(r.features);
+        };
+    });
+    if (!wasShown) fitLandscapePlot();
 }
 
 // ---------------------------------------------------------------------------

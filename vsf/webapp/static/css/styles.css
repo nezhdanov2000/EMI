@@ -999,6 +999,63 @@ body.absence-mode .color-scale-handle--red { --handle-color: #64748b; }
 .landscape-cell-more { margin-top: 6px; color: var(--text-dim); }
 .landscape-cell-more button { margin-left: 8px; }
 
+/* ---- Free rules on the Landscape ---------------------------------------
+   .landscape-main / .landscape-plot-box only seat the rule list beside the
+   plot and the switch over the plot's top margin. With the list hidden
+   (switch off) the plot fills both boxes, so it has the box it had as a
+   direct child of #landscapeArea, and the switch, being positioned, takes
+   no room in the flow. */
+.landscape-main { flex: 1 1 auto; display: flex; align-items: stretch; min-height: 420px; min-width: 0; }
+.landscape-plot-box { position: relative; flex: 1 1 auto; display: flex; min-width: 0; }
+.landscape-plot-box > #landscape-plot { min-width: 0; }
+.fr-toggle {
+    position: absolute; top: 2px; right: 22px; z-index: 2;
+    display: inline-flex; align-items: center; gap: 6px; cursor: pointer;
+    font-size: 0.78rem; line-height: 1; color: var(--text-dim);
+}
+.fr-toggle input { width: 14px; height: 14px; margin: 0; accent-color: #2dd4bf; cursor: pointer; }
+.fr-budget { display: inline-flex; align-items: center; gap: 6px; color: var(--text-dim); }
+.fr-budget input {
+    width: 52px; background: rgba(15, 23, 42, 0.8); color: white;
+    border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 2px 6px; font-size: 0.78rem;
+}
+.fr-panel {
+    flex: 0 0 340px; max-width: 42%; overflow: auto; padding: 8px 12px 12px;
+    border-left: 1px solid var(--border-color); font-size: 0.78rem; color: var(--text-muted);
+    display: flex; flex-direction: column; gap: 8px;
+}
+.fr-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.fr-body { display: flex; flex-direction: column; gap: 8px; }
+.fr-title { color: #f8fafc; font-weight: 600; font-size: 0.85rem; }
+.fr-sub { color: var(--text-dim); line-height: 1.4; }
+.fr-numbers { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.fr-number {
+    background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.07);
+    border-radius: 10px; padding: 6px 8px; display: flex; flex-direction: column; gap: 2px;
+}
+.fr-number.rules { border-color: rgba(45, 212, 191, 0.45); }
+.fr-number .lab { color: var(--text-dim); font-size: 0.72rem; }
+.fr-number .val { color: #f8fafc; font-size: 1.15rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+.fr-number .det { color: var(--text-dim); font-size: 0.7rem; font-variant-numeric: tabular-nums; }
+.fr-caption { color: var(--text-dim); font-size: 0.72rem; font-style: italic; }
+.fr-warn { color: #fcd34d; font-size: 0.72rem; line-height: 1.4; }
+.fr-list { display: flex; flex-direction: column; gap: 6px; }
+.fr-rule {
+    text-align: left; font: inherit; color: inherit; cursor: pointer; width: 100%;
+    background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.07);
+    border-left: 3px solid #2dd4bf; border-radius: 8px; padding: 6px 8px;
+    display: flex; flex-direction: column; gap: 3px;
+}
+.fr-rule:hover, .fr-rule:focus-visible { background: rgba(45, 212, 191, 0.10); outline: none; }
+.fr-rule.other-d { border-left-color: rgba(45, 212, 191, 0.35); }
+.fr-rule.undrawn { border-left-color: #64748b; }
+.fr-rule .cond { color: #e2e8f0; line-height: 1.35; }
+.fr-rule .cond .and { color: var(--text-dim); }
+.fr-rule .meta { color: var(--text-dim); font-size: 0.72rem; font-variant-numeric: tabular-nums; line-height: 1.4; }
+.fr-rule .meta strong { color: #cbd5e1; font-weight: 500; }
+.fr-rule .where { color: #5eead4; font-size: 0.7rem; }
+.fr-rule.undrawn .where { color: var(--text-dim); }
+
 
 /* ---- Data screen (guide screen and the Data tab) ----------------------- */
 #screenArea { flex: 1; display: flex; flex-direction: column; min-height: 400px; overflow: auto; }

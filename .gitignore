@@ -98,3 +98,6 @@ _archive_drafts/
 experiments/results/jobs/
 experiments/logs/jobs/
 experiments/results/_to_delete/
+
+# Session logs written by run.py (vsf.serve(session_log=...))
+session_logs/

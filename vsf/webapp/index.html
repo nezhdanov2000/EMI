@@ -16,8 +16,8 @@
     <!-- Plotly.js -->
     <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
 
-    <link rel="stylesheet" href="/static/css/styles.css?v=5047">
-    <script src="/static/js/app.js?v=5054" defer></script>
+    <link rel="stylesheet" href="/static/css/styles.css?v=5048">
+    <script src="/static/js/app.js?v=5055" defer></script>
 </head>
 
 <body>
@@ -242,7 +242,37 @@
                         </div>
                     </div>
                 </div>
-                <div id="landscape-plot"></div>
+                <!-- Free rules (app.js, "Free rules on the Landscape"). The switch
+                     sits over the plot's top margin so that it takes no room of
+                     its own: with it off, every box on this tab has the size and
+                     place it had before the feature existed. On: the server picks
+                     the best set of disjoint (column = value) rules under the
+                     condition budget (/api/landscape/free_rules - the
+                     rules_disjoint baseline of the paper, on all rows); the
+                     circles holding the rules' schemas are ringed and the rules
+                     are listed beside the plot. Every switch is written to the
+                     session log. -->
+                <div class="landscape-main">
+                    <div class="landscape-plot-box">
+                        <div id="landscape-plot"></div>
+                        <label class="fr-toggle" id="freeRulesToggleWrap"
+                            title="Off: the Landscape as it is. On: the best set of rules that share no row, each a conjunction of up to four (column = value) conditions taken from any schema, chosen under a budget of conditions at the current green boundary, minimum rows per centre and 'Certified centres only'. The circles that hold the rules' schemas are ringed; the rules are listed beside the plot.">
+                            <input type="checkbox" id="freeRulesToggle" onchange="onFreeRulesToggle()">
+                            <span>Free rules</span>
+                        </label>
+                    </div>
+                    <aside id="freeRulesPanel" class="fr-panel" style="display: none;" aria-label="Free rules">
+                        <div class="fr-head">
+                            <span class="fr-title">Free rules</span>
+                            <label class="fr-budget"
+                                title="The most (column = value) conditions the rules may spell out in total: a rule of three conditions costs 3. Set here, not taken from the selected branch.">
+                                <span>Conditions budget:</span>
+                                <input type="number" id="freeRulesBudget" min="1" max="64" step="1" value="8" onchange="onFreeRulesBudgetChange()">
+                            </label>
+                        </div>
+                        <div id="freeRulesBody" class="fr-body"></div>
+                    </aside>
+                </div>
                 <div id="landscapeCellPanel" class="landscape-cell-panel" style="display: none;">
                     <div class="landscape-cell-head">
                         <span id="landscapeCellTitle">—</span>

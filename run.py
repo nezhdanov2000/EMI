@@ -3,6 +3,7 @@ Launcher script for Visual Sufficiency Framework (VSF) interactive server.
 Allows selecting any available benchmark dataset or providing a custom CSV file.
 """
 import sys
+import time
 from pathlib import Path
 import pandas as pd
 import vsf
@@ -202,12 +203,21 @@ def main():
     print(f"Columns: [{col_preview}]")
     print("-" * 66)
 
+    # One JSON-lines file per launch: the page records there, among other
+    # things, when "Free rules" on the Landscape was switched on and off
+    # (`/api/session/log`), so a study session can be read back afterwards.
+    session_log = (
+        Path(__file__).resolve().parent / "session_logs"
+        / f"{dataset_path.stem}_{time.strftime('%Y%m%d-%H%M%S')}.jsonl"
+    )
+    print(f"Session log: {session_log}")
+
     port = 8000
     for p in range(port, port + 10):
         try:
             print(f"Starting VSF Interactive Visual Dashboard on http://127.0.0.1:{p}/ ...")
             print("Press Ctrl+C in this terminal to stop the server.\n")
-            vsf.serve(df, host="127.0.0.1", port=p, open_browser=True)
+            vsf.serve(df, host="127.0.0.1", port=p, open_browser=True, session_log=session_log)
             break
         except OSError as e:
             if "Address already in use" in str(e) or getattr(e, 'winerror', None) == 10048 or getattr(e, 'errno', None) in (98, 10048):

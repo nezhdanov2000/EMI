@@ -88,6 +88,7 @@ from .screen import (
     target_report,
 )
 from .rules import enumerate_rules
+from .free_rules import FreeRule, FreeRuleFamily, FreeRuleSet, select_free_rules
 from .redundancy import (
     DEFAULT_GROUP_THRESHOLD,
     PAIR_FLOOR,
@@ -138,6 +139,10 @@ __all__ = [
     "PAIR_FLOOR",
     "collect_centers",
     "enumerate_rules",
+    "FreeRule",
+    "FreeRuleFamily",
+    "FreeRuleSet",
+    "select_free_rules",
     "ColumnProfile",
     "DatasetScreen",
     "DependencyPair",
