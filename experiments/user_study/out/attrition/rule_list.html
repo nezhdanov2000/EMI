@@ -1,0 +1,17 @@
+<!DOCTYPE html><html lang='en'><head><meta charset='utf-8'><title>Groups</title><style>
+body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;color:#1f2933;margin:28px;background:#fff}
+h1{font-size:20px;margin:0 0 6px} p.sub{margin:0 0 18px;color:#52606d;font-size:14px;max-width:900px}
+table{border-collapse:collapse;font-size:15px} th,td{padding:9px 14px;border-bottom:1px solid #d9e2ec;text-align:left;vertical-align:middle}
+th{cursor:pointer;user-select:none;background:#f0f4f8;font-weight:600;white-space:nowrap} th:hover{background:#d9e2ec}
+td.num{text-align:right;font-variant-numeric:tabular-nums} .cond b{font-weight:600}
+.and{color:#829ab1;font-size:12px;margin:0 6px} .bar{display:inline-block;height:12px;background:#2f6fb7;vertical-align:middle;margin-right:8px;border-radius:2px}
+.legend{margin-top:16px;font-size:13px;color:#52606d}
+</style></head><body><h1>Employees who left the company</h1><p class='sub'>1,470 rows; in 237 of them (16%) <b>attrition = Yes</b>. Highlighted groups have at least 20 rows and at least 50% of their rows with attrition = Yes.</p><table><thead><tr><th>#</th><th>Group (all conditions must hold)</th><th>Rows</th><th>Rows with attrition = Yes</th><th>Share</th></tr></thead><tbody><tr><td class='num'>1</td><td class='cond'><b>joblevel</b> = 1<span class='and'>AND</span><b>overtime</b> = Yes</td><td class='num' data-v='156'>156</td><td class='num' data-v='82'>82</td><td data-v='0.525641'><span class='bar' style='width:74px'></span>53%</td></tr><tr><td class='num'>2</td><td class='cond'><b>jobrole</b> = Sales_Executive<span class='and'>AND</span><b>overtime</b> = Yes<span class='and'>AND</span><b>stockoptionlevel</b> = 0</td><td class='num' data-v='42'>42</td><td class='num' data-v='23'>23</td><td data-v='0.547619'><span class='bar' style='width:77px'></span>55%</td></tr><tr><td class='num'>3</td><td class='cond'><b>businesstravel</b> = Travel_Frequently<span class='and'>AND</span><b>overtime</b> = No<span class='and'>AND</span><b>monthlyincome</b> = MonthlyIncome_q0<span class='and'>AND</span><b>yearsatcompany</b> = YearsAtCompany_q0</td><td class='num' data-v='27'>27</td><td class='num' data-v='14'>14</td><td data-v='0.518519'><span class='bar' style='width:73px'></span>52%</td></tr></tbody></table><p class='legend'>Click a column heading to sort. No row of the data belongs to two groups.</p>
+<script>
+document.querySelectorAll('th').forEach(function(th, col){th.addEventListener('click', function(){
+  var tb=document.querySelector('tbody'), rows=Array.from(tb.rows), dir=th.dataset.dir==='asc'?'desc':'asc'; th.dataset.dir=dir;
+  rows.sort(function(a,b){var x=a.cells[col], y=b.cells[col];
+    var u=x.dataset.v!==undefined?parseFloat(x.dataset.v):x.textContent.trim(), v=y.dataset.v!==undefined?parseFloat(y.dataset.v):y.textContent.trim();
+    if(!isNaN(parseFloat(u))&&!isNaN(parseFloat(v))){u=parseFloat(u);v=parseFloat(v);} return (u>v?1:u<v?-1:0)*(dir==='asc'?1:-1);});
+  rows.forEach(function(r){tb.appendChild(r);});});});
+</script></body></html>

@@ -1,0 +1,17 @@
+<!DOCTYPE html><html lang='en'><head><meta charset='utf-8'><title>Groups</title><style>
+body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;color:#1f2933;margin:28px;background:#fff}
+h1{font-size:20px;margin:0 0 6px} p.sub{margin:0 0 18px;color:#52606d;font-size:14px;max-width:900px}
+table{border-collapse:collapse;font-size:15px} th,td{padding:9px 14px;border-bottom:1px solid #d9e2ec;text-align:left;vertical-align:middle}
+th{cursor:pointer;user-select:none;background:#f0f4f8;font-weight:600;white-space:nowrap} th:hover{background:#d9e2ec}
+td.num{text-align:right;font-variant-numeric:tabular-nums} .cond b{font-weight:600}
+.and{color:#829ab1;font-size:12px;margin:0 6px} .bar{display:inline-block;height:12px;background:#2f6fb7;vertical-align:middle;margin-right:8px;border-radius:2px}
+.legend{margin-top:16px;font-size:13px;color:#52606d}
+</style></head><body><h1>People who earn more than 50K a year</h1><p class='sub'>48,842 rows; in 11,687 of them (24%) <b>income = &gt;50K</b>. Highlighted groups have at least 100 rows and at least 80% of their rows with income = &gt;50K.</p><table><thead><tr><th>#</th><th>Group (all conditions must hold)</th><th>Rows</th><th>Rows with income = &gt;50K</th><th>Share</th></tr></thead><tbody><tr><td class='num'>1</td><td class='cond'><b>occupation</b> = Exec-managerial<span class='and'>AND</span><b>capital_gain</b> = yes</td><td class='num' data-v='810'>810</td><td class='num' data-v='660'>660</td><td data-v='0.814815'><span class='bar' style='width:114px'></span>81%</td></tr><tr><td class='num'>2</td><td class='cond'><b>occupation</b> = Prof-specialty<span class='and'>AND</span><b>sex</b> = Male<span class='and'>AND</span><b>capital_gain</b> = yes</td><td class='num' data-v='592'>592</td><td class='num' data-v='513'>513</td><td data-v='0.866554'><span class='bar' style='width:121px'></span>87%</td></tr><tr><td class='num'>3</td><td class='cond'><b>relationship</b> = Husband<span class='and'>AND</span><b>capital_loss</b> = yes<span class='and'>AND</span><b>hours</b> = hours_q2</td><td class='num' data-v='500'>500</td><td class='num' data-v='402'>402</td><td data-v='0.804000'><span class='bar' style='width:113px'></span>80%</td></tr></tbody></table><p class='legend'>Click a column heading to sort. No row of the data belongs to two groups.</p>
+<script>
+document.querySelectorAll('th').forEach(function(th, col){th.addEventListener('click', function(){
+  var tb=document.querySelector('tbody'), rows=Array.from(tb.rows), dir=th.dataset.dir==='asc'?'desc':'asc'; th.dataset.dir=dir;
+  rows.sort(function(a,b){var x=a.cells[col], y=b.cells[col];
+    var u=x.dataset.v!==undefined?parseFloat(x.dataset.v):x.textContent.trim(), v=y.dataset.v!==undefined?parseFloat(y.dataset.v):y.textContent.trim();
+    if(!isNaN(parseFloat(u))&&!isNaN(parseFloat(v))){u=parseFloat(u);v=parseFloat(v);} return (u>v?1:u<v?-1:0)*(dir==='asc'?1:-1);});
+  rows.forEach(function(r){tb.appendChild(r);});});});
+</script></body></html>
