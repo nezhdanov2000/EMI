@@ -3743,8 +3743,7 @@ async function logSessionEvent(event, data) {
 // is what it was before this feature. Toggle on: `/api/landscape/free_rules`
 // returns the best set of rules that share no row - each a conjunction of
 // up to four (column = value) conditions, i.e. a cell of some 1D-4D schema -
-// under a budget of conditions (the field at the top of the rule list, default 8; it
-// is NOT the selected branch's condition count), at the current green
+// under a budget of conditions, at the current green
 // boundary, minimum rows per centre and "Certified centres only". It is the
 // selection of the paper's `rules_disjoint` baseline run on all rows
 // (`vsf.free_rules`). Then:
@@ -3755,14 +3754,24 @@ async function logSessionEvent(event, data) {
 //   * the rules are listed beside the plot; clicking one opens its schema;
 //   * two numbers stand side by side: the coverage of the selected branch
 //     and the coverage of the rule set, both on all rows.
+// The budget: by default the number of conditions the SELECTED BRANCH spells
+// out (centres x d; the conditions of its partial centres under partial
+// axes), so that the two coverages stand at the same description length -
+// but never more than FREE_RULES_AUTO_CAP: a 4D branch can spell out 160
+// conditions, and that many free rules cover almost anything. A branch with
+// no centre has no length to match; the budget is then
+// FREE_RULES_FALLBACK_BUDGET. Typing a number in the field fixes the budget
+// by hand until "match branch" is pressed. The panel always says which of
+// the four it is.
 // Every switch of the toggle, every budget change and every rule set shown
 // is written to the session log.
 const FREE_RULES_COLOR = '#2dd4bf';
-const FREE_RULES_DEFAULT_BUDGET = 8;
+const FREE_RULES_FALLBACK_BUDGET = 8;
+const FREE_RULES_AUTO_CAP = 32;
 const FREE_RULES_MAX_BUDGET = 64;
 let freeRulesState = {
     on: false,
-    budget: FREE_RULES_DEFAULT_BUDGET,   // last budget acted on (and logged)
+    budgetManual: null,   // a budget typed by the reader, or null = follow the branch
     key: null,       // JSON of the request the rules on screen answer
     data: null,      // /api/landscape/free_rules response
     error: null,     // text shown in the panel instead of the rules
@@ -3770,11 +3779,32 @@ let freeRulesState = {
 };
 let _freeRulesRequestSeq = 0;
 
+// {budget, source, branch_conditions}: source is 'manual' (typed), 'branch'
+// (= the selected branch's conditions), 'branch_capped' (the branch spells
+// out more than the cap) or 'fallback' (the branch has no centre).
+function freeRulesBudgetInfo() {
+    const branch = freeRulesBranchSummary();
+    const c = (branch && Number.isFinite(branch.conditions)) ? Math.round(branch.conditions) : 0;
+    if (freeRulesState.budgetManual !== null) {
+        return { budget: freeRulesState.budgetManual, source: 'manual', branch_conditions: c };
+    }
+    if (c < 1) return { budget: FREE_RULES_FALLBACK_BUDGET, source: 'fallback', branch_conditions: c };
+    return c > FREE_RULES_AUTO_CAP
+        ? { budget: FREE_RULES_AUTO_CAP, source: 'branch_capped', branch_conditions: c }
+        : { budget: c, source: 'branch', branch_conditions: c };
+}
+
 function freeRulesBudget() {
+    return freeRulesBudgetInfo().budget;
+}
+
+// The field shows the budget in force (unless the reader is typing in it).
+function syncFreeRulesBudgetField() {
+    const info = freeRulesBudgetInfo();
     const el = document.getElementById('freeRulesBudget');
-    const v = el ? Math.round(Number(el.value)) : FREE_RULES_DEFAULT_BUDGET;
-    if (!Number.isFinite(v)) return FREE_RULES_DEFAULT_BUDGET;
-    return Math.max(1, Math.min(FREE_RULES_MAX_BUDGET, v));
+    if (el && document.activeElement !== el) el.value = String(info.budget);
+    const auto = document.getElementById('freeRulesBudgetAuto');
+    if (auto) auto.style.display = info.source === 'manual' ? '' : 'none';
 }
 
 function freeRulesRequest() {
@@ -3790,6 +3820,8 @@ function freeRulesLogContext() {
     return {
         on: freeRulesState.on,
         budget: freeRulesBudget(),
+        budget_source: freeRulesBudgetInfo().source,
+        branch_conditions: freeRulesBudgetInfo().branch_conditions,
         view_mode: viewMode,
         landscape_d: landscapeDimRequested(),
         target: p ? p.target : null,
@@ -3819,16 +3851,29 @@ function onFreeRulesToggle() {
 
 function onFreeRulesBudgetChange() {
     const el = document.getElementById('freeRulesBudget');
-    const budget = freeRulesBudget();
-    if (el) el.value = String(budget);
-    if (budget === freeRulesState.budget) return;   // e.g. the field lost focus unchanged
-    freeRulesState.budget = budget;
+    let v = el ? Math.round(Number(el.value)) : NaN;
+    if (!Number.isFinite(v)) { syncFreeRulesBudgetField(); return; }
+    v = Math.max(1, Math.min(FREE_RULES_MAX_BUDGET, v));
+    if (v === freeRulesBudget()) { if (el) el.value = String(v); return; }   // unchanged
+    freeRulesState.budgetManual = v;
+    if (el) el.value = String(v);
+    syncFreeRulesBudgetField();
+    logSessionEvent('free_rules_budget', freeRulesLogContext());
+    refreshFreeRules();
+}
+
+// "match branch": drop the typed budget and follow the selected branch again.
+function onFreeRulesBudgetAuto() {
+    if (freeRulesState.budgetManual === null) return;
+    freeRulesState.budgetManual = null;
+    syncFreeRulesBudgetField();
     logSessionEvent('free_rules_budget', freeRulesLogContext());
     refreshFreeRules();
 }
 
 async function refreshFreeRules() {
     if (!freeRulesState.on) return;
+    syncFreeRulesBudgetField();
     const req = freeRulesRequest();
     if (!req) { renderFreeRulesPanel(); return; }
     const key = JSON.stringify(req);
@@ -3965,9 +4010,17 @@ function renderFreeRulesPanel() {
     } else {
         const branch = freeRulesBranchSummary();
         const ruleWord = data.rule === 'certified' ? 'certified at' : 'observed share at least';
+        const bi = freeRulesBudgetInfo();
+        const budgetWhy = bi.source === 'manual'
+            ? `set by hand (the selected branch spells out ${bi.branch_conditions})`
+            : bi.source === 'branch' ? 'the number the selected branch spells out'
+            : bi.source === 'branch_capped'
+                ? `the selected branch spells out ${bi.branch_conditions}; the budget stops at ${FREE_RULES_AUTO_CAP}`
+                : `the selected branch has no centre to match, so ${FREE_RULES_FALLBACK_BUDGET} is used`;
         parts.push(`<div class="fr-sub">The best set of rules that share no row, up to four conditions each, `
             + `${ruleWord} ${(data.tau * 100).toFixed(0)}%, at least ${data.min_samples} row${data.min_samples === 1 ? '' : 's'} per rule, `
-            + `within <strong>${data.budget}</strong> condition${data.budget === 1 ? '' : 's'} in total. `
+            + `within <strong>${data.budget}</strong> condition${data.budget === 1 ? '' : 's'} in total `
+            + `(<span id="frBudgetWhy">${budgetWhy}</span>). `
             + `Chosen from ${data.n_candidates} qualifying rule${data.n_candidates === 1 ? '' : 's'}.</div>`);
         const branchBox = branch
             ? `<div class="fr-number"><span class="lab">Selected branch (${branch.d}D)</span>`
@@ -3980,10 +4033,29 @@ function renderFreeRulesPanel() {
             + `<span class="val" id="frRulesCoverage">${pct(data.coverage)}</span>`
             + `<span class="det">${data.rules.length} rule${data.rules.length === 1 ? '' : 's'} · ${data.conditions} of ${data.budget} conditions</span></div></div>`);
         parts.push('<div class="fr-caption" id="frCaption">computed on all rows, not checked on new data</div>');
+        // The two numbers are read side by side, so say so whenever they do
+        // NOT stand at the same description length, and say what a branch
+        // without centres means: the grid found nothing here, the rules are
+        // what other schemas hold.
+        const boundary = `${(data.tau * 100).toFixed(0)}%`;
+        if (bi.branch_conditions < 1) {
+            parts.push(`<div class="fr-warn" id="frLengthNote">This branch has no centre at ${boundary}`
+                + `${data.rule === 'certified' ? ' under the certificate' : ''}. `
+                + (data.rules.length
+                    ? `Free rules at a budget of ${data.budget}: coverage ${pct(data.coverage)}.`
+                    : `No group of up to four conditions reaches the boundary either.`)
+                + `</div>`);
+        } else if (bi.branch_conditions !== data.budget) {
+            const why = bi.source === 'branch_capped' ? `the cap` : 'set by hand';
+            parts.push(`<div class="fr-warn" id="frLengthNote">Not at equal length — branch: ${bi.branch_conditions} `
+                + `condition${bi.branch_conditions === 1 ? '' : 's'}, rules: ${data.budget} (${why}).</div>`);
+        }
         const dShown = landscapeState.bins ? landscapeState.bins.d : landscapeDimRequested();
         const all = dShown === null || dShown === undefined;
         if (!data.rules.length) {
-            parts.push('<div class="fr-sub">No rule qualifies at this boundary and minimum size.</div>');
+            if (bi.branch_conditions >= 1) {
+                parts.push('<div class="fr-sub">No group of up to four conditions reaches the boundary at this minimum size.</div>');
+            }
         } else if (!all) {
             const here = data.rules.filter(r => r.landscape && Number(r.landscape.d) === Number(dShown)).length;
             parts.push(`<div class="fr-sub">The lattice shows ${dShown}D schemas: <strong>${here}</strong> of ${data.rules.length} `

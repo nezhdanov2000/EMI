@@ -17,7 +17,7 @@
     <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
 
     <link rel="stylesheet" href="/static/css/styles.css?v=5048">
-    <script src="/static/js/app.js?v=5055" defer></script>
+    <script src="/static/js/app.js?v=5057" defer></script>
 </head>
 
 <body>
@@ -265,9 +265,11 @@
                         <div class="fr-head">
                             <span class="fr-title">Free rules</span>
                             <label class="fr-budget"
-                                title="The most (column = value) conditions the rules may spell out in total: a rule of three conditions costs 3. Set here, not taken from the selected branch.">
+                                title="The most (column = value) conditions the rules may spell out in total: a rule of three conditions costs 3. By default it is the number of conditions the selected branch spells out, at most 32 (8 when the branch has no centre), so that both coverages are read at the same description length. Type a number to fix it by hand.">
                                 <span>Conditions budget:</span>
                                 <input type="number" id="freeRulesBudget" min="1" max="64" step="1" value="8" onchange="onFreeRulesBudgetChange()">
+                                <button type="button" id="freeRulesBudgetAuto" class="landscape-open" style="display: none;" onclick="onFreeRulesBudgetAuto()"
+                                    title="Drop the typed budget and use the selected branch's number of conditions again.">match branch</button>
                             </label>
                         </div>
                         <div id="freeRulesBody" class="fr-body"></div>

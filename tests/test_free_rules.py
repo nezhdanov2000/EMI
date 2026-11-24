@@ -323,7 +323,7 @@ def test_session_log_off_is_reported_not_silent() -> None:
 # Page: the feature is off until switched on
 # ---------------------------------------------------------------------------
 
-def test_page_ships_the_toggle_off_with_a_budget_of_eight() -> None:
+def test_page_ships_the_toggle_off_and_budgets_by_the_selected_branch() -> None:
     import re
     from vsf.server import _read_webapp_asset
 
@@ -337,6 +337,11 @@ def test_page_ships_the_toggle_off_with_a_budget_of_eight() -> None:
     js = _read_webapp_asset("static/js/app.js")
     assert "computed on all rows, not checked on new data" in js
     assert "logSessionEvent('free_rules_toggle'" in js
-    # the budget is the field's, never the selected branch's condition count
+    # the budget follows the selected branch's conditions, capped, with a
+    # fallback for a branch that has no centre; a typed number overrides it
+    assert "const FREE_RULES_AUTO_CAP = 32;" in js and "const FREE_RULES_FALLBACK_BUDGET = 8;" in js
+    info = js[js.index("function freeRulesBudgetInfo()"):js.index("function freeRulesBudget()")]
+    for needle in ("freeRulesState.budgetManual", "source: 'fallback'", "source: 'branch_capped'", "source: 'branch'", "c > FREE_RULES_AUTO_CAP"):
+        assert needle in info
     request = js[js.index("function freeRulesRequest()"):js.index("// What the session log says")]
-    assert "budget: freeRulesBudget()" in request and "conditions" not in request
+    assert "budget: freeRulesBudget()" in request
