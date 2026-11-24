@@ -3,7 +3,8 @@
 
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="theme-color" content="#070a13">
     <title>Visual Sufficiency Framework (VSF) — 3D Visualizer</title>
 
     <!-- Google Fonts -->
@@ -16,8 +17,8 @@
     <!-- Plotly.js -->
     <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
 
-    <link rel="stylesheet" href="/static/css/styles.css?v=5048">
-    <script src="/static/js/app.js?v=5057" defer></script>
+    <link rel="stylesheet" href="/static/css/styles.css?v=5049">
+    <script src="/static/js/app.js?v=5058" defer></script>
 </head>
 
 <body>
@@ -154,11 +155,11 @@
 
             <div id="resultsArea" style="display: none;">
             <div class="viewport-toolbar">
-                <div style="display: flex; gap: 1.25rem; align-items: center; width: 100%; flex-wrap: wrap;">
-                    <div
+                <div class="tb-row" style="display: flex; gap: 1.25rem; align-items: center; width: 100%; flex-wrap: wrap;">
+                    <div class="tb-title"
                         style="font-weight: 600; font-size: 0.9rem; color: #f8fafc; border-right: 1px solid var(--border-color); padding-right: 1.25rem;">
                         📊 Branch Metrics</div>
-                    <div style="display: flex; gap: 1.25rem; flex: 1; flex-wrap: wrap;">
+                    <div class="tb-metrics" style="display: flex; gap: 1.25rem; flex: 1; flex-wrap: wrap;">
                         <div id="hud-free" style="display: none; align-items: baseline; gap: 6px;"
                             title="Absence search: the share of ALL rows that fall inside cells certified to be at least tau free of the chosen value. This is the headline of an absence search: how much of the data can be excluded from the search for the value.">
                             <span style="font-size: 0.75rem; color: var(--text-dim);">Certified free:</span>
@@ -180,7 +181,7 @@
                             <strong id="val-conditions" style="color: var(--text-main); font-size: 1.05rem;">-</strong>
                         </div>
                     </div>
-                    <div style="display: flex; align-items: center; gap: 8px; border-left: 1px solid var(--border-color); padding-left: 1rem;">
+                    <div class="tb-dims" style="display: flex; align-items: center; gap: 8px; border-left: 1px solid var(--border-color); padding-left: 1rem;">
                         <span style="font-size: 0.75rem; color: var(--text-dim); font-weight: 500;"
                             title="Collapse/split the CURRENT branch's own axes (animated) — this never switches to a different branch">Dimensionality:</span>
                         <div id="dimButtonsGroup" class="view-toggle-group" style="padding: 2px;"></div>
@@ -190,7 +191,7 @@
                          is every schema the search scored, as a 10 x 10 lattice
                          of (coverage, centres) categories coloured by how many
                          schemas fall in each. -->
-                    <div style="display: flex; align-items: center; gap: 8px; border-left: 1px solid var(--border-color); padding-left: 1rem;"
+                    <div class="tb-modes" style="display: flex; align-items: center; gap: 8px; border-left: 1px solid var(--border-color); padding-left: 1rem;"
                         title="Lattice: the cells of the selected branch. Landscape: every schema the search scored, as a lattice of (coverage, centres) categories coloured by how many schemas reach each — the winner is one point of it. Redundancy: centres of different schemas that hold (almost) the same rows.">
                         <div class="view-toggle-group" style="padding: 2px;">
                             <button type="button" class="view-mode-btn active" data-mode="lattice" onclick="setViewMode('lattice')">Lattice</button>
@@ -201,7 +202,7 @@
                             <button type="button" class="view-mode-btn" data-mode="tradeoffs" onclick="setViewMode('tradeoffs')" title="What coverage costs: how it moves with the purity floor, how many centres the schema that reaches it needs, and how much coverage is available at a given number of rules.">Trade-offs</button>
                         </div>
                     </div>
-                    <div style="font-size: 0.85rem; color: var(--text-dim);"
+                    <div class="tb-samples" style="font-size: 0.85rem; color: var(--text-dim);"
                         title="Rows every statistic and every cell colour is computed on. When the plot subsamples for rendering, the number actually drawn is shown in brackets.">
                         Samples (statistics): <strong id="totalSamplesVal" style="color: #fff;">-</strong>
                     </div>

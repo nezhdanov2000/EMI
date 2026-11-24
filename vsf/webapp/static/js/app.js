@@ -18,6 +18,75 @@
 //     selected branch's own axes (Project_Master_Document.md Section 5.6,
 //     case 2) — it never jumps between branches.
 
+// ---- Phones ------------------------------------------------------------
+// The same query as the phone block at the end of styles.css: a portrait
+// phone, or a phone on its side. Nothing below changes behaviour when it
+// does not match, so a desktop session is the one the study tasks assume.
+const PHONE_MQ = window.matchMedia('(max-width: 640px), (max-height: 500px) and (pointer: coarse)');
+function isPhoneLayout() { return PHONE_MQ.matches; }
+const PHONE_CAMERA_PULL = 1.35;
+
+// On a phone the panels are stacked: the catalog and the branch list sit
+// above the plot, so a tap there would otherwise change a plot that is off
+// screen. Brings the results panel to the top instead.
+function phoneRevealResults() {
+    if (!isPhoneLayout()) return;
+    const vp = document.querySelector('.viz-viewport');
+    if (vp) vp.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+// The explanations live in title attributes, which a touch screen never
+// shows. A tap on a non-interactive element that carries (or sits inside)
+// a title opens it in a bubble; the next tap or a scroll closes it. Taps
+// on buttons, fields, labels, links, plots and anything clickable keep
+// their own meaning and open nothing.
+function initTouchTips() {
+    if (!window.matchMedia('(hover: none)').matches) return;
+    let tip = null;
+    const hide = () => { if (tip) { tip.remove(); tip = null; } };
+    const INTERACTIVE = 'button, a, input, select, textarea, label, summary, [onclick], [role="button"], .js-plotly-plot';
+    document.addEventListener('click', (ev) => {
+        hide();
+        const t = ev.target;
+        if (!(t instanceof Element)) return;
+        const host = t.closest('[title]');
+        if (!host || !host.getAttribute('title').trim()) return;
+        for (let el = t; el; el = el.parentElement) {
+            if (el.matches(INTERACTIVE) || getComputedStyle(el).cursor === 'pointer') return;
+            if (el === host) break;
+        }
+        tip = document.createElement('div');
+        tip.className = 'touch-tip';
+        tip.setAttribute('role', 'tooltip');
+        tip.textContent = host.getAttribute('title');
+        document.body.appendChild(tip);
+        const r = host.getBoundingClientRect(), w = tip.offsetWidth, h = tip.offsetHeight;
+        const vw = document.documentElement.clientWidth, vh = window.innerHeight;
+        const left = Math.min(Math.max(10, r.left + r.width / 2 - w / 2), vw - w - 10);
+        const top = (r.bottom + 8 + h <= vh - 10) ? r.bottom + 8 : Math.max(10, r.top - 8 - h);
+        tip.style.left = left + 'px';
+        tip.style.top = top + 'px';
+    });
+    window.addEventListener('scroll', hide, { passive: true, capture: true });
+    window.addEventListener('resize', hide);
+}
+window.addEventListener('DOMContentLoaded', initTouchTips);
+
+// The welcome text says where the catalog is: on the left on a desktop,
+// above the results on a phone. Rewritten as a text node so the desktop
+// sentence keeps the exact glyph run it has always had.
+function syncWelcomeWording() {
+    const body = document.querySelector('.welcome-state-body');
+    if (!body) return;
+    for (const n of body.childNodes) {
+        if (n.nodeType !== Node.TEXT_NODE) continue;
+        if (isPhoneLayout() && n.nodeValue.includes(' on the left and click')) n.nodeValue = n.nodeValue.replace(' on the left and click', ' above and click');
+        else if (!isPhoneLayout() && n.nodeValue.includes(' above and click')) n.nodeValue = n.nodeValue.replace(' above and click', ' on the left and click');
+    }
+}
+window.addEventListener('DOMContentLoaded', syncWelcomeWording);
+PHONE_MQ.addEventListener('change', syncWelcomeWording);
+
 let currentBranchesResponse = null;
 let activeBranchDim = null;
 let currentPayload = null;
@@ -505,7 +574,11 @@ function populateCatalog(cols, defaultTarget) {
 
             critHeader.onclick = async (e) => {
                 e.stopPropagation();
+                phoneRevealResults();
                 await pickPrimaryTarget(col.id, crit.id);
+                // The branch list above the plot has just filled in and
+                // pushed the plot down: bring it back up.
+                phoneRevealResults();
             };
             critHeader.querySelector('.crit-add').onclick = async (e) => {
                 e.stopPropagation();
@@ -1068,7 +1141,7 @@ function renderBranchSelector(response) {
             </div>
             <div class="branch-features">${features || '—'}</div>
         `;
-        card.onclick = () => selectBranch(dKey);
+        card.onclick = () => { selectBranch(dKey); phoneRevealResults(); };
         container.appendChild(card);
     });
 }
@@ -2754,6 +2827,12 @@ function buildPlotData(payload, dim, sliceIndex) {
     let cameraConfig = undefined;
     if (currentRenderedDim === null) {
         cameraConfig = { eye: { x: 1.6, y: 1.6, z: 1.3 } };
+        // A phone's plot is tall and narrow: from the desktop distance the
+        // tick labels of the left axis fall outside it. Start further out.
+        if (isPhoneLayout()) {
+            const k = PHONE_CAMERA_PULL;
+            cameraConfig = { eye: { x: 1.6 * k, y: 1.6 * k, z: 1.3 * k } };
+        }
     }
 
     const sceneAxis = (ax, range) => ({
@@ -2804,8 +2883,11 @@ function renderPlot(payload) {
     currentRenderedDim = dim;
     if (responseIsPartial() && (partialFocus !== null || partialHighlight !== null)) syncPartialAxisTicks();
 
-    // Default camera distance is ~2.608 (sqrt(1.6^2 + 1.6^2 + 1.3^2))
-    window._currentCameraScale = 1.0;
+    // Default camera distance is ~2.608 (sqrt(1.6^2 + 1.6^2 + 1.3^2)).
+    // Sphere sizes follow the camera distance (plotly_relayout below); a
+    // phone starts PHONE_CAMERA_PULL further out, so its spheres start at
+    // the size the first rotation would give them anyway.
+    window._currentCameraScale = (isPhoneLayout() && data.layout.scene.camera) ? 1 / PHONE_CAMERA_PULL : 1.0;
 
     // Re-apply stroke if it was active
     applyStroke(window._isStrokeActive || false);
@@ -3684,6 +3766,7 @@ function renderLandscapeCell() {
 
 async function openSchemaFromLandscape(features) {
     if (lastTargetCol === null) return;
+    phoneRevealResults();
     await runAnalysis(lastTargetCol, lastCriterion, features.slice());
 }
 
@@ -6105,7 +6188,7 @@ function tauCurveYLabel(data) {
 const TO_PLOT_CFG = { displayModeBar: false, responsive: true };
 
 function toLayout(data, opts) {
-    return {
+    const layout = {
         paper_bgcolor: 'rgba(0,0,0,0)', plot_bgcolor: 'rgba(15,23,42,0.4)',
         margin: { l: 56, r: 12, t: 10, b: opts.xtitle ? 44 : 26 }, autosize: true,
         font: { color: '#94a3b8', size: 11 },
@@ -6121,6 +6204,14 @@ function toLayout(data, opts) {
         legend: { orientation: 'h', x: 0, y: 1.0, yanchor: 'bottom', font: { size: 10 }, itemwidth: 16, traceorder: 'normal' },
         shapes: opts.shapes || [], hovermode: 'closest', showlegend: !!opts.legend,
     };
+    // On a phone a one-finger drag over a chart must scroll the page, not
+    // zoom the chart; taps (hover labels, clicks on a floor) still work.
+    if (isPhoneLayout()) {
+        layout.dragmode = false;
+        layout.xaxis.fixedrange = true;
+        layout.yaxis.fixedrange = true;
+    }
+    return layout;
 }
 
 // Where the envelope changes schema: one tick per change, so a jump in the
@@ -6550,6 +6641,7 @@ function renderTauPoint() {
 // rendered exactly as an "open" from the lattice would render it.
 async function openSchemaAtTau(features, tau) {
     if (lastTargetCol === null) return;
+    phoneRevealResults();
     const tauEl = document.getElementById('certTau');
     if (tauEl) {
         tauEl.value = String(Math.round(tau * 100));
