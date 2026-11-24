@@ -785,16 +785,22 @@ function applyColorBoundary() {
 // client-side re-colouring: the certified set, the coverage and the
 // cross-validated coverage all change with tau.
 async function applyCertificate() {
-    // #certAlpha and #certStrict were removed from Centres & Colour (this
-    // view no longer offers the "certified" rule or a tunable alpha --
-    // readCertRule()/readCertAlpha() degrade to 'purity'/0.05 with the
-    // elements gone), so the strict/alpha validation this function used to
-    // do can never fire and was removed with them. Only tau is still a
-    // live control here.
+    // Live controls: the boundary (#certTau), the minimum rows per centre
+    // (#certMinSamples) and the certified rule (#certStrict). alpha is not
+    // offered: readCertAlpha() returns 0.05 with #certAlpha absent.
     const tauEl = document.getElementById('certTau');
     const tau = tauEl ? Number(tauEl.value) : 90;
     if (!Number.isFinite(tau) || tau <= 0 || tau > 100) {
         showAnalysisError('The green boundary must be in (0, 100] percent.');
+        return;
+    }
+    if (readCertRule() === 'certified' && tau >= 100) {
+        showAnalysisError('A boundary of 100% cannot be certified: lower the green boundary or switch "Certified centres only" off.');
+        return;
+    }
+    const minEl = document.getElementById('certMinSamples');
+    if (minEl && (!Number.isFinite(Number(minEl.value)) || Number(minEl.value) < 1)) {
+        showAnalysisError('Min. rows per centre must be a whole number of at least 1.');
         return;
     }
     if (lastTargetCol === null) return;

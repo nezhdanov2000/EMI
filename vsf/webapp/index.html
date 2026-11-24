@@ -17,7 +17,7 @@
     <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
 
     <link rel="stylesheet" href="/static/css/styles.css?v=5047">
-    <script src="/static/js/app.js?v=5053" defer></script>
+    <script src="/static/js/app.js?v=5054" defer></script>
 </head>
 
 <body>
@@ -652,6 +652,19 @@
                                 style="background: rgba(15, 23, 42, 0.8); color: white; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 2px 6px; width: 55px;">
                             <span style="color: var(--text-muted);">%</span>
                         </div>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <label id="labelCertMin" for="certMinSamples"
+                            title="A cell is a discrete centre only if it holds at least this many rows. 1 = no restriction: a single row with the target value then reads as a 100%-pure centre. Part of the analysis, not of the display: changing it re-runs the search, and it applies to every view (the Scan Dataset button below has its own field).">Min. rows per centre:</label>
+                        <input type="number" id="certMinSamples" min="1" max="100000" step="1" value="1"
+                            onchange="applyCertificate()"
+                            style="background: rgba(15, 23, 42, 0.8); color: white; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 2px 6px; width: 70px;">
+                    </div>
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <label id="labelCertStrict" for="certStrict"
+                            title="Off: a cell is a centre when its OBSERVED share reaches the green boundary. On: a cell is a centre only when its count passes the exact test at level alpha / T over the whole family of cells the search can show, so the centres stay valid after the search and after the boundary is moved (the certificate of the paper). 100% cannot be certified. On small tables nothing may pass.">Certified centres only:</label>
+                        <input type="checkbox" id="certStrict" onchange="applyCertificate()"
+                            style="width: 16px; height: 16px; accent-color: var(--green);">
                     </div>
                     <div id="certSummary" style="font-size: 0.72rem; color: var(--text-dim); line-height: 1.45;"></div>
 
