@@ -155,6 +155,33 @@ CONFIGS: List[Config] = [
 # exhaustive search over d <= 4 on 325-7070 columns needs a feature pre-filter.
 
 
+#: The fixed grid of the robustness check: every (dataset, target value) of the
+#: paper's configurations at the same purity floors and size floors, whatever
+#: the floor the paper's own configuration uses.
+GRID_TAUS: Tuple[float, ...] = (0.7, 0.9)
+GRID_MIN_SAMPLES: Tuple[int, ...] = (1, 20)
+
+
+def grid_configs() -> List[Config]:
+    """
+    The fixed (tau, m) grid under the observed-purity rule: for every
+    (dataset, target value) listed in CONFIGS, tau in GRID_TAUS x m in
+    GRID_MIN_SAMPLES, with the repeats and `max_d` of the paper's own
+    configuration of that dataset. A grid configuration that coincides with
+    a paper configuration has the same cache key, so its splits are reused.
+    """
+    seen: Dict[Tuple[str, str], Config] = {}
+    for c in CONFIGS:
+        seen.setdefault((c.dataset, c.positive), c)
+    out: List[Config] = []
+    for (dataset, positive), ref in seen.items():
+        for tau in GRID_TAUS:
+            for m in GRID_MIN_SAMPLES:
+                out.append(Config(dataset, positive, tau, min_samples=m, n_repeats=ref.n_repeats,
+                                  max_d=ref.max_d, selection="purity"))
+    return out
+
+
 def synthetic(name: str, seed: int = 0, n: int = 2000) -> Tuple[np.ndarray, np.ndarray]:
     rng = np.random.default_rng(seed)
     if name == "grid":
@@ -358,6 +385,14 @@ def main() -> int:
                     help="comma-separated list of split indices to compute (e.g. 5,6,7)")
     ap.add_argument("--positive", default=None,
                     help="filter dataset configurations by positive target class")
+    ap.add_argument("--config-set", choices=("paper", "grid"), default="paper",
+                    help="paper: CONFIGS (the paper's tables); grid: the fixed (tau, m) grid of grid_configs(), "
+                         "summarised in compare_grid_<name>.csv so the paper's files are never touched")
+    ap.add_argument("--tau", type=float, default=None, help="filter dataset configurations by purity floor")
+    ap.add_argument("--min-samples", type=int, default=None, help="filter dataset configurations by size floor")
+    ap.add_argument("--no-csv", action="store_true",
+                    help="compute and cache the requested splits only; exit 3 if any requested split is left "
+                         "(used by run_jobs.py, whose jobs each cover a few splits of one configuration)")
     args = ap.parse_args()
     if args.methods is None:
         absent = unavailable_methods(ALL_METHODS)
@@ -379,9 +414,14 @@ def main() -> int:
         jobs = [(base, Config(args.synthetic, "yes", 0.9, min_samples=5, selection=sel), X, Z)
                 for sel in ("purity", "certified", "split")]
     else:
-        configs = [c for c in CONFIGS if c.dataset == args.only]
+        source = CONFIGS if args.config_set == "paper" else grid_configs()
+        configs = [c for c in source if c.dataset == args.only]
         if args.positive is not None:
             configs = [c for c in configs if c.positive == args.positive]
+        if args.tau is not None:
+            configs = [c for c in configs if abs(c.tau - args.tau) < 1e-9]
+        if args.min_samples is not None:
+            configs = [c for c in configs if c.min_samples == args.min_samples]
         if not configs:
             raise SystemExit(f"no configuration for {args.only!r}")
         frame, entry = load_dataset(args.only)
@@ -464,14 +504,27 @@ def main() -> int:
             )
             print(f"  {mth:11s} {line}")
         sys.stdout.flush()
+    if args.no_csv:
+        if missing:
+            print(f"{missing} split(s) left: run the same command again")
+            return 3
+        print("requested splits are cached (no csv written: --no-csv)")
+        return 0
     if missing:
         print(f"{missing} split(s) left: run the same command again")
+        return 0
+    if not args.synthetic and args.config_set == "grid" and (
+            args.positive is not None or args.tau is not None or args.min_samples is not None or args.splits is not None):
+        print("no compare csv written: a filtered grid run would hold only part of the dataset's rows")
+        return 0
+    if not rows:
+        print("no complete configuration: nothing to write")
         return 0
     if "vsf" not in wanted:
         print("no compare csv written: --methods without vsf (extra methods only)")
         return 0
     name = jobs[0][0] if args.synthetic else args.only
-    out = RESULTS / f"compare_{name}.csv"
+    out = RESULTS / (f"compare_grid_{name}.csv" if (not args.synthetic and args.config_set == "grid") else f"compare_{name}.csv")
     out.parent.mkdir(parents=True, exist_ok=True)
     with out.open("w", newline="", encoding="utf-8") as fh:
         w = csv.DictWriter(fh, fieldnames=list(rows[0].keys()), lineterminator="\n")

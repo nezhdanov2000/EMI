@@ -93,3 +93,8 @@ experiments/results/*.tar.gz
 
 # archived paper drafts (kept locally, not versioned)
 _archive_drafts/
+
+# job runner state, logs and discarded test output (machine-specific)
+experiments/results/jobs/
+experiments/logs/jobs/
+experiments/results/_to_delete/

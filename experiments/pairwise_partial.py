@@ -27,7 +27,7 @@ import pandas as pd
 from scipy.stats import t as student_t
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from compare_baselines import CONFIGS, N_SPLITS, RESULTS, BUDGETS, _cache_path, CACHE_EXTRA  # noqa: E402
+from compare_baselines import CONFIGS, N_SPLITS, RESULTS, BUDGETS, _cache_path, CACHE_EXTRA, grid_configs  # noqa: E402
 from datasets import load_dataset  # noqa: E402
 
 
@@ -68,9 +68,15 @@ HOLM_COMPARISONS = ("partial_vs_vsf", "partial_vs_rules_disjoint", "vsf_vs_rules
 
 
 def main() -> int:
+    import argparse
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--config-set", choices=("paper", "grid"), default="paper",
+                    help="paper: CONFIGS -> pairwise_partial.csv; grid: the fixed (tau, m) grid -> pairwise_grid.csv")
+    args = ap.parse_args()
+    configs = CONFIGS if args.config_set == "paper" else grid_configs()
     rows: List[Dict[str, object]] = []
     frames: Dict[str, tuple] = {}
-    for cfg in CONFIGS:
+    for cfg in configs:
         if cfg.dataset not in frames:
             frame, entry = load_dataset(cfg.dataset)
             feats = [c for c in frame.columns if c != entry.target]
@@ -109,7 +115,8 @@ def main() -> int:
             t_rules = nb_t(cov["vsf_partial"] - cov["rules_disjoint"], rho)
             t_grid_rules = nb_t(cov["vsf"] - cov["rules_disjoint"], rho)
             t_tree = nb_t(cov["vsf_partial"] - cov["tree"], rho)
-            t_ssd = nb_t(cov["vsf_partial"] - cov["ssdpp"], rho)
+            # SSD++ is absent from splits computed without the `rulelist` package (the grid's core stage)
+            t_ssd = nb_t(cov["vsf_partial"] - cov["ssdpp"], rho) if "ssdpp" in cov else float("nan")
             t_greedy = nb_t(cov["vsf"] - cov["vsf_greedy"], rho)
             # net coverage (k - tau/(1-tau)(n-k))/P and stability (mean pairwise Jaccard of held-out unions)
             net = {}
@@ -150,9 +157,10 @@ def main() -> int:
                 cov_greedy=cov["vsf_greedy"].mean(),
                 partial_vs_vsf=mark(t_full), partial_vs_rules_disjoint=mark(t_rules), vsf_vs_rules_disjoint=mark(t_grid_rules),
                 partial_vs_tree=mark(t_tree), vsf_vs_greedy=mark(t_greedy),
-                cov_ssdpp=cov["ssdpp"].mean(), partial_vs_ssdpp=mark(t_ssd),
-                purity_ok_ssdpp=np.nanmean(pur["ssdpp"] >= cfg.tau),
-                net_partial=net["vsf_partial"], net_rules=net["rules"], net_rules_disjoint=net["rules_disjoint"], net_vsf=net["vsf"], net_tree=net["tree"], net_ssdpp=net["ssdpp"],
+                cov_ssdpp=cov["ssdpp"].mean() if "ssdpp" in cov else np.nan,
+                partial_vs_ssdpp=mark(t_ssd) if "ssdpp" in cov else "",
+                purity_ok_ssdpp=np.nanmean(pur["ssdpp"] >= cfg.tau) if "ssdpp" in cov else np.nan,
+                net_partial=net["vsf_partial"], net_rules=net["rules"], net_rules_disjoint=net["rules_disjoint"], net_vsf=net["vsf"], net_tree=net["tree"], net_ssdpp=net.get("ssdpp", np.nan),
                 partial_vs_rules_net=mark(t_net),
                 **wr,
                 gap_closed=closed,
@@ -167,7 +175,7 @@ def main() -> int:
                 r[f"{cmp_name}_holm"] = hm
         rows.extend(config_rows)
     d = pd.DataFrame(rows)
-    out = RESULTS / "pairwise_partial.csv"
+    out = RESULTS / ("pairwise_partial.csv" if args.config_set == "paper" else "pairwise_grid.csv")
     d.to_csv(out, index=False)
     for sel, s in d.groupby("selection"):
         print(f"\n== selection = {sel}: {s.groupby(['dataset','tau']).ngroups} configs x budgets = {len(s)} cells")
