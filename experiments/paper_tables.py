@@ -1,4 +1,4 @@
-"""LaTeX tables for paper/ from results/pairwise_partial.csv and benchmark_data/MANIFEST.csv."""
+"""LaTeX tables for paper/ from results/pairwise_partial.csv, results/pairwise_grid.csv and benchmark_data/MANIFEST.csv."""
 from __future__ import annotations
 
 import sys
@@ -177,6 +177,45 @@ def tree_opt_table(d: pd.DataFrame, budget: int) -> str:
     return "\n".join(lines)
 
 
+def grid_floor_table(g: pd.DataFrame, budget: int) -> str:
+    """
+    The fixed (tau, m) grid of `compare_baselines.grid_configs` at one
+    budget, one row per floor and one for all floors: informative
+    configurations, the marks of partial centres and of the full grid
+    against free disjoint rules, and the means over configurations of
+    held-out coverage, net coverage and the share of splits whose held-out
+    union reaches tau, for the full grid, partial centres and disjoint rules.
+    Input: `results/pairwise_grid.csv` (`pairwise_partial.py --config-set grid`).
+    """
+    b = g[g.budget == budget]
+
+    def marks(frame: pd.DataFrame, col: str) -> str:
+        c = frame[col].value_counts().reindex(["+", "=", "-"], fill_value=0)
+        return f"{c['+']} & {c['=']} & {c['-']}"
+
+    def three(frame: pd.DataFrame, cols: tuple[str, str, str], scale: float, fmt: str) -> str:
+        return " & ".join(f"${format(scale * frame[c].mean(), fmt)}$" for c in cols)
+
+    def row(head: str, frame: pd.DataFrame) -> str:
+        return (f"{head} & {len(frame)} & {marks(frame, 'partial_vs_rules_disjoint')} & {marks(frame, 'vsf_vs_rules_disjoint')} & "
+                f"{three(frame, ('cov_vsf', 'cov_partial', 'cov_rules_disjoint'), 100, '.0f')} & "
+                f"{three(frame, ('net_vsf', 'net_partial', 'net_rules_disjoint'), 100, '.0f')} & "
+                f"{three(frame, ('purity_ok_vsf', 'purity_ok_partial', 'purity_ok_rules_disjoint'), 100, '.0f')}\\\\")
+
+    lines = [r"\begin{tabular}{rrr rrr rrr rrr rrr rrr}", r"\toprule",
+             r"& & & \multicolumn{3}{c}{part.\ vs rules} & \multicolumn{3}{c}{grid vs rules} & "
+             r"\multicolumn{3}{c}{coverage} & \multicolumn{3}{c}{net coverage} & \multicolumn{3}{c}{splits at $\ge\tau$, \%}\\",
+             r"\cmidrule(lr){4-6}\cmidrule(lr){7-9}\cmidrule(lr){10-12}\cmidrule(lr){13-15}\cmidrule(lr){16-18}",
+             r"$\tau$ & $m$ & $n$ & $+$ & $=$ & $-$ & $+$ & $=$ & $-$ & grid & part. & rules & grid & part. & rules & grid & part. & rules\\",
+             r"\midrule"]
+    for (tau, m), frame in b.groupby(["tau", "m"]):
+        lines.append(row(f"{tau:g} & {int(m)}", frame))
+    lines.append(r"\midrule")
+    lines.append(row(r"\multicolumn{2}{l}{all}", b))
+    lines += [r"\bottomrule", r"\end{tabular}"]
+    return "\n".join(lines)
+
+
 def data_table() -> str:
     """
     One row per (dataset, target value): rows, columns, the target value, its
@@ -211,6 +250,9 @@ def main() -> int:
     (OUT / "split_B32.tex").write_text(split_table(d, 32) + "\n")
     (OUT / "tree_opt_B32.tex").write_text(tree_opt_table(d, 32) + "\n")
     (OUT / "datasets.tex").write_text(data_table() + "\n")
+    grid_csv = ROOT / "experiments" / "results" / "pairwise_grid.csv"
+    if grid_csv.exists():  # the fixed (tau, m) grid: `pairwise_partial.py --config-set grid`
+        (OUT / "grid_floors_B32.tex").write_text(grid_floor_table(pd.read_csv(grid_csv), 32) + "\n")
     print("wrote", sorted(p.name for p in OUT.glob("*.tex")))
     return 0
 

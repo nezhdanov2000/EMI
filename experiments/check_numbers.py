@@ -327,6 +327,48 @@ def run(tex_path: Path) -> int:
         if int(fb["false_certificates"]) == 0:
             ck.expect("noise: family rate", rf"makes none in \${thin(int(fb['runs']))}\$ runs")
 
+    # --- the fixed (tau, m) grid (Section 7.10, Table `grid_floors_B32`)
+    grid_path = RESULTS / "pairwise_grid.csv"
+    if grid_path.exists():
+        gr = read_csv(grid_path)
+        gr32 = [r for r in gr if r["budget"] == "32"]
+        g_configs = n_configs(gr)
+        g_targets = len({(r["dataset"], r["positive"]) for r in gr})
+        n_floors = len({(r["tau"], r["m"]) for r in gr})
+        ck.expect("grid: size", rf"each of the {g_targets} \(table, target value\) pairs.*{g_targets * n_floors} configurations, of which {g_configs} are informative, {len(gr)} cells")
+        gp = counts(gr, "partial_vs_rules_disjoint")
+        gph = counts(gr, "partial_vs_rules_disjoint_holm")
+        gp32 = counts(gr32, "partial_vs_rules_disjoint")
+        ck.expect("grid: partial vs disjoint", rf"lose to free disjoint rules in {gp['-']} of {len(gr)} cells and win {gp['+']} \({gph['-']} and {gph['+']} after Holm\); at \$B=32\$ they lose {gp32['-']} of {len(gr32)} configurations and win {gp32['+']}")
+        gg = counts(gr, "vsf_vs_rules_disjoint")
+        gpv = counts(gr, "partial_vs_vsf")
+        never = "never worse" if gpv["-"] == 0 else f"worse in {gpv['-']}"
+        ck.expect("grid: full grid, partial vs grid", rf"The full grid loses {gg['-']} cells and wins {gg['+']}, and partial centres are better than the full grid in {gpv['+']} cells and {never}")
+        by_m = {m: [r for r in gr32 if r["m"] == m] for m in ("1", "20")}
+        lost_m = {m: counts(rows_m, "partial_vs_rules_disjoint")["-"] for m, rows_m in by_m.items()}
+        ck.expect("grid: size floor", rf"lose {lost_m['1']} of the {len(by_m['1'])} configurations with \$m=1\$ and {lost_m['20']} of the {len(by_m['20'])} with \$m=20\$")
+
+        def floor_mean(tau: str, m: str, column: str) -> int:
+            return round(100 * mean(floats([r for r in gr32 if float(r["tau"]) == float(tau) and r["m"] == m], column)))
+
+        net = {m: [floor_mean("0.9", m, c) for c in ("net_vsf", "net_partial", "net_rules_disjoint")] for m in ("1", "20")}
+        ck.expect("grid: net at tau 0.9", rf"from \${net['1'][0]}\$, \${net['1'][1]}\$ and \${net['1'][2]}\$ points.*at \$m=1\$ to \${net['20'][0]}\$, \${net['20'][1]}\$ and \${net['20'][2]}\$ at \$m=20\$")
+        ok = [floor_mean("0.9", "1", c) for c in ("purity_ok_vsf", "purity_ok_partial", "purity_ok_rules_disjoint")]
+        ck.expect("grid: purity kept at tau 0.9, m 1", rf"reaches \$\\tau\$ in \${ok[0]}\$, \${ok[1]}\$ and \${ok[2]}\\,\\%\$ of the splits")
+        per_target: Dict[Tuple[str, str], List[str]] = defaultdict(list)
+        for r in gr32:
+            per_target[(r["dataset"], r["positive"])].append(r["partial_vs_rules_disjoint"])
+        always_lose = sorted(k for k, v in per_target.items() if len(v) == n_floors and set(v) == {"-"})
+        always_win = sorted(k for k, v in per_target.items() if len(v) == n_floors and set(v) == {"+"})
+        if always_lose == [("connect_4", "loss"), ("mlc_churn", "yes"), ("wa_churn", "Yes")]:
+            ck.expect("grid: tables that lose at every floor", r"\\texttt\{connect\\_4\} with target \\texttt\{loss\}, \\texttt\{mlc\\_churn\} and \\texttt\{wa\\_churn\} lose at all four")
+        else:
+            ck.failures.append(f"grid: tables losing at every floor are now {always_lose}; rewrite the sentence in Section 7.10")
+        if always_win == [("breast_cancer_wisconsin", "malignant")]:
+            ck.expect("grid: table that wins at every floor", r"ahead at all four floors only on \\texttt\{breast\\_cancer\\_wisconsin\}")
+        else:
+            ck.failures.append(f"grid: tables winning at every floor are now {always_win}; rewrite the sentence in Section 7.10")
+
     # --- power curve over N (Section 4)
     pc_path = RESULTS / "certificate_power_curve.csv"
     if pc_path.exists():

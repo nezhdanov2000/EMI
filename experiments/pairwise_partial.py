@@ -27,7 +27,7 @@ import pandas as pd
 from scipy.stats import t as student_t
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from compare_baselines import CONFIGS, N_SPLITS, RESULTS, BUDGETS, _cache_path, CACHE_EXTRA, grid_configs  # noqa: E402
+from compare_baselines import CONFIG_SETS, N_SPLITS, RESULTS, BUDGETS, _cache_path, CACHE_EXTRA, configs_of  # noqa: E402
 from datasets import load_dataset  # noqa: E402
 
 
@@ -70,10 +70,11 @@ HOLM_COMPARISONS = ("partial_vs_vsf", "partial_vs_rules_disjoint", "vsf_vs_rules
 def main() -> int:
     import argparse
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--config-set", choices=("paper", "grid"), default="paper",
-                    help="paper: CONFIGS -> pairwise_partial.csv; grid: the fixed (tau, m) grid -> pairwise_grid.csv")
+    ap.add_argument("--config-set", choices=CONFIG_SETS, default="paper",
+                    help="paper: CONFIGS -> pairwise_partial.csv; grid: the fixed (tau, m) grid -> pairwise_grid.csv; "
+                         "grid_certified: the certified selection at the grid's floors -> pairwise_grid_certified.csv")
     args = ap.parse_args()
-    configs = CONFIGS if args.config_set == "paper" else grid_configs()
+    configs = configs_of(args.config_set)
     rows: List[Dict[str, object]] = []
     frames: Dict[str, tuple] = {}
     for cfg in configs:
@@ -175,7 +176,8 @@ def main() -> int:
                 r[f"{cmp_name}_holm"] = hm
         rows.extend(config_rows)
     d = pd.DataFrame(rows)
-    out = RESULTS / ("pairwise_partial.csv" if args.config_set == "paper" else "pairwise_grid.csv")
+    out = RESULTS / {"paper": "pairwise_partial.csv", "grid": "pairwise_grid.csv",
+                     "grid_certified": "pairwise_grid_certified.csv"}[args.config_set]
     d.to_csv(out, index=False)
     for sel, s in d.groupby("selection"):
         print(f"\n== selection = {sel}: {s.groupby(['dataset','tau']).ngroups} configs x budgets = {len(s)} cells")

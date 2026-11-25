@@ -25,20 +25,21 @@ composite targets) is not used by the paper; `README.md` describes it.
 | wide tables, several processes | `python experiments/parallel_adult.py`, `parallel_connect4.py`, `parallel_split_remaining.py` | same cache |
 | extra methods (WRAcc lists, optimal tree; need `pydl8.5`) | `python experiments/compare_baselines.py --only <dataset> --methods wracc,wracc_raw,tree_opt` | `experiments/results/cache_extra/` |
 | summary of every configuration | `python experiments/summarize_comparison.py > experiments/results/summary.txt` | `comparison_summary.csv` |
-| Tables 3, 4, 5, 6, 8, 9, 10 | `python experiments/paper_tables.py` | `paper/tables/{datasets,counts,coverage_purity_B32,coverage_certified_B32,split_B32,net_B32,tree_opt_B32}.tex` |
-| Table 7 (compactness) | `python experiments/compactness.py` | `paper/tables/compactness_B32.tex` |
+| Tables 4, 5, 6, 7, 9, 10, 11, 12 | `python experiments/paper_tables.py` | `paper/tables/{datasets,counts,coverage_purity_B32,coverage_certified_B32,grid_floors_B32,split_B32,net_B32,tree_opt_B32}.tex` |
+| Table 8 (compactness) | `python experiments/compactness.py` | `paper/tables/compactness_B32.tex` |
 | Figure 4 | `python experiments/fig_coverage_budget.py` | `paper/fig_coverage_budget.pdf` |
 | ablations (Section 7.9) | `python experiments/ablations.py --only <dataset>` for `car_evaluation nursery hmda credit mlc_churn adult mushroom` | `experiments/results/ablations.csv` |
 | partial vs full grid, paired | `python experiments/pairwise_partial.py` | `experiments/results/pairwise_partial.csv` |
+| the fixed (tau, m) grid (Section 7.10, Table 9): 19 targets x tau {0.7, 0.9} x m {1, 20}, observed-purity rule, core methods | `python experiments/run_jobs.py plan`, `run` (restartable; or `compare_baselines.py --config-set grid --only <dataset>`), then `python experiments/pairwise_partial.py --config-set grid` | `experiments/results/cache/`, `experiments/results/pairwise_grid.csv` |
 | independent re-implementation (Section 7.3; data in `data/external/`) | `python experiments/partial_centres_external.py --selection certified` | `experiments/results/partial_external/part.csv` |
 | pysubgroup on titanic (Section 2, Related work) | `python experiments/subgroup_demo/cv_pysubgroup.py` (needs `pysubgroup`) | `experiments/results/pysubgroup_titanic.csv` |
 
-## 3. The certificate (Section 4, Tables 1-2, Figure 3)
+## 3. The certificate (Section 4, Tables 2-3, Figure 3)
 
 | step | command | output |
 |---|---|---|
 | smallest certifiable cell per family | `python experiments/n_min_table.py --dataset <name>` for the bundled tables and `--synthetic M N` | `experiments/results/n_min_table.csv` |
-| Table 1, Table 2, Figure 3 data | `python experiments/certificate_price.py --check` | `paper/tables/certificate_price.tex`, `certificate_n80.tex`, `paper/fig_certificate_power.dat` |
+| Table 2, Table 3, Figure 3 data | `python experiments/certificate_price.py --check` | `paper/tables/certificate_price.tex`, `certificate_n80.tex`, `paper/fig_certificate_power.dat` |
 | power on the planted design (Section 4, Power) | `python experiments/certificate_power.py --sizes 500 1000 3000` | `experiments/results/certificate_power_n*.csv` |
 | power curve over N | `python experiments/certificate_power.py --runs 200 --sizes 500 1000 2000 5000 10000 20000 --out experiments/results/certificate_power_curve.csv` | `certificate_power_curve.csv` |
 | false certificates on pure noise | `python experiments/null_certificate.py --runs 1000` | `experiments/results/null_certificate.csv` |

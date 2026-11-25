@@ -182,6 +182,40 @@ def grid_configs() -> List[Config]:
     return out
 
 
+def grid_certified_configs() -> List[Config]:
+    """
+    The certified selection on the fixed purity floors: for every (dataset,
+    target value) listed in CONFIGS, tau in GRID_TAUS under
+    `selection="certified"`, with the size floor, the repeats and `max_d`
+    of the paper's own configuration of that dataset (the certificate's
+    smallest certifiable cell is far above either size floor, so m is not
+    varied). A configuration that coincides with a paper configuration has
+    the same cache key, so its splits are reused.
+    """
+    seen: Dict[Tuple[str, str], Config] = {}
+    for c in CONFIGS:
+        seen.setdefault((c.dataset, c.positive), c)
+    return [Config(dataset, positive, tau, min_samples=ref.min_samples, n_repeats=ref.n_repeats,
+                   max_d=ref.max_d, selection="certified")
+            for (dataset, positive), ref in seen.items() for tau in GRID_TAUS]
+
+
+#: Configuration sets by name (`--config-set`), and the prefix of the
+#: per-dataset csv each one writes; the paper's own files are `compare_<name>.csv`.
+CONFIG_SETS: Tuple[str, ...] = ("paper", "grid", "grid_certified")
+CONFIG_SET_CSV_PREFIX: Dict[str, str] = {"paper": "compare", "grid": "compare_grid", "grid_certified": "compare_grid_certified"}
+
+
+def configs_of(config_set: str) -> List[Config]:
+    if config_set == "paper":
+        return list(CONFIGS)
+    if config_set == "grid":
+        return grid_configs()
+    if config_set == "grid_certified":
+        return grid_certified_configs()
+    raise ValueError(f"unknown configuration set {config_set!r}")
+
+
 def synthetic(name: str, seed: int = 0, n: int = 2000) -> Tuple[np.ndarray, np.ndarray]:
     rng = np.random.default_rng(seed)
     if name == "grid":
@@ -385,9 +419,11 @@ def main() -> int:
                     help="comma-separated list of split indices to compute (e.g. 5,6,7)")
     ap.add_argument("--positive", default=None,
                     help="filter dataset configurations by positive target class")
-    ap.add_argument("--config-set", choices=("paper", "grid"), default="paper",
-                    help="paper: CONFIGS (the paper's tables); grid: the fixed (tau, m) grid of grid_configs(), "
-                         "summarised in compare_grid_<name>.csv so the paper's files are never touched")
+    ap.add_argument("--config-set", choices=CONFIG_SETS, default="paper",
+                    help="paper: CONFIGS (the paper's tables); grid: the fixed (tau, m) grid of grid_configs() under "
+                         "the observed-purity rule; grid_certified: the certified selection at the grid's purity "
+                         "floors (grid_certified_configs()). The two grids are summarised in compare_grid_<name>.csv "
+                         "and compare_grid_certified_<name>.csv, so the paper's files are never touched")
     ap.add_argument("--tau", type=float, default=None, help="filter dataset configurations by purity floor")
     ap.add_argument("--min-samples", type=int, default=None, help="filter dataset configurations by size floor")
     ap.add_argument("--no-csv", action="store_true",
@@ -414,7 +450,7 @@ def main() -> int:
         jobs = [(base, Config(args.synthetic, "yes", 0.9, min_samples=5, selection=sel), X, Z)
                 for sel in ("purity", "certified", "split")]
     else:
-        source = CONFIGS if args.config_set == "paper" else grid_configs()
+        source = configs_of(args.config_set)
         configs = [c for c in source if c.dataset == args.only]
         if args.positive is not None:
             configs = [c for c in configs if c.positive == args.positive]
@@ -513,7 +549,7 @@ def main() -> int:
     if missing:
         print(f"{missing} split(s) left: run the same command again")
         return 0
-    if not args.synthetic and args.config_set == "grid" and (
+    if not args.synthetic and args.config_set != "paper" and (
             args.positive is not None or args.tau is not None or args.min_samples is not None or args.splits is not None):
         print("no compare csv written: a filtered grid run would hold only part of the dataset's rows")
         return 0
@@ -524,7 +560,8 @@ def main() -> int:
         print("no compare csv written: --methods without vsf (extra methods only)")
         return 0
     name = jobs[0][0] if args.synthetic else args.only
-    out = RESULTS / (f"compare_grid_{name}.csv" if (not args.synthetic and args.config_set == "grid") else f"compare_{name}.csv")
+    prefix = "compare" if args.synthetic else CONFIG_SET_CSV_PREFIX[args.config_set]
+    out = RESULTS / f"{prefix}_{name}.csv"
     out.parent.mkdir(parents=True, exist_ok=True)
     with out.open("w", newline="", encoding="utf-8") as fh:
         w = csv.DictWriter(fh, fieldnames=list(rows[0].keys()), lineterminator="\n")

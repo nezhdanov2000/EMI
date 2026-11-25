@@ -19,6 +19,13 @@ Commands (run from the repository root, with the experiments Python):
     python experiments/run_jobs.py run --retry-failed    # run again whatever failed
     python experiments/run_jobs.py summarize             # compare_grid_<dataset>.csv and pairwise_grid.csv
 
+The certified selection at the grid's purity floors is a second plan with
+its own state file; every command takes `--plan grid_certified`:
+
+    python experiments/run_jobs.py plan --plan grid_certified
+    python experiments/run_jobs.py run --plan grid_certified --size small
+    python experiments/run_jobs.py summarize --plan grid_certified   # pairwise_grid_certified.csv
+
 PARTS. Jobs are grouped twice, and `run` takes either or both filters:
 
     --stage  core      full grid, partial centres, greedy chain, rules, disjoint rules, CART   (default)
@@ -188,8 +195,13 @@ def save_state(plan: str, state: Dict[str, Any]) -> None:
     raise RuntimeError(f"could not write {path}")
 
 
+#: Plans this runner knows: the plan's name is the `--config-set` of
+#: compare_baselines.py / pairwise_partial.py its jobs run with.
+PLANS: Tuple[str, ...] = ("grid", "grid_certified")
+
+
 def build_plan(plan: str, stages: Sequence[str], force: bool) -> int:
-    from compare_baselines import N_SPLITS, grid_configs  # imported here: needs numpy
+    from compare_baselines import N_SPLITS, configs_of  # imported here: needs numpy
 
     path = state_path(plan)
     old: Dict[str, Any] = {}
@@ -199,7 +211,7 @@ def build_plan(plan: str, stages: Sequence[str], force: bool) -> int:
             print(f"{path} exists: its finished jobs are kept, new jobs are added (use --force to start from nothing)")
     jobs: List[Dict[str, Any]] = []
     for stage in stages:
-        for cfg in grid_configs():
+        for cfg in configs_of(plan):
             size, seconds = DATASET_SIZE.get(cfg.dataset, ("heavy", 600.0))
             chunk, mem = SIZE_CLASSES[size]
             total = N_SPLITS * cfg.n_repeats
@@ -208,7 +220,7 @@ def build_plan(plan: str, stages: Sequence[str], force: bool) -> int:
                 job_id = (f"{stage}__{cfg.dataset}__{cfg.positive}__t{cfg.tau}__m{cfg.min_samples}"
                           f"__s{splits[0]:02d}-{splits[-1]:02d}").replace(">", "gt").replace("<", "lt").replace(" ", "_")
                 job = {
-                    "id": job_id, "stage": stage, "size": size, "dataset": cfg.dataset, "positive": cfg.positive,
+                    "id": job_id, "config_set": plan, "stage": stage, "size": size, "dataset": cfg.dataset, "positive": cfg.positive,
                     "tau": cfg.tau, "min_samples": cfg.min_samples, "splits": splits, "mem_gb": mem,
                     "estimate_s": round(seconds * len(splits) * STAGE_FACTOR[stage], 1),
                     "status": "pending", "attempts": 0, "seconds": None, "returncode": None,
@@ -222,7 +234,7 @@ def build_plan(plan: str, stages: Sequence[str], force: bool) -> int:
 
 
 def job_command(job: Dict[str, Any]) -> List[str]:
-    return [sys.executable, str(EXPERIMENTS / "compare_baselines.py"), "--config-set", "grid",
+    return [sys.executable, str(EXPERIMENTS / "compare_baselines.py"), "--config-set", job.get("config_set", "grid"),
             "--only", job["dataset"], "--positive", job["positive"], "--tau", str(job["tau"]),
             "--min-samples", str(job["min_samples"]), "--splits", ",".join(str(s) for s in job["splits"]),
             "--methods", ",".join(STAGES[job["stage"]]), "--max-seconds", "1000000000", "--no-csv"]
@@ -377,16 +389,18 @@ def summarize(plan: str, only: Optional[str]) -> int:
     methods = ",".join(STAGES["core"])
     for dataset in datasets:
         print(f"--- {dataset}", flush=True)
-        subprocess.call([sys.executable, str(EXPERIMENTS / "compare_baselines.py"), "--config-set", "grid",
+        subprocess.call([sys.executable, str(EXPERIMENTS / "compare_baselines.py"), "--config-set", plan,
                          "--only", dataset, "--methods", methods, "--max-seconds", "0"], cwd=str(ROOT))
     print("--- paired comparison over the grid", flush=True)
-    return subprocess.call([sys.executable, str(EXPERIMENTS / "pairwise_partial.py"), "--config-set", "grid"], cwd=str(ROOT))
+    return subprocess.call([sys.executable, str(EXPERIMENTS / "pairwise_partial.py"), "--config-set", plan], cwd=str(ROOT))
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("command", choices=("hardware", "plan", "status", "run", "summarize"))
-    ap.add_argument("--plan", default="grid", help="name of the job list (default: grid)")
+    ap.add_argument("--plan", default="grid", choices=PLANS,
+                    help="the job list: grid (observed-purity rule on the (tau, m) grid, default) or "
+                         "grid_certified (certified selection at the grid's purity floors)")
     ap.add_argument("--stages", default="core", help="plan: comma-separated stages to list (default: core)")
     ap.add_argument("--force", action="store_true", help="plan: forget the state of an existing plan")
     ap.add_argument("--stage", default=None, help="run: comma-separated stages (default: core)")
