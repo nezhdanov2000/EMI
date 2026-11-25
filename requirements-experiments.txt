@@ -1,21 +1,32 @@
 # Exact versions for everything under experiments/ and tests/test_baselines.py.
-# The core package needs only requirements-lock.txt. Python 3.10-3.12.
+# The core package needs only requirements-lock.txt. Python 3.11-3.13: scipy 1.17.1
+# and scikit-learn 1.8.0 need >= 3.11 (`pip install -r` checked on 3.11, 3.12 and
+# 3.13; the full setup script, the test suite and experiments/check_env.py on 3.12).
 #
 # One-command setup (creates .venv-exp and installs everything, including the
 # two packages that need special handling):
 #     python experiments/setup_experiments.py
 #
-# rulelist (SSD++) pins numpy 1.17 / scipy ~1.5, which do not build on current
-# Python; it is installed with --no-deps and patched by experiments/patch_rulelist.py.
+# Two packages are installed by setup_experiments.py with --no-deps, because
+# their own pins contradict the versions below and `pip install -r` would
+# otherwise refuse the whole file:
+#   rulelist 0.2.0 (SSD++) pins numpy 1.17 / scipy ~1.5, which do not build on
+#     current Python; it is also patched by experiments/patch_rulelist.py;
+#   pysubgroup 0.9.0 declares numpy<2.0.0; it is used by one script
+#     (experiments/subgroup_demo/cv_pysubgroup.py), whose 120 committed rows of
+#     experiments/results/pysubgroup_titanic.csv it reproduces under numpy 2.2.6.
+# This file alone therefore installs with `pip install -r`.
 numpy==2.2.6
 pandas==2.3.3
 pytest==9.1.1
 scipy==1.17.1
 scikit-learn==1.8.0
 matplotlib==3.10.9
-pysubgroup==0.9.0
 pydl8.5==0.1.8
 gmpy2==2.3.2
 numba==0.68.0
+# needed by pysubgroup (installed with --no-deps, so its dependency is listed here)
+statsmodels==0.15.0
 # installed separately with --no-deps (see setup_experiments.py):
 # rulelist==0.2.0
+# pysubgroup==0.9.0

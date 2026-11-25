@@ -1,0 +1,19 @@
+selection,metric,budget,test,first,second,tables,first_better,equal,second_better,mean_difference,median_difference,statistic,p,p_holm,mean_ranks
+certified,cov,32,wilcoxon,vsf_partial,vsf,12,8,4,0,0.0380356,0.0262683,68,0.0078125,0.0546875,
+certified,cov,32,wilcoxon,vsf_partial,rules_disjoint,12,3,5,4,0.00654354,0,27,0.765625,1,
+certified,cov,32,wilcoxon,vsf,rules_disjoint,12,1,4,7,-0.0314921,-0.02062,10,0.0546875,0.328125,
+certified,cov,32,wilcoxon,vsf_partial,rules,12,0,3,9,-0.0674831,-0.0498721,0,0.00390625,0.03125,
+certified,cov,32,wilcoxon,vsf_partial,tree,12,7,1,4,-0.0300496,0.0138406,39,1,1,
+certified,cov,32,wilcoxon,vsf_partial,tree_opt,3,1,0,2,-0.0417866,-0.0314055,2,0.75,1,
+certified,cov,32,wilcoxon,vsf_partial,ssdpp,3,3,0,0,0.0910406,0.0884655,6,0.25,1,
+certified,cov,32,wilcoxon,vsf_partial,wracc,3,0,1,2,-0.0168844,-0.0157886,0,0.5,1,
+certified,cov,32,friedman,,,12,,,,,,17.4564,0.00157551,,vsf 4.17; vsf_partial 2.96; rules_disjoint 2.96; rules 1.75; tree 3.17
+certified,net,32,wilcoxon,vsf_partial,vsf,12,6,4,2,0.00243036,0.00573943,51,0.195312,1,
+certified,net,32,wilcoxon,vsf_partial,rules_disjoint,12,4,5,3,0.000812051,0,35,0.828125,1,
+certified,net,32,wilcoxon,vsf,rules_disjoint,12,4,4,4,-0.00161831,0,31,0.84375,1,
+certified,net,32,wilcoxon,vsf_partial,rules,12,8,2,2,0.0146235,0.0249405,58,0.117188,0.9375,
+certified,net,32,wilcoxon,vsf_partial,tree,12,7,1,4,0.0359578,0.0125945,47,0.543945,1,
+certified,net,32,wilcoxon,vsf_partial,tree_opt,3,0,0,3,-0.0582081,-0.0314055,0,0.25,1,
+certified,net,32,wilcoxon,vsf_partial,ssdpp,3,2,0,1,0.0404424,0.0520501,5,0.5,1,
+certified,net,32,wilcoxon,vsf_partial,wracc,3,2,1,0,0.0190001,0.00472009,5,0.5,1,
+certified,net,32,friedman,,,12,,,,,,5.91045,0.205937,,vsf 3.04; vsf_partial 2.42; rules_disjoint 2.75; rules 3.79; tree 3.00

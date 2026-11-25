@@ -200,10 +200,41 @@ def grid_certified_configs() -> List[Config]:
             for (dataset, positive), ref in seen.items() for tau in GRID_TAUS]
 
 
+#: Large recorded tables added on 2026-11-25 (experiments/build_pmlb_benchmarks.py
+#: states the inclusion rule). Targets, fixed before the first protocol run:
+#: every class with a share of the rows between 5 % and 50 %, so that neither
+#: a class too rare for any floor nor one whose base rate is near a floor is
+#: picked by hand. fars: five injury classes; shuttle: two (rad_flow, 78.6 %,
+#: is above the rule and above the 0.7 floor by itself).
+LARGE_REAL_TARGETS: Tuple[Tuple[str, str], ...] = (
+    ("fars", "fatal"), ("fars", "none"), ("fars", "incapacitating"),
+    ("fars", "nonincapacitating"), ("fars", "possible"),
+    ("shuttle", "high"), ("shuttle", "bypass"),
+)
+#: Repeats of the 5-fold split on the large recorded tables (as on adult).
+LARGE_REAL_REPEATS: int = 2
+
+
+def large_real_configs() -> List[Config]:
+    """The observed-purity rule on the large recorded tables: tau in GRID_TAUS x m in GRID_MIN_SAMPLES."""
+    return [Config(dataset, positive, tau, min_samples=m, n_repeats=LARGE_REAL_REPEATS, selection="purity")
+            for dataset, positive in LARGE_REAL_TARGETS for tau in GRID_TAUS for m in GRID_MIN_SAMPLES]
+
+
+def large_real_certified_configs() -> List[Config]:
+    """The certified selection on the large recorded tables: tau in GRID_TAUS, size floor 1 (the
+    certificate's smallest certifiable cell is far above either size floor)."""
+    return [Config(dataset, positive, tau, min_samples=1, n_repeats=LARGE_REAL_REPEATS, selection="certified")
+            for dataset, positive in LARGE_REAL_TARGETS for tau in GRID_TAUS]
+
+
 #: Configuration sets by name (`--config-set`), and the prefix of the
 #: per-dataset csv each one writes; the paper's own files are `compare_<name>.csv`.
-CONFIG_SETS: Tuple[str, ...] = ("paper", "grid", "grid_certified")
-CONFIG_SET_CSV_PREFIX: Dict[str, str] = {"paper": "compare", "grid": "compare_grid", "grid_certified": "compare_grid_certified"}
+CONFIG_SETS: Tuple[str, ...] = ("paper", "grid", "grid_certified", "large_real", "large_real_certified")
+CONFIG_SET_CSV_PREFIX: Dict[str, str] = {
+    "paper": "compare", "grid": "compare_grid", "grid_certified": "compare_grid_certified",
+    "large_real": "compare_large_real", "large_real_certified": "compare_large_real_certified",
+}
 
 
 def configs_of(config_set: str) -> List[Config]:
@@ -213,6 +244,10 @@ def configs_of(config_set: str) -> List[Config]:
         return grid_configs()
     if config_set == "grid_certified":
         return grid_certified_configs()
+    if config_set == "large_real":
+        return large_real_configs()
+    if config_set == "large_real_certified":
+        return large_real_certified_configs()
     raise ValueError(f"unknown configuration set {config_set!r}")
 
 
@@ -423,7 +458,9 @@ def main() -> int:
                     help="paper: CONFIGS (the paper's tables); grid: the fixed (tau, m) grid of grid_configs() under "
                          "the observed-purity rule; grid_certified: the certified selection at the grid's purity "
                          "floors (grid_certified_configs()). The two grids are summarised in compare_grid_<name>.csv "
-                         "and compare_grid_certified_<name>.csv, so the paper's files are never touched")
+                         "and compare_grid_certified_<name>.csv, so the paper's files are never touched; "
+                         "large_real / large_real_certified: the same two selections on the large recorded "
+                         "tables of LARGE_REAL_TARGETS (compare_large_real[_certified]_<name>.csv)")
     ap.add_argument("--tau", type=float, default=None, help="filter dataset configurations by purity floor")
     ap.add_argument("--min-samples", type=int, default=None, help="filter dataset configurations by size floor")
     ap.add_argument("--no-csv", action="store_true",

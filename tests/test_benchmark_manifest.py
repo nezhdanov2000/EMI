@@ -74,3 +74,32 @@ def test_high_dimensional_values_are_ternary() -> None:
         frame, entry = datasets.load_dataset(name)
         values = set(frame.drop(columns=entry.target).to_numpy().ravel().tolist())
         assert values <= {"-2", "0", "2"}
+
+
+@pytest.mark.parametrize(
+    ("name", "shape", "counts"),
+    [
+        ("fars", (100968, 17), {"fatal": 42116, "none": 20007, "incapacitating": 15072, "nonincapacitating": 13890,
+                                "possible": 8674, "unknown": 901, "severity_unknown": 299, "died_prior": 9}),
+        ("shuttle", (58000, 10), {"rad_flow": 45586, "high": 8903, "bypass": 3267, "fpv_open": 171,
+                                  "fpv_close": 50, "bpv_open": 13, "bpv_close": 10}),
+    ],
+)
+def test_large_recorded_tables_match_their_sources(name: str, shape: tuple, counts: dict) -> None:
+    frame, entry = datasets.load_dataset(name)
+    assert frame.shape == shape
+    assert frame.columns[0] == entry.target
+    assert frame[entry.target].value_counts().to_dict() == counts
+
+
+def test_fars_has_no_column_recorded_after_the_outcome() -> None:
+    frame, _ = datasets.load_dataset("fars")
+    leaked = [c for c in frame.columns if any(word in c for word in ("race", "hispanic", "hospital", "test"))]
+    assert leaked == []
+    # no single remaining column separates the fatal class the way the dropped RACE column did
+    fatal = frame["injury"] == "fatal"
+    for column in frame.columns[1:]:
+        share = fatal.groupby(frame[column]).mean()
+        size = frame[column].value_counts()
+        pure = share[(share >= 0.99) & (size.reindex(share.index) >= 1000)]
+        assert pure.empty, (column, pure.to_dict())
