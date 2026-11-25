@@ -347,7 +347,8 @@ def run_jobs(plan: str, args: argparse.Namespace) -> int:
                 job["status"] = "done" if code == 0 else "failed"
                 finished += code == 0
                 failed += code != 0
-                left = len(queue) + len(still)
+                # jobs not finished yet: the queue plus every running job whose process is still alive
+                left = len(queue) + sum(1 for other, other_proc, _, _ in running if other is not job and other_proc.poll() is None)
                 print(f"[{time.strftime('%H:%M:%S')}] {'ok    ' if code == 0 else 'FAILED'} {job['id']} "
                       f"({job['seconds']:.0f} s, exit {code}); {left} left in this run", flush=True)
                 save_state(plan, state)

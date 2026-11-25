@@ -44,7 +44,7 @@ The approach studied here fixes the description language first. A \emph{schema} 
 Two questions decide whether this is a method or merely a constraint that costs coverage:
 
 \begin{enumerate}
-\item \textbf{Is anything shown still true after the search?} The best of $\sum_{d\le 4}\binom{M}{d}$ schemas was chosen by looking at the target; a purity certificate computed for one schema alone is invalid after that choice. What does a certificate that survives the choice cost, and how does it compare with the alternatives a rule list or a tree can have?
+\item \textbf{Is anything shown still true after the search?} The best of $\sum_{d\le 4}\binom{M}{d}$ schemas was chosen by looking at the target; a purity certificate computed for one schema alone is invalid after that choice: on tables of pure noise it certifies a false cell in 67\,\% of $1\,000$ runs, where the family certificate of this paper certifies none (Section~\ref{sec:certificate}). What does a certificate that survives the choice cost, and how does it compare with the alternatives a rule list or a tree can have?
 \item \textbf{What does one grid cost?} At an equal budget of conditions, how much target coverage does the one-grid constraint lose against free rules and against an optimal tree, and what mechanism loses it?
 \end{enumerate}
 
