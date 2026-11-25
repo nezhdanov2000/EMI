@@ -160,6 +160,23 @@ any search. This supersedes the v1.0 `composite_target` builder removed
 above: that one neither excluded the target's columns from the features
 nor anchored the certificate to the conjunction's base rate.
 
+Free rules on the Landscape: `/api/landscape/free_rules` returns the best
+set of pairwise disjoint (column = value) rules under a budget of `budget`
+conditions (default 8) at the request's tau, size floor and rule - the
+selection of the paper's `rules_disjoint` baseline (`vsf.free_rules`, shared
+with `experiments/baselines.py`) run on ALL rows. Every rule carries its
+conditions, rows, share of the value, the rows of the value it added and
+the Landscape cell its schema is drawn in (`Landscape.locate`; null when
+that schema is not drawn). The numbers describe the rows the rules were
+chosen on; nothing here is a held-out estimate. Presence searches only.
+
+Session log: `/api/session/log` appends one JSON line per event to the file
+given as `serve(session_log=...)` - `{seq, ts, session, event, data}` - and
+answers `{"logged": false}` when no file was configured, so the page can
+say that nothing is being recorded. The page sends the state of the "Free
+rules" toggle (and what it was computed with) there: a study needs to know
+which mode a participant answered in.
+
 Validation (Section 4.14): `/api/validate` checks the analysis the page
 shows with the post-selection machinery of `vsf.selective` - a certificate
 that holds for the reported schemas (`method`: "split" or
@@ -174,8 +191,10 @@ kept per request key.
 
 from __future__ import annotations
 
+import datetime
 import http.server
 import json
+import os
 import threading
 import time
 import urllib.parse
@@ -183,7 +202,8 @@ import webbrowser
 from collections import OrderedDict
 from dataclasses import dataclass
 from importlib import resources
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as _np
 import pandas as pd
@@ -201,6 +221,7 @@ from .avr import (
     select_branch_dimensionality,
 )
 from .centers import CenterSpec
+from .free_rules import FreeRuleFamily
 from .metrics import benjamini_hochberg
 from .screen import DEFAULT_MIN_STRENGTH, screen_dataset, target_report
 from .selective import (
@@ -275,6 +296,19 @@ _CURVES_MAX_EXCLUDE = 200
 _RULES_MAX_SCHEMAS = 400
 #: Grid step of the tau-curves, in percent of purity.
 _CURVES_STEP_PCT = 1.0
+#: Free-rule candidate families (`vsf.free_rules.FreeRuleFamily`) kept per
+#: server: each holds the row indices of every qualifying conjunction of up
+#: to four conditions, which is what makes a change of budget free.
+_FREE_RULES_CACHE_MAX_ENTRIES = 4
+#: Condition budget of `/api/landscape/free_rules` when the request names
+#: none, and the largest one accepted. The default is a fixed number on
+#: purpose: taking the selected branch's own condition count would hand the
+#: rules 160 conditions beside a 4D branch, and they would cover everything.
+_FREE_RULES_DEFAULT_BUDGET = 8
+_FREE_RULES_MAX_BUDGET = 64
+#: `/api/session/log`: longest event / session name and largest request body.
+_SESSION_LOG_MAX_NAME = 64
+_SESSION_LOG_MAX_BYTES = 64 * 1024
 #: Largest number of (column, value) conjuncts a composite target may have:
 #: the primary (target, criterion) plus up to two `also` pairs. Base rates
 #: fall multiplicatively with every conjunct, and beyond three the certified
@@ -546,8 +580,18 @@ class _VSFServer(http.server.ThreadingHTTPServer):
         df: pd.DataFrame,
         translations: Optional[Translations],
         prefetch: bool = True,
+        session_log: Optional[Union[str, "os.PathLike[str]"]] = None,
     ):
         super().__init__(server_address, RequestHandlerClass)
+        # Session log (`/api/session/log`): one JSON line per event, appended
+        # under a lock; None = nothing is written and the page is told so.
+        self.session_log_path: Optional[Path] = Path(session_log) if session_log is not None else None
+        self.session_log_lock = threading.Lock()
+        self.session_log_seq = 0
+        # Free-rule candidate families per analyze key (without `prune`,
+        # which the rule family does not depend on).
+        self.free_rules_cache: "OrderedDict[Tuple[Any, ...], FreeRuleFamily]" = OrderedDict()
+        self.free_rules_lock = threading.Lock()
         self.df = df
         self.translations = translations
         self.default_target = _default_target(df)
@@ -673,6 +717,56 @@ class _VSFServer(http.server.ThreadingHTTPServer):
                 self.landscape_cache.popitem(last=False)
         return landscape
 
+
+    def get_free_rule_family(
+        self, params: Dict[str, Any], center_spec: CenterSpec, target: _Target,
+    ) -> FreeRuleFamily:
+        """
+        The qualifying conjunctions (`FreeRuleFamily`) for an analyze
+        parameter set, enumerated once; every budget is then selected from
+        the same candidates. Built under `free_rules_lock`, so two requests
+        for one key enumerate once.
+        """
+        key = _analyze_key({k: v for k, v in params.items() if k != "prune"})
+        with self.free_rules_lock:
+            hit = self.free_rules_cache.get(key)
+            if hit is not None:
+                self.free_rules_cache.move_to_end(key)
+                return hit
+            X_df, Z, _ = _target_arrays(self.df, target, params.get("drop", ()))
+            family = FreeRuleFamily(
+                X_df.values, Z, feature_names=list(X_df.columns),
+                positive_class=(1 if target.criterion is not None else None),
+                center_spec=center_spec, direction=params["direction"], max_len=_MAX_D,
+            )
+            self.free_rules_cache[key] = family
+            while len(self.free_rules_cache) > _FREE_RULES_CACHE_MAX_ENTRIES:
+                self.free_rules_cache.popitem(last=False)
+            return family
+
+    def append_session_event(self, session: str, event: str, data: Dict[str, Any]) -> bool:
+        """
+        Appends `{seq, ts, session, event, data}` as one JSON line to the
+        session log; False when no log file was configured. `seq` counts the
+        events this server instance has written, `ts` is UTC. The line is
+        flushed and fsynced before the request is answered: a study log must
+        survive the process being killed at the end of a session.
+        """
+        if self.session_log_path is None:
+            return False
+        with self.session_log_lock:
+            self.session_log_seq += 1
+            record = {
+                "seq": self.session_log_seq,
+                "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="milliseconds"),
+                "session": session, "event": event, "data": data,
+            }
+            self.session_log_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.session_log_path, "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+                fh.flush()
+                os.fsync(fh.fileno())
+        return True
 
     def get_screen(self, columns: Tuple[str, ...], min_strength: float):
         """The `DatasetScreen` of these columns of `df`, computed once per (columns, min_strength)."""
@@ -862,6 +956,10 @@ class VSFRequestHandler(http.server.BaseHTTPRequestHandler):
             self._handle_curves_api(at=False)
         elif path == "/api/landscape/at":
             self._handle_curves_api(at=True)
+        elif path == "/api/landscape/free_rules":
+            self._handle_free_rules_api()
+        elif path == "/api/session/log":
+            self._handle_session_log_api()
         elif path == "/api/target":
             self._handle_target_api()
         elif path == "/api/rules":
@@ -1247,6 +1345,127 @@ class VSFRequestHandler(http.server.BaseHTTPRequestHandler):
         except ValueError as exc:
             self._send_json_response(400, {"error": str(exc)})
         except Exception as e:
+            self._send_json_response(500, {"error": str(e)})
+
+    def _handle_free_rules_api(self) -> None:
+        """
+        `/api/landscape/free_rules`: the disjoint free rules chosen under
+        `budget` conditions (integer in [1, `_FREE_RULES_MAX_BUDGET`],
+        default `_FREE_RULES_DEFAULT_BUDGET`) at the request's tau,
+        `min_samples` and `rule` - `vsf.free_rules`, the `rules_disjoint`
+        baseline on all rows. Rules come in selection order; `landscape` is
+        the lattice cell of the rule's schema in the Landscape of the same
+        request (`{d, ix, iy, iy_all}`), or null when that schema is not
+        drawn there. `coverage` / `purity` are those of the union on all
+        rows (`evaluated_on: "all_rows"`), not a held-out estimate.
+        """
+        try:
+            req = self._read_json_body()
+            parsed = self._parse_landscape_request(req)
+            if parsed is None:
+                return
+            params, center_spec, _ = parsed
+            if params["direction"] != "presence":
+                self._send_json_response(400, {"error": "free rules are offered for a presence search only"})
+                return
+            budget = req.get("budget", None)
+            if budget is None:
+                budget = _FREE_RULES_DEFAULT_BUDGET
+            if isinstance(budget, bool) or not isinstance(budget, int) \
+                    or not (1 <= budget <= _FREE_RULES_MAX_BUDGET):
+                self._send_json_response(
+                    400, {"error": f"budget must be an integer in [1, {_FREE_RULES_MAX_BUDGET}]"})
+                return
+            target: _Target = params["_target"]
+            family = self.server.get_free_rule_family(params, center_spec, target)
+            chosen = family.select(budget)
+            landscape = self.server.get_landscape(params, center_spec, target)
+            X_df, _, _ = _target_arrays(self.server.df, target, params.get("drop", ()))
+            names = list(X_df.columns)
+            values = X_df.values
+            translations = self.server.translations
+            rules: List[Dict[str, Any]] = []
+            for rank, rule in enumerate(chosen.rules, start=1):
+                first = int(rule.rows[0])
+                rules.append({
+                    "rank": rank,
+                    "d": rule.cost,
+                    "cost": rule.cost,
+                    "features": list(rule.features),
+                    "feature_names": [names[j] for j in rule.features],
+                    "conditions": [
+                        {
+                            "feature": int(j),
+                            "column": names[j],
+                            "column_label": _vis.humanize_col(names[j], translations),
+                            "value": str(values[first, j]),
+                            "value_label": _vis.humanize_val(names[j], values[first, j], translations),
+                        }
+                        for j in rule.features
+                    ],
+                    "n": rule.n,
+                    "k": rule.k,
+                    "purity": rule.purity,
+                    "new_positives": rule.new_positives,
+                    "coverage_gain": (rule.new_positives / chosen.n_positive) if chosen.n_positive else 0.0,
+                    "landscape": landscape.locate(rule.features),
+                })
+            self._send_json_response(200, {
+                "target": params["target_col"], "criterion": params["criterion"],
+                "direction": params["direction"],
+                "also": [list(p) for p in target.also],
+                "tau": params["tau"], "rule": params["rule"], "min_samples": params["min_samples"],
+                "budget": budget,
+                "conditions": chosen.conditions,
+                "n_candidates": chosen.n_candidates,
+                "n_samples": chosen.n_samples,
+                "n_positive": chosen.n_positive,
+                "k_covered": chosen.k_covered,
+                "n_covered": chosen.n_covered,
+                "coverage": chosen.coverage,
+                "purity": chosen.purity,
+                "evaluated_on": "all_rows",
+                "feature_names": names,
+                "rules": rules,
+            })
+        except ValueError as exc:
+            self._send_json_response(400, {"error": str(exc)})
+        except Exception as e:  # pragma: no cover - defensive
+            self._send_json_response(500, {"error": str(e)})
+
+    def _handle_session_log_api(self) -> None:
+        """
+        `/api/session/log`: `{session, event, data?}` -> one line of the
+        session log (`_VSFServer.append_session_event`). `session` and
+        `event` are non-empty strings of at most `_SESSION_LOG_MAX_NAME`
+        characters, `data` an object. Answers `{"logged": true}`, or
+        `{"logged": false}` when the server was started without a log file.
+        """
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            if length > _SESSION_LOG_MAX_BYTES:
+                self.rfile.read(length)
+                self._send_json_response(400, {"error": "session log event too large"})
+                return
+            raw = self.rfile.read(length)
+            req = json.loads(raw.decode("utf-8")) if raw else {}
+            if not isinstance(req, dict):
+                self._send_json_response(400, {"error": "the body must be a JSON object"})
+                return
+            session, event, data = req.get("session"), req.get("event"), req.get("data", {})
+            for name, value in (("session", session), ("event", event)):
+                if not isinstance(value, str) or not (1 <= len(value) <= _SESSION_LOG_MAX_NAME):
+                    self._send_json_response(
+                        400, {"error": f"{name} must be a string of 1 to {_SESSION_LOG_MAX_NAME} characters"})
+                    return
+            if not isinstance(data, dict):
+                self._send_json_response(400, {"error": "data must be a JSON object"})
+                return
+            logged = self.server.append_session_event(session, event, data)
+            self._send_json_response(200, {"logged": logged})
+        except ValueError as exc:
+            self._send_json_response(400, {"error": str(exc)})
+        except Exception as e:  # pragma: no cover - defensive
             self._send_json_response(500, {"error": str(e)})
 
     def _handle_frontier_api(self) -> None:
@@ -2514,6 +2733,7 @@ def _build_server(
     port: int = 8000,
     translations: Optional[Translations] = None,
     prefetch: bool = True,
+    session_log: Optional[Union[str, "os.PathLike[str]"]] = None,
 ) -> _VSFServer:
     """
     Constructs (binds + listens, does NOT `serve_forever()`) the
@@ -2531,7 +2751,8 @@ def _build_server(
         raise ValueError("df must have at least one column")
 
     return _VSFServer(
-        (host, port), VSFRequestHandler, df=df, translations=translations, prefetch=prefetch
+        (host, port), VSFRequestHandler, df=df, translations=translations, prefetch=prefetch,
+        session_log=session_log,
     )
 
 
@@ -2542,6 +2763,7 @@ def serve(
     open_browser: bool = True,
     translations: Optional[Dict] = None,
     prefetch: bool = True,
+    session_log: Optional[Union[str, "os.PathLike[str]"]] = None,
 ) -> None:
     """
     Starts a local HTTP server and opens the browser with the full
@@ -2591,14 +2813,23 @@ def serve(
             next clicks in that column are served from the response cache.
             Pass `False` on a machine whose CPU must stay free between
             requests; results are identical either way.
+        session_log: path of a JSON-lines file the page's session events
+            are appended to (`/api/session/log`; created with its parent
+            directories on the first event). `None` (the default) writes
+            nothing; the page then says, where it matters, that the session
+            is not being recorded.
     """
-    httpd = _build_server(df, host=host, port=port, translations=translations, prefetch=prefetch)
+    httpd = _build_server(
+        df, host=host, port=port, translations=translations, prefetch=prefetch,
+        session_log=session_log,
+    )
     url = f"http://{host}:{port}/"
     try:
         print("=" * 70)
         print(" VSF Interactive Visual Dashboard Server Running!")
         print(f" Local URL: {url}")
         print(f" Default target column: {httpd.default_target!r}")
+        print(f" Session log: {httpd.session_log_path if httpd.session_log_path is not None else 'off'}")
         print(" Press Ctrl+C to stop.")
         print("=" * 70)
 

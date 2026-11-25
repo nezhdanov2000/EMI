@@ -2,7 +2,9 @@
 Launcher script for Visual Sufficiency Framework (VSF) interactive server.
 Allows selecting any available benchmark dataset or providing a custom CSV file.
 """
+import socket
 import sys
+import time
 from pathlib import Path
 import pandas as pd
 import vsf
@@ -35,6 +37,7 @@ Usage:
   python run.py <dataset_name_or_path>  # Direct launch with specified dataset
   python run.py <number>                # Direct launch by index number
   python run.py --list                  # List available datasets
+  python run.py titanic --lan           # Also reachable from a phone on the same Wi-Fi
   python run.py --help                  # Show this help message
 
 Examples:
@@ -155,11 +158,29 @@ def select_dataset_interactively(datasets: list[Path]) -> Path:
         print(f"Invalid choice '{choice}'. Enter a number (1-{len(datasets)}), dataset name, '0' for custom file, or 'q' to quit.")
 
 
+def lan_address() -> str | None:
+    """This machine's address on the local network (no packet is sent)."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("192.0.2.1", 9))  # TEST-NET-1: only picks the outgoing interface
+            return s.getsockname()[0]
+    except OSError:
+        return None
+
+
 def main():
     try:
         sys.stdout.reconfigure(line_buffering=True)
     except Exception:
         pass
+
+    # --lan: bind every interface so a phone on the same network can open
+    # the page. The server has no authentication: anyone on that network
+    # can then read the dataset and run analyses. Off by default.
+    lan = "--lan" in sys.argv[1:]
+    if lan:
+        sys.argv = [a for a in sys.argv if a != "--lan"]
+    host = "0.0.0.0" if lan else "127.0.0.1"
 
     datasets = get_available_datasets()
 
@@ -202,12 +223,25 @@ def main():
     print(f"Columns: [{col_preview}]")
     print("-" * 66)
 
+    # One JSON-lines file per launch: the page records there, among other
+    # things, when "Free rules" on the Landscape was switched on and off
+    # (`/api/session/log`), so a study session can be read back afterwards.
+    session_log = (
+        Path(__file__).resolve().parent / "session_logs"
+        / f"{dataset_path.stem}_{time.strftime('%Y%m%d-%H%M%S')}.jsonl"
+    )
+    print(f"Session log: {session_log}")
+
     port = 8000
     for p in range(port, port + 10):
         try:
             print(f"Starting VSF Interactive Visual Dashboard on http://127.0.0.1:{p}/ ...")
+            if lan:
+                addr = lan_address()
+                print(f"Phone (same Wi-Fi): http://{addr or '<this computer IP>'}:{p}/")
+                print("WARNING: --lan exposes the dataset to everyone on this network (no password).")
             print("Press Ctrl+C in this terminal to stop the server.\n")
-            vsf.serve(df, host="127.0.0.1", port=p, open_browser=True)
+            vsf.serve(df, host=host, port=p, open_browser=True, session_log=session_log)
             break
         except OSError as e:
             if "Address already in use" in str(e) or getattr(e, 'winerror', None) == 10048 or getattr(e, 'errno', None) in (98, 10048):
