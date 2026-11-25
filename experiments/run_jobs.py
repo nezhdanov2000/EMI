@@ -26,6 +26,11 @@ its own state file; every command takes `--plan grid_certified`:
     python experiments/run_jobs.py run --plan grid_certified --size small
     python experiments/run_jobs.py summarize --plan grid_certified   # pairwise_grid_certified.csv
 
+The large recorded tables (fars, shuttle; experiments/build_pmlb_benchmarks.py)
+have two plans of their own, `large_real` (observed-purity rule, tau x m) and
+`large_real_certified`; their summaries are compare_large_real[_certified]_<dataset>.csv
+and pairwise_large_real[_certified].csv.
+
 PARTS. Jobs are grouped twice, and `run` takes either or both filters:
 
     --stage  core      full grid, partial centres, greedy chain, rules, disjoint rules, CART   (default)
@@ -81,6 +86,8 @@ DATASET_SIZE: Dict[str, Tuple[str, float]] = {
     "mushroom": ("medium", 57.0), "wa_churn": ("medium", 23.0), "attrition": ("medium", 34.0), "resume": ("medium", 39.0),
     "splice": ("heavy", 250.0), "adult": ("heavy", 1500.0), "chess_krkp": ("heavy", 1700.0),
     "connect_4": ("huge", 8600.0),
+    # large recorded tables (2026-11-25): seconds per split are guesses, not measurements
+    "shuttle": ("heavy", 120.0), "fars": ("heavy", 1800.0),
 }
 #: Rough cost of the other stages relative to the core stage of the same split.
 STAGE_FACTOR: Dict[str, float] = {"core": 1.0, "wracc": 0.4, "ssdpp": 1.0, "tree_opt": 0.5}
@@ -197,7 +204,7 @@ def save_state(plan: str, state: Dict[str, Any]) -> None:
 
 #: Plans this runner knows: the plan's name is the `--config-set` of
 #: compare_baselines.py / pairwise_partial.py its jobs run with.
-PLANS: Tuple[str, ...] = ("grid", "grid_certified")
+PLANS: Tuple[str, ...] = ("grid", "grid_certified", "large_real", "large_real_certified")
 
 
 def build_plan(plan: str, stages: Sequence[str], force: bool) -> int:
@@ -399,8 +406,9 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("command", choices=("hardware", "plan", "status", "run", "summarize"))
     ap.add_argument("--plan", default="grid", choices=PLANS,
-                    help="the job list: grid (observed-purity rule on the (tau, m) grid, default) or "
-                         "grid_certified (certified selection at the grid's purity floors)")
+                    help="the job list: grid (observed-purity rule on the (tau, m) grid, default), "
+                         "grid_certified (certified selection at the grid's purity floors), large_real and "
+                         "large_real_certified (the same two selections on the large recorded tables fars and shuttle)")
     ap.add_argument("--stages", default="core", help="plan: comma-separated stages to list (default: core)")
     ap.add_argument("--force", action="store_true", help="plan: forget the state of an existing plan")
     ap.add_argument("--stage", default=None, help="run: comma-separated stages (default: core)")

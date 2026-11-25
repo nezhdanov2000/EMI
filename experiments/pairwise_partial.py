@@ -177,7 +177,8 @@ def main() -> int:
         rows.extend(config_rows)
     d = pd.DataFrame(rows)
     out = RESULTS / {"paper": "pairwise_partial.csv", "grid": "pairwise_grid.csv",
-                     "grid_certified": "pairwise_grid_certified.csv"}[args.config_set]
+                     "grid_certified": "pairwise_grid_certified.csv", "large_real": "pairwise_large_real.csv",
+                     "large_real_certified": "pairwise_large_real_certified.csv"}[args.config_set]
     d.to_csv(out, index=False)
     for sel, s in d.groupby("selection"):
         print(f"\n== selection = {sel}: {s.groupby(['dataset','tau']).ngroups} configs x budgets = {len(s)} cells")
