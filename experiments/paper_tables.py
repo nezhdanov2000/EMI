@@ -177,7 +177,7 @@ def tree_opt_table(d: pd.DataFrame, budget: int) -> str:
     return "\n".join(lines)
 
 
-def grid_floor_table(g: pd.DataFrame, budget: int) -> str:
+def grid_floor_table(g: pd.DataFrame, budget: int, by_m: bool = True) -> str:
     """
     The fixed (tau, m) grid of `compare_baselines.grid_configs` at one
     budget, one row per floor and one for all floors: informative
@@ -186,6 +186,10 @@ def grid_floor_table(g: pd.DataFrame, budget: int) -> str:
     held-out coverage, net coverage and the share of splits whose held-out
     union reaches tau, for the full grid, partial centres and disjoint rules.
     Input: `results/pairwise_grid.csv` (`pairwise_partial.py --config-set grid`).
+    With `by_m=False` the rows are per floor only: the certified grid runs
+    each configuration at its own `m`, which is below the smallest
+    certifiable cell everywhere, so `m` is not a dimension of that grid
+    (`results/pairwise_grid_certified.csv`).
     """
     b = g[g.budget == budget]
 
@@ -208,8 +212,12 @@ def grid_floor_table(g: pd.DataFrame, budget: int) -> str:
              r"\cmidrule(lr){4-6}\cmidrule(lr){7-9}\cmidrule(lr){10-12}\cmidrule(lr){13-15}\cmidrule(lr){16-18}",
              r"$\tau$ & $m$ & $n$ & $+$ & $=$ & $-$ & $+$ & $=$ & $-$ & grid & part. & rules & grid & part. & rules & grid & part. & rules\\",
              r"\midrule"]
-    for (tau, m), frame in b.groupby(["tau", "m"]):
-        lines.append(row(f"{tau:g} & {int(m)}", frame))
+    if by_m:
+        for (tau, m), frame in b.groupby(["tau", "m"]):
+            lines.append(row(f"{tau:g} & {int(m)}", frame))
+    else:
+        for tau, frame in b.groupby("tau"):
+            lines.append(row(f"{tau:g} & own", frame))
     lines.append(r"\midrule")
     lines.append(row(r"\multicolumn{2}{l}{all}", b))
     lines += [r"\bottomrule", r"\end{tabular}"]
@@ -253,6 +261,9 @@ def main() -> int:
     grid_csv = ROOT / "experiments" / "results" / "pairwise_grid.csv"
     if grid_csv.exists():  # the fixed (tau, m) grid: `pairwise_partial.py --config-set grid`
         (OUT / "grid_floors_B32.tex").write_text(grid_floor_table(pd.read_csv(grid_csv), 32) + "\n")
+    cert_csv = ROOT / "experiments" / "results" / "pairwise_grid_certified.csv"
+    if cert_csv.exists():  # the same floors under the certificate: `pairwise_partial.py --config-set grid_certified`
+        (OUT / "grid_floors_certified_B32.tex").write_text(grid_floor_table(pd.read_csv(cert_csv), 32, by_m=False) + "\n")
     print("wrote", sorted(p.name for p in OUT.glob("*.tex")))
     return 0
 

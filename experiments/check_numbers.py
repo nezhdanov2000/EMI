@@ -163,8 +163,8 @@ def run(tex_path: Path) -> int:
     o32_rd, o32_g = counts(obs32, "partial_vs_rules_disjoint"), counts(obs32, "partial_vs_vsf")
     ck.expect("B=32 certified summary", rf"tie disjoint rules on {c32_rd['=']} of the {len(cert32)} configurations and lose {c32_rd['-']}, and beat the full grid on {c32_g['+']}")
     ck.expect("B=32 observed summary", rf"win {o32_rd['+']} of {len(obs32)}, tie {o32_rd['=']} and lose {o32_rd['-']}, and beat the full grid on {o32_g['+']}")
-    ck.expect("contributions: observed-rule losses", rf"lose {p_rd['-']} of {n_obs} cells \({o32_rd['-']} of {len(obs32)} configurations at \$B=32\$\)")
-    ck.expect("abstract: certified ties", rf"tie free disjoint rules in {cp_rd['=']} of {n_cert} \(configuration, budget\) cells")
+    ck.expect("contributions: observed-rule losses", rf"free rules still hold more in {p_rd['-']} of {n_obs} cells \({o32_rd['-']} of {len(obs32)} configurations at \$B=32\$\)")
+    ck.expect("abstract: certified ties", rf"a tie in {cp_rd['=']} of {n_cert} \(configuration, budget\) cells at the study's floors")
 
     # --- gap closed
     gap_o = statistics.median(floats(obs, "gap_closed"))
@@ -180,7 +180,7 @@ def run(tex_path: Path) -> int:
     ok_g, ok_p, ok_rd = (mean(floats(obs, k)) for k in ("purity_ok_vsf", "purity_ok_partial", "purity_ok_rules_disjoint"))
     lo, hi = min(pct(ok_g), pct(ok_p), pct(ok_rd)), max(pct(ok_g), pct(ok_p), pct(ok_rd))
     ck.expect("disjoint baseline shares", rf"reaches \$\\tau\$ in {pct(ok_rules_o)}\\,\\% of the splits, against {lo}--{hi}\\,\\% for")
-    ck.expect("abstract: overlapping unions below tau", rf"its unions fall below \$\\tau\$ on held-out rows in {100 - int(pct(ok_rules_o))}\\,\\% of the splits")
+    ck.expect("contributions: overlapping unions below tau", rf"overlapping rules yields unions below \$\\tau\$ in {100 - int(pct(ok_rules_o))}\\,\\% of the held-out splits")
 
     # --- net coverage means over informative cells
     def net_means(rows: Sequence[Row]) -> Dict[str, float]:
@@ -221,7 +221,7 @@ def run(tex_path: Path) -> int:
     po, ro = comp[("purity", "partial centres")], comp[("purity", r"rules$_{\mathrm{disj}}$")]
     pc, rc = comp[("certified", "partial centres")], comp[("certified", r"rules$_{\mathrm{disj}}$")]
     ov = comp[("purity", "rules")]
-    ck.expect("abstract: compactness", rf"fewer columns than the free rules \({pc['columns']:.1f} against {rc['columns']:.1f} under the certificate, {po['columns']:.1f} against {ro['columns']:.1f} under the observed-purity rule, at budget 32\)")
+    ck.expect("abstract: compactness", rf"name a quarter fewer columns \({pc['columns']:.1f} against {rc['columns']:.1f} at budget 32\)")
     ck.expect("contributions: compactness", rf"{pc['columns']:.1f} against {rc['columns']:.1f} under the certificate and fewer than half, {po['columns']:.1f} against {ro['columns']:.1f}, under the observed-purity rule")
     ck.expect("conclusion: compactness", rf"\(\${pc['columns']:.1f}\$ against \${rc['columns']:.1f}\$ under the certificate, \${po['columns']:.1f}\$ against \${ro['columns']:.1f}\$ under the observed-purity rule\)")
     if ro["columns"] > 0 and rc["columns"] > 0:
@@ -368,6 +368,37 @@ def run(tex_path: Path) -> int:
             ck.expect("grid: table that wins at every floor", r"ahead at all four floors only on \\texttt\{breast\\_cancer\\_wisconsin\}")
         else:
             ck.failures.append(f"grid: tables winning at every floor are now {always_win}; rewrite the sentence in Section 7.10")
+
+    # --- the same floors under the certificate (abstract, contributions, Section 7.10, Table `grid_floors_certified_B32`)
+    cert_grid_path = RESULTS / "pairwise_grid_certified.csv"
+    if cert_grid_path.exists() and grid_path.exists():
+        cg = read_csv(cert_grid_path)
+        cg32 = [r for r in cg if r["budget"] == "32"]
+        cg_targets = len({(r["dataset"], r["positive"]) for r in read_csv(grid_path)})
+        cg_floors = len({r["tau"] for r in cg})
+        cg_configs = len({(r["dataset"], r["positive"], r["tau"]) for r in cg})
+        ck.expect("certified grid: size", rf"{cg_targets * cg_floors} configurations, of which {cg_configs} are informative, {len(cg)} cells \(Table~\\ref\{{tab:gridcert\}}\)")
+        cgp, cgph, cgp32 = counts(cg, "partial_vs_rules_disjoint"), counts(cg, "partial_vs_rules_disjoint_holm"), counts(cg32, "partial_vs_rules_disjoint")
+        ck.expect("certified grid: partial vs disjoint",
+                  rf"tie free disjoint rules in {cgp['=']} of {len(cg)} cells, win {cgp['+']} and lose {cgp['-']} \({cgph['+']}, {cgph['=']} and {cgph['-']} after Holm\); "
+                  rf"at \$B=32\$ they tie on {cgp32['=']} of {len(cg32)} configurations, win {cgp32['+']} and lose {cgp32['-']}")
+        ck.expect("abstract and conclusion: certified grid ties", rf"in {cgp['=']} of {len(cg)} on a fixed grid of floors")
+        cgg, cgpv = counts(cg, "vsf_vs_rules_disjoint"), counts(cg, "partial_vs_vsf")
+        if cgpv["-"] == 0:
+            ck.expect("certified grid: full grid", rf"The full grid loses {cgg['-']} cells to free disjoint rules, and partial centres are never worse than it")
+        else:
+            ck.failures.append(f"certified grid: partial centres are now worse than the full grid in {cgpv['-']} cells; rewrite Section 7.10")
+        ok32 = {pct(mean(floats(cg32, c))) for c in ("purity_ok_vsf", "purity_ok_partial", "purity_ok_rules_disjoint")}
+        if len(ok32) == 1:
+            ck.expect("certified grid: union purity", rf"reaches \$\\tau\$ in {ok32.pop()}\\,\\% of the splits for the three disjoint methods")
+        else:
+            ck.failures.append(f"certified grid: disjoint methods now differ in held-out purity ({sorted(ok32)}); rewrite Section 7.10")
+        observational = {"adult", "hmda", "credit", "resume", "titanic", "splice", "breast_cancer", "thyroid_recurrence", "breast_cancer_wisconsin"}
+        at07 = {(r["dataset"], r["positive"]) for r in cg if r["tau"] == "0.7"}
+        obs07 = sum(1 for ds, _ in at07 if ds in observational)
+        words = {3: "three", 4: "four", 5: "five", 6: "six", 7: "seven"}
+        ck.expect("certified grid: reach at tau 0.7", rf"non-empty on {len(at07)} of the {cg_targets} pairs")
+        ck.expect("introduction: reach at tau 0.7", rf"non-empty on {len(at07)} of {cg_targets}, {words.get(obs07, str(obs07))} of them observational")
 
     # --- power curve over N (Section 4)
     pc_path = RESULTS / "certificate_power_curve.csv"
